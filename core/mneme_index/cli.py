@@ -13,8 +13,21 @@ from . import db as db_mod
 from . import search as search_mod
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argparse parser whose usage errors honour the mneme exit-code contract.
+
+    Mirrors mneme_core.cli._Parser: stock argparse exits 2 on a bad argument,
+    but 2 is reserved for findings. Raising MnemeError instead routes usage
+    errors through main()'s handler, which reports them on stderr and exits 1.
+    Subparsers inherit this class, so their errors take the same path.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise MnemeError(f"{message} (try 'mneme-index --help')")
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mneme-index")
+    parser = _Parser(prog="mneme-index")
     parser.add_argument("--db", type=Path, required=True)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -41,8 +54,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
     try:
+        args = _build_parser().parse_args(argv)
         if args.command == "build":
             conn = db_mod.open_db(args.db)
             try:
