@@ -7,8 +7,15 @@ import sqlite3
 from mneme_core.errors import MnemeError
 
 
+# \w (Unicode) rather than [A-Za-z0-9_]: FTS5's unicode61 tokenizer indexes accented
+# and CJK tokens intact, so an ASCII-only extraction would silently truncate "café"
+# to "caf" (matching nothing) and reject "日本語" as unsearchable. Punctuation still
+# never survives, so raw user text never reaches MATCH unquoted.
+_TERM_RE = re.compile(r"\w+", re.UNICODE)
+
+
 def fts_query(raw: str) -> str:
-    terms = re.findall(r"[A-Za-z0-9_]+", raw)
+    terms = _TERM_RE.findall(raw)
     if not terms:
         raise MnemeError("search query has no searchable terms")
     return " OR ".join(f'"{t}"' for t in terms)

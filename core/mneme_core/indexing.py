@@ -18,6 +18,9 @@ def rebuild(home: Path) -> list[index_build.IndexStats]:
     conn = index_db.open_db(paths.db_path(home))
     stats: list[index_build.IndexStats] = []
     try:
+        # The index is derived state: a de-registered plugin's rows have no file
+        # source left, so they must go or they keep surfacing in every search.
+        index_build.prune_plugins(conn, (p.name for p in plugins))
         for p in plugins:
             root = Path(p.path)
             if not root.is_dir():
@@ -27,16 +30,22 @@ def rebuild(home: Path) -> list[index_build.IndexStats]:
                     )
                 )
                 continue
-            stats.append(
-                index_build.index_tree(
-                    conn,
-                    p.name,
-                    root,
-                    repo=p.repo,
-                    mode=p.mode,
-                    sensitivity=p.sensitivity,
+            try:
+                stats.append(
+                    index_build.index_tree(
+                        conn,
+                        p.name,
+                        root,
+                        repo=p.repo,
+                        mode=p.mode,
+                        sensitivity=p.sensitivity,
+                    )
                 )
-            )
+            except (MnemeError, OSError) as e:
+                # One unindexable plugin must not abort the whole rebuild.
+                stats.append(
+                    index_build.IndexStats(plugin=p.name, skipped=[f"{p.path}: {e}"])
+                )
     finally:
         conn.close()
     return stats

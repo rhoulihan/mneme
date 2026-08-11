@@ -99,3 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     except MnemeError as e:
         print(f"mneme-index: {e}", file=sys.stderr)
         return 1
+    except (OSError, UnicodeDecodeError) as e:
+        # Unreadable/undecodable inputs report like any MnemeError, never as a
+        # raw traceback.
+        print(f"mneme-index: {e}", file=sys.stderr)
+        return 1

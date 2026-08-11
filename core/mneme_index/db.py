@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from urllib.parse import quote
 
 from mneme_core.errors import MnemeError
 
@@ -41,22 +42,48 @@ CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(
 """
 
 
+def _uri(path: Path, *, readonly: bool) -> str:
+    """Build a SQLite URI.
+
+    The path must be percent-encoded: SQLite reads a bare '?' as the start of the
+    query parameters and '#' as a fragment, so an unencoded path containing either
+    silently opens a *different* file and drops the parameters (including mode=ro).
+    """
+    mode = "ro" if readonly else "rwc"
+    return f"file:{quote(str(path))}?mode={mode}"
+
+
+def _unusable(path: Path, reason: object) -> MnemeError:
+    return MnemeError(
+        f"cannot read index database {path}: {reason}; the index is derived state — "
+        f"delete {path.name} and rebuild (mneme index rebuild)"
+    )
+
+
 def open_db(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.executescript(_SCHEMA)
+    try:
+        conn = sqlite3.connect(_uri(path, readonly=False), uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(_SCHEMA)
+    except sqlite3.Error as e:
+        raise _unusable(path, e) from e
     try:
         conn.executescript(_FTS)
     except sqlite3.OperationalError as e:
         conn.close()
         raise MnemeError(f"this SQLite build lacks FTS5 support: {e}")
-    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
-        )
-        conn.commit()
-    elif row["value"] != SCHEMA_VERSION:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
+            )
+            conn.commit()
+            return conn
+    except sqlite3.Error as e:
+        conn.close()
+        raise _unusable(path, e) from e
+    if row["value"] != SCHEMA_VERSION:
         conn.close()
         raise MnemeError(
             f"index schema version {row['value']} != {SCHEMA_VERSION}; "
@@ -65,9 +92,39 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+_REQUIRED_TABLES = frozenset({"meta", "plugins", "units", "units_fts"})
+
+
 def open_db_readonly(path: Path) -> sqlite3.Connection:
     if not path.exists():
         raise MnemeError(f"index database not found: {path}")
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    try:
+        conn = sqlite3.connect(_uri(path, readonly=True), uri=True)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    except sqlite3.Error as e:
+        raise _unusable(path, e) from e
+    if row is None:
+        conn.close()
+        raise _unusable(path, "no schema_version recorded")
+    if row["value"] != SCHEMA_VERSION:
+        conn.close()
+        raise MnemeError(
+            f"index schema version {row['value']} != {SCHEMA_VERSION}; "
+            "delete the database and rebuild"
+        )
+    # A same-version DB missing a table would otherwise surface as a raw
+    # "no such table: units_fts" from whichever query reached it first.
+    try:
+        tables = {
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    except sqlite3.Error as e:
+        conn.close()
+        raise _unusable(path, e) from e
+    missing = _REQUIRED_TABLES - tables
+    if missing:
+        conn.close()
+        raise _unusable(path, f"missing table(s) {', '.join(sorted(missing))}")
     return conn

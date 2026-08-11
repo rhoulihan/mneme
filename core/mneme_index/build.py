@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,40 @@ class IndexStats:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _read_unit_text(path: Path, rel: str, skipped: list[str]) -> str | None:
+    """Read a unit file, recording unreadable/undecodable files in ``skipped``.
+
+    The index is derived state and lint owns correctness, so a bad file must never
+    abort a build (nor, through ``mneme index rebuild``, the plugins after it).
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        skipped.append(f"{rel}: not valid UTF-8")
+    except OSError as e:
+        skipped.append(f"{rel}: cannot read ({e.strerror or e})")
+    return None
+
+
+def prune_plugins(conn: sqlite3.Connection, keep: Iterable[str]) -> list[str]:
+    """Drop every indexed plugin whose name is not in ``keep``; return the names dropped.
+
+    Derived state must not outlive its file source: without this, knowledge from a
+    de-registered plugin keeps surfacing in search after every rebuild.
+    """
+    keeping = set(keep)
+    present = {r["name"] for r in conn.execute("SELECT name FROM plugins").fetchall()}
+    present |= {r["plugin"] for r in conn.execute("SELECT DISTINCT plugin FROM units").fetchall()}
+    dropped = sorted(present - keeping)
+    for name in dropped:
+        conn.execute("DELETE FROM units WHERE plugin = ?", (name,))
+        conn.execute("DELETE FROM units_fts WHERE plugin = ?", (name,))
+        conn.execute("DELETE FROM plugins WHERE name = ?", (name,))
+    if dropped:
+        conn.commit()
+    return dropped
 
 
 def index_tree(
@@ -79,7 +114,9 @@ def _skill_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
         if not skill_md.exists():
             skipped.append(f"{rel}: SKILL.md not found")
             continue
-        text = skill_md.read_text(encoding="utf-8")
+        text = _read_unit_text(skill_md, rel, skipped)
+        if text is None:
+            continue
         try:
             meta, _body = units.parse_frontmatter(text)
         except MnemeError as e:
@@ -119,7 +156,9 @@ def _fact_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
         return rows
     for f in sorted(facts_dir.glob("*.md")):
         rel = str(f.relative_to(root))
-        text = f.read_text(encoding="utf-8")
+        text = _read_unit_text(f, rel, skipped)
+        if text is None:
+            continue
         try:
             meta, body = units.parse_frontmatter(text)
         except MnemeError as e:
