@@ -243,10 +243,26 @@ def _search_cmd(home: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def _readonly_authorizer(action, arg1, arg2, dbname, source):
+    """Defense in depth on top of the read-only connection.
+
+    Denies the actions that could reach outside the index or mutate connection
+    state (ATTACH/DETACH/PRAGMA); everything else a SELECT needs is allowed.
+    """
+    import sqlite3
+
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH, sqlite3.SQLITE_PRAGMA):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
 def _db_cmd(home: Path, args: argparse.Namespace) -> int:
     import sqlite3
 
+    if not args.sql.lstrip().lower().startswith("select"):
+        raise MnemeError("only SELECT queries are allowed")
     conn = _require_index_db(home)
+    conn.set_authorizer(_readonly_authorizer)
     try:
         try:
             rows = conn.execute(args.sql).fetchall()
