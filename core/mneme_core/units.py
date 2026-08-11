@@ -113,3 +113,65 @@ def serialize_frontmatter(meta: dict, body: str) -> str:
             out.append(f"{key}: {_quote_if_needed(str(val))}")
     out.append(_FM_DELIM)
     return "\n".join(out) + "\n" + body
+
+
+FACT_CATEGORIES = frozenset({"decision", "constraint", "gotcha", "runbook-note", "reference"})
+
+_BULLET_RE = re.compile(
+    r"^- \[(?P<category>[a-z-]+)\]\s+(?P<text>.+?)"
+    r"(?P<tags>(?:\s+#[\w-]+)*)"
+    r"(?:\s+\(verified:\s*(?P<verified>\d{4}-\d{2}-\d{2})\))?\s*$"
+)
+
+
+def normalize_topic_key(text: str) -> str:
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return "-".join(words[:6])
+
+
+@dataclass
+class FactBullet:
+    category: str
+    text: str
+    tags: list[str]
+    verified: str | None
+    line_no: int
+
+    @property
+    def topic_key(self) -> str:
+        return normalize_topic_key(self.text)
+
+
+def parse_bullet_line(line: str, line_no: int) -> FactBullet:
+    m = _BULLET_RE.match(line)
+    if not m:
+        raise MnemeError(f"malformed fact bullet at line {line_no}: {line!r}")
+    tags = re.findall(r"#([\w-]+)", m.group("tags") or "")
+    return FactBullet(
+        category=m.group("category"),
+        text=m.group("text").strip(),
+        tags=tags,
+        verified=m.group("verified"),
+        line_no=line_no,
+    )
+
+
+def parse_fact_bullets(body: str) -> list[FactBullet]:
+    bullets: list[FactBullet] = []
+    for n, line in enumerate(body.splitlines(), start=1):
+        if line.startswith("- ["):
+            bullets.append(parse_bullet_line(line, n))
+    return bullets
+
+
+def content_hash(text: str) -> str:
+    normalized = " ".join(text.split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def skill_unit_id(skill_name: str) -> str:
+    return f"skills/{skill_name}"
+
+
+def fact_unit_id(topic_file_stem: str, bullet_text: str) -> str:
+    return f"facts/{topic_file_stem}#{normalize_topic_key(bullet_text)}"
