@@ -69,8 +69,9 @@ def list_facts(
         sql += " AND name = ?"
         params.append(topic)
     if tag:
-        sql += " AND ' ' || tags || ' ' LIKE ?"
-        params.append(f"% {tag} %")
+        escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        sql += " AND ' ' || tags || ' ' LIKE ? ESCAPE '\\'"
+        params.append(f"% {escaped} %")
     sql += " ORDER BY plugin, path, line"
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
