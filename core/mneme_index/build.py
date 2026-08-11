@@ -28,9 +28,11 @@ def _read_unit_text(path: Path, rel: str, skipped: list[str]) -> str | None:
 
     The index is derived state and lint owns correctness, so a bad file must never
     abort a build (nor, through ``mneme index rebuild``, the plugins after it).
+
+    Read as ``utf-8-sig`` so a UTF-8 BOM cannot silently hide the first unit of a file.
     """
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         skipped.append(f"{rel}: not valid UTF-8")
     except OSError as e:
@@ -68,6 +70,7 @@ def index_tree(
 ) -> IndexStats:
     if not root.is_dir():
         raise MnemeError(f"index root is not a directory: {root}")
+    root = root.resolve()
     stats = IndexStats(plugin=plugin)
     raw_rows = _skill_rows(plugin, root, stats.skipped) + _fact_rows(plugin, root, stats.skipped)
     seen: set[str] = set()
