@@ -1,0 +1,160 @@
+"""Candidate staging area and declined ledger (spec §7.2–7.3)."""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import paths, units
+from .errors import MnemeError
+
+TYPES = frozenset({"skill", "fact"})
+EDITS = frozenset({"new", "update"})
+UNASSIGNED = "unassigned"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+@dataclass
+class Candidate:
+    id: str
+    type: str
+    edit: str
+    target: str
+    body: str
+    confidence: float = 0.5
+    rationale: str = ""
+    target_unit: str = ""
+    provenance: dict = field(default_factory=dict)
+    status: str = "staged"
+
+    def validate(self) -> None:
+        if self.type not in TYPES:
+            raise MnemeError(f"candidate type must be one of {sorted(TYPES)}: {self.type!r}")
+        if self.edit not in EDITS:
+            raise MnemeError(f"candidate edit must be one of {sorted(EDITS)}: {self.edit!r}")
+        if self.edit == "update" and not self.target_unit:
+            raise MnemeError("update candidates must set target_unit")
+        if not self.body.strip():
+            raise MnemeError("candidate body must not be empty")
+        if self.status not in ("staged", "quarantined"):
+            raise MnemeError(f"unknown candidate status: {self.status!r}")
+
+
+def candidate_id(type_: str, target: str, body: str) -> str:
+    digest = units.content_hash(target + "\n" + body)
+    return f"{type_}-{digest}"
+
+
+def _to_text(cand: Candidate) -> str:
+    meta = {
+        "id": cand.id,
+        "type": cand.type,
+        "edit": cand.edit,
+        "target": cand.target,
+        "confidence": str(cand.confidence),
+        "rationale": cand.rationale,
+        "target-unit": cand.target_unit,
+        "status": cand.status,
+        "provenance": {k: str(v) for k, v in cand.provenance.items()},
+    }
+    return units.serialize_frontmatter(meta, cand.body)
+
+
+def _from_text(text: str) -> Candidate:
+    meta, body = units.parse_frontmatter(text)
+    return Candidate(
+        id=str(meta.get("id", "")),
+        type=str(meta.get("type", "")),
+        edit=str(meta.get("edit", "")),
+        target=str(meta.get("target", UNASSIGNED)),
+        body=body,
+        confidence=float(meta.get("confidence", "0.5")),
+        rationale=str(meta.get("rationale", "")),
+        target_unit=str(meta.get("target-unit", "")),
+        provenance=dict(meta.get("provenance", {})),
+        status=str(meta.get("status", "staged")),
+    )
+
+
+def _find(home: Path, cand_id: str) -> Path | None:
+    for d in (paths.staging_dir(home), paths.quarantine_dir(home)):
+        p = d / f"{cand_id}.md"
+        if p.exists():
+            return p
+    return None
+
+
+def write_candidate(home: Path, cand: Candidate) -> Path:
+    cand.validate()
+    paths.ensure_layout(home)
+    directory = (
+        paths.quarantine_dir(home) if cand.status == "quarantined" else paths.staging_dir(home)
+    )
+    path = directory / f"{cand.id}.md"
+    path.write_text(_to_text(cand), encoding="utf-8")
+    return path
+
+
+def load_candidates(home: Path, include_quarantined: bool = False) -> list[Candidate]:
+    dirs = [paths.staging_dir(home)]
+    if include_quarantined:
+        dirs.append(paths.quarantine_dir(home))
+    out: list[Candidate] = []
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for p in sorted(d.glob("*.md")):
+            out.append(_from_text(p.read_text(encoding="utf-8")))
+    return sorted(out, key=lambda c: c.id)
+
+
+def remove_candidate(home: Path, cand_id: str) -> None:
+    p = _find(home, cand_id)
+    if p is None:
+        raise MnemeError(f"no staged candidate with id: {cand_id}")
+    p.unlink()
+
+
+def quarantine(home: Path, cand_id: str) -> Path:
+    p = _find(home, cand_id)
+    if p is None:
+        raise MnemeError(f"no staged candidate with id: {cand_id}")
+    cand = _from_text(p.read_text(encoding="utf-8"))
+    cand.status = "quarantined"
+    p.unlink()
+    return write_candidate(home, cand)
+
+
+def _read_declined(home: Path) -> list[dict]:
+    p = paths.declined_path(home)
+    if not p.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in p.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def decline(home: Path, cand: Candidate, reason: str) -> None:
+    paths.ensure_layout(home)
+    record = {
+        "id": cand.id,
+        "hash": units.content_hash(cand.body),
+        "reason": reason,
+        "ts": _now(),
+    }
+    with paths.declined_path(home).open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+    existing = _find(home, cand.id)
+    if existing is not None:
+        existing.unlink()
+
+
+def is_declined(home: Path, body: str) -> bool:
+    h = units.content_hash(body)
+    return any(rec.get("hash") == h for rec in _read_declined(home))
