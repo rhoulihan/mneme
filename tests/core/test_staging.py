@@ -84,3 +84,20 @@ def test_decline_records_and_removes(tmp_path):
     assert staging.load_candidates(tmp_path) == []
     # same body re-proposed under a different target still matches the ledger
     assert staging.is_declined(tmp_path, "# Skill body\n")
+
+
+def test_provenance_with_newlines_cannot_forge_frontmatter(tmp_path):
+    cand = make(provenance={"note": "x: y\nid: hacked-id\nstatus: quarantined"})
+    staging.write_candidate(tmp_path, cand)
+    loaded = staging.load_candidates(tmp_path)[0]
+    assert loaded.id == cand.id
+    assert loaded.status == "staged"
+    assert loaded.provenance == cand.provenance
+
+
+def test_unparseable_candidate_file_names_itself(tmp_path):
+    paths.ensure_layout(tmp_path)
+    bad = paths.staging_dir(tmp_path) / "bad.md"
+    bad.write_text("---\n???\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(MnemeError, match="bad.md"):
+        staging.load_candidates(tmp_path)

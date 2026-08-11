@@ -10,6 +10,7 @@ from .errors import MnemeError
 _FM_DELIM = "---"
 _KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):\s*(.*)$")
 _NESTED_RE = re.compile(r"^\s+([A-Za-z0-9_-]+):\s*(.*)$")
+_VALID_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
@@ -33,10 +34,31 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return meta, body
 
 
+_UNESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
+
+
+def _unescape(v: str) -> str:
+    out: list[str] = []
+    i = 0
+    while i < len(v):
+        c = v[i]
+        if c == "\\" and i + 1 < len(v) and v[i + 1] in _UNESCAPES:
+            out.append(_UNESCAPES[v[i + 1]])
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _strip_quotes(v: str) -> str:
     v = v.strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-        return v[1:-1].replace('\\"', '"')
+    if len(v) >= 2 and v[0] == v[-1]:
+        # Double quotes carry backslash escapes; single quotes are literal (YAML-ish).
+        if v[0] == '"':
+            return _unescape(v[1:-1])
+        if v[0] == "'":
+            return v[1:-1]
     return v
 
 
@@ -88,27 +110,44 @@ def _parse_block(lines: list[str]) -> dict:
     return meta
 
 
+def _escape(v: str) -> str:
+    v = v.replace("\\", "\\\\").replace('"', '\\"')
+    return v.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
 def _quote_if_needed(v: str) -> str:
-    if v == "" or v != v.strip() or ":" in v or v[:1] in ("'", '"', ">", "|", "-", "#"):
-        return '"' + v.replace('"', '\\"') + '"'
+    # Any value that is not a clean single-line plain scalar is emitted double-quoted
+    # with escapes. Notably this covers embedded newlines: writing them raw would let a
+    # value's continuation lines masquerade as top-level frontmatter keys on read-back.
+    if (
+        v == ""
+        or v != v.strip()
+        or ":" in v
+        or v[:1] in ("'", '"', ">", "|", "-", "#")
+        or any(c in v for c in "\n\r\t\\\"")
+    ):
+        return '"' + _escape(v) + '"'
     return v
+
+
+def _serializable_key(key: object) -> str:
+    if not isinstance(key, str) or not _VALID_KEY_RE.match(key):
+        raise MnemeError(f"frontmatter key is not serializable: {key!r}")
+    return key
 
 
 def serialize_frontmatter(meta: dict, body: str) -> str:
     out = [_FM_DELIM]
     for key, val in meta.items():
+        key = _serializable_key(key)
         if isinstance(val, dict):
             out.append(f"{key}:")
             for k, v in val.items():
-                out.append(f"  {k}: {_quote_if_needed(str(v))}")
+                out.append(f"  {_serializable_key(k)}: {_quote_if_needed(str(v))}")
         elif isinstance(val, list):
             out.append(f"{key}:")
             for v in val:
                 out.append(f"  - {_quote_if_needed(str(v))}")
-        elif isinstance(val, str) and "\n" in val:
-            out.append(f"{key}: |")
-            for line in val.splitlines():
-                out.append(f"  {line}")
         else:
             out.append(f"{key}: {_quote_if_needed(str(val))}")
     out.append(_FM_DELIM)

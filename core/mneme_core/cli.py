@@ -9,8 +9,21 @@ from . import __version__, flags, lint, paths, registry, scan, staging
 from .errors import MnemeError
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argparse parser whose usage errors honour the mneme exit-code contract.
+
+    Stock argparse exits 2 on a bad argument, but 2 is reserved for findings
+    (scan blockers / lint errors). Raising MnemeError instead routes usage errors
+    through main()'s handler, which reports them on stderr and exits 1.
+    Subparsers inherit this class, so their errors take the same path.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise MnemeError(f"{message} (try 'mneme --help')")
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mneme")
+    parser = _Parser(prog="mneme")
     # store_true, not action="version": the latter raises SystemExit, which would
     # escape main() and break in-process testing of the exit-code contract.
     parser.add_argument("--version", action="store_true")
@@ -56,13 +69,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
-    args = parser.parse_args(argv)
-    if args.version:
-        print(__version__)
-        return 0
-    home = args.home if args.home is not None else paths.mneme_home()
-
     try:
+        args = parser.parse_args(argv)
+        if args.version:
+            print(__version__)
+            return 0
+        home = args.home if args.home is not None else paths.mneme_home()
+
         if args.command == "init":
             paths.ensure_layout(home)
             if not paths.registry_path(home).exists():
@@ -89,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
     except MnemeError as e:
+        print(f"mneme: {e}", file=sys.stderr)
+        return 1
+    except (OSError, UnicodeDecodeError) as e:
+        # Unreadable/missing/binary files must fail gracefully like any MnemeError,
+        # never as a raw traceback.
         print(f"mneme: {e}", file=sys.stderr)
         return 1
 
@@ -120,11 +138,18 @@ def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
     return 1
 
 
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise MnemeError(f"cannot read {path}: {e.strerror or e}") from e
+
+
 def _scan_cmd(path_arg: str) -> int:
     if path_arg == "-":
         text = sys.stdin.read()
     else:
-        text = Path(path_arg).read_text(encoding="utf-8")
+        text = _read_text(Path(path_arg))
     findings = scan.scan_text(text)
     for f in findings:
         print(f"{f.rule} {f.severity} {f.line_no} {f.excerpt}")
@@ -132,6 +157,8 @@ def _scan_cmd(path_arg: str) -> int:
 
 
 def _lint_cmd(target: Path) -> int:
+    if not target.exists():
+        raise MnemeError(f"no such path: {target}")
     if target.is_dir() and (target / "SKILL.md").exists():
         issues = lint.lint_skill(target)
     elif target.is_dir():

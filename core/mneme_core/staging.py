@@ -108,7 +108,10 @@ def load_candidates(home: Path, include_quarantined: bool = False) -> list[Candi
         if not d.is_dir():
             continue
         for p in sorted(d.glob("*.md")):
-            out.append(_from_text(p.read_text(encoding="utf-8")))
+            try:
+                out.append(_from_text(p.read_text(encoding="utf-8")))
+            except MnemeError as e:
+                raise MnemeError(f"{p}: {e}") from e
     return sorted(out, key=lambda c: c.id)
 
 

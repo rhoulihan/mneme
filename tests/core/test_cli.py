@@ -105,3 +105,38 @@ def test_launcher_end_to_end(tmp_path):
     )
     assert result.returncode == 0
     assert (tmp_path / "registry.json").exists()
+
+
+def test_missing_file_fails_gracefully(tmp_path, capsys):
+    code, _, err = run(capsys, "scan", str(tmp_path / "nope.txt"))
+    assert code == 1
+    assert "mneme:" in err
+    code, _, err = run(capsys, "lint", str(tmp_path / "nope.md"))
+    assert code == 1
+    assert "mneme:" in err
+
+
+def test_unreadable_file_does_not_traceback(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "bin" / "mneme"), "scan", str(tmp_path / "nope.txt")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("frobnicate",),
+        ("registry",),
+        ("stage",),
+        ("--no-such-flag",),
+        ("registry", "add", "a-b", "--mode", "bogus", "--repo", "r"),
+    ],
+)
+def test_usage_errors_exit_1_not_2(capsys, argv):
+    # 2 is reserved for findings; a typo'd command must not look like a scan blocker.
+    code, _, err = run(capsys, *argv)
+    assert code == 1
+    assert "mneme:" in err

@@ -62,3 +62,33 @@ def test_round_trip():
     meta2, body2 = parse_frontmatter(text)
     assert meta2 == meta
     assert body2 == body
+
+
+def test_round_trip_survives_newlines_in_nested_values_and_lists():
+    # A newline written raw would let continuation lines pose as top-level keys.
+    meta = {
+        "id": "real-id",
+        "provenance": {"note": "x: y\nid: hacked-id\nstatus: quarantined"},
+        "tags": ["line one\nline two"],
+    }
+    meta2, _ = parse_frontmatter(serialize_frontmatter(meta, "body\n"))
+    assert meta2 == meta
+
+
+def test_round_trip_survives_quotes_backslashes_and_padding():
+    meta = {
+        "a": "he said \"hi\"",
+        "b": "C:\\path\\new",
+        "c": "  padded  ",
+        "d": "",
+        "e": "tab\there",
+    }
+    meta2, _ = parse_frontmatter(serialize_frontmatter(meta, "body\n"))
+    assert meta2 == meta
+
+
+def test_unserializable_key_raises():
+    with pytest.raises(MnemeError):
+        serialize_frontmatter({"bad key": "v"}, "body\n")
+    with pytest.raises(MnemeError):
+        serialize_frontmatter({"provenance": {"bad\nkey": "v"}}, "body\n")
