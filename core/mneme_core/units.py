@@ -165,7 +165,9 @@ _BULLET_RE = re.compile(
 
 def normalize_topic_key(text: str) -> str:
     words = re.findall(r"[a-z0-9]+", text.lower())
-    return "-".join(words[:6])
+    if words:
+        return "-".join(words[:6])
+    return content_hash(text)[:8]
 
 
 @dataclass
