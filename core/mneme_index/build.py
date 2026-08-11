@@ -113,4 +113,42 @@ def _skill_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
 
 
 def _fact_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
-    return []  # implemented in Task 3
+    rows: list[tuple] = []
+    facts_dir = root / "facts"
+    if not facts_dir.is_dir():
+        return rows
+    for f in sorted(facts_dir.glob("*.md")):
+        rel = str(f.relative_to(root))
+        text = f.read_text(encoding="utf-8")
+        try:
+            meta, body = units.parse_frontmatter(text)
+        except MnemeError as e:
+            skipped.append(f"{rel}: {e}")
+            continue
+        topic = str(meta.get("topic", f.stem))
+        offset = len(text.splitlines()) - len(body.splitlines())
+        for n, line in enumerate(body.splitlines(), start=1):
+            if not line.startswith("- ["):
+                continue
+            abs_line = offset + n
+            try:
+                bullet = units.parse_bullet_line(line, n)
+            except MnemeError:
+                skipped.append(f"{rel}:{abs_line}: malformed fact bullet")
+                continue
+            rows.append(
+                (
+                    plugin,
+                    units.fact_unit_id(f.stem, bullet.text),
+                    "fact",
+                    topic,
+                    bullet.text,
+                    bullet.category,
+                    " ".join(bullet.tags),
+                    rel,
+                    abs_line,
+                    bullet.verified or "",
+                    units.content_hash(line),
+                )
+            )
+    return rows
