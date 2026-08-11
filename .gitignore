@@ -8,3 +8,11 @@ $CLAUDE_PLUGIN_DATA/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.egg-info/
