@@ -1,0 +1,10 @@
+# Stray plugin-data dirs (unexpanded ${CLAUDE_PLUGIN_DATA} path bug seen from other plugins)
+${CLAUDE_PLUGIN_DATA}/
+$CLAUDE_PLUGIN_DATA/
+
+# Local mneme staging data (never committed to the plugin repo)
+.mneme/
+
+# OS noise
+.DS_Store
+Thumbs.db
