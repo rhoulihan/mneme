@@ -64,6 +64,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_lint = sub.add_parser("lint")
     p_lint.add_argument("path", type=Path)
 
+    p_index = sub.add_parser("index")
+    index_sub = p_index.add_subparsers(dest="index_command", required=True)
+    index_sub.add_parser("rebuild")
+    index_sub.add_parser("status")
+
+    p_srch = sub.add_parser("search")
+    p_srch.add_argument("query")
+    p_srch.add_argument("--k", type=int, default=10)
+    p_srch.add_argument("--kind", choices=["skill", "fact"], default=None)
+    p_srch.add_argument("--plugin", default=None)
+
+    p_db = sub.add_parser("db")
+    db_sub = p_db.add_subparsers(dest="db_command", required=True)
+    p_query = db_sub.add_parser("query")
+    p_query.add_argument("sql")
+
     return parser
 
 
@@ -99,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
             return _scan_cmd(args.path)
         if args.command == "lint":
             return _lint_cmd(args.path)
+        if args.command == "index":
+            return _index_cmd(home, args)
+        if args.command == "search":
+            return _search_cmd(home, args)
+        if args.command == "db":
+            return _db_cmd(home, args)
         parser.print_help()
         return 1
     except MnemeError as e:
@@ -170,3 +192,68 @@ def _lint_cmd(target: Path) -> int:
     for i in issues:
         print(f"{i.path}:{i.line} {i.code} {i.severity} {i.message}")
     return 2 if lint.has_errors(issues) else 0
+
+
+def _require_index_db(home: Path):
+    from mneme_index import db as index_db
+
+    db_file = paths.db_path(home)
+    if not db_file.exists():
+        raise MnemeError("index not built (run: mneme index rebuild)")
+    return index_db.open_db_readonly(db_file)
+
+
+def _index_cmd(home: Path, args: argparse.Namespace) -> int:
+    if args.index_command == "rebuild":
+        from . import indexing
+
+        for s in indexing.rebuild(home):
+            print(
+                f"indexed {s.plugin}: {s.skills} skills,"
+                f" {s.facts} facts, {len(s.skipped)} skipped"
+            )
+            for sk in s.skipped:
+                print(f"skipped: {sk}")
+        return 0
+    if args.index_command == "status":
+        from mneme_index import search as index_search
+
+        conn = _require_index_db(home)
+        try:
+            st = index_search.status(conn)
+        finally:
+            conn.close()
+        for p in st["plugins"]:
+            print(f"{p['name']}  skills={p['skills']}  facts={p['facts']}  built_at={p['built_at']}")
+        print(f"total_units={st['total_units']}")
+        return 0
+    return 1
+
+
+def _search_cmd(home: Path, args: argparse.Namespace) -> int:
+    from mneme_index import search as index_search
+
+    conn = _require_index_db(home)
+    try:
+        hits = index_search.search(conn, args.query, k=args.k, kind=args.kind, plugin=args.plugin)
+    finally:
+        conn.close()
+    for h in hits:
+        print(f"{h['score']:.2f}\t{h['plugin']}\t{h['id']}\t{h['description']}")
+    return 0
+
+
+def _db_cmd(home: Path, args: argparse.Namespace) -> int:
+    import sqlite3
+
+    conn = _require_index_db(home)
+    try:
+        try:
+            rows = conn.execute(args.sql).fetchall()
+        except sqlite3.Error as e:
+            raise MnemeError(f"query failed: {e}")
+        for r in rows:
+            print("\t".join(str(v) for v in tuple(r)))
+    finally:
+        conn.close()
+    return 0
