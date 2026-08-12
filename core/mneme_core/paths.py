@@ -36,6 +36,10 @@ def declined_path(home: Path) -> Path:
     return home / "declined.jsonl"
 
 
+def submitted_path(home: Path) -> Path:
+    return home / "submitted.jsonl"
+
+
 def flags_path(home: Path) -> Path:
     return staging_dir(home) / "flags.jsonl"
 
