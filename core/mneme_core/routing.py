@@ -49,3 +49,32 @@ def scopes(home: Path) -> list[Scope]:
             )
         )
     return out
+
+
+SENSITIVITY_RANK = {"public": 0, "internal": 1, "restricted": 2}
+
+
+def _rank(sensitivity: str) -> int:
+    return SENSITIVITY_RANK.get(sensitivity, SENSITIVITY_RANK["internal"])
+
+
+def boundary_warning(source_sensitivity: str, target: Scope) -> str:
+    if _rank(target.sensitivity) < _rank(source_sensitivity):
+        return (
+            f"target '{target.name}' is {target.sensitivity} but the source context"
+            f" is {source_sensitivity}"
+        )
+    return ""
+
+
+def plugin_for_path(home: Path, cwd: Path) -> Scope | None:
+    best: Scope | None = None
+    best_depth = -1
+    cwd = cwd.resolve()
+    for s in scopes(home):
+        root = Path(s.path).resolve()
+        if root == cwd or root in cwd.parents:
+            depth = len(root.parts)
+            if depth > best_depth:
+                best, best_depth = s, depth
+    return best
