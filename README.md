@@ -31,7 +31,7 @@ Nobody ships **capture → local staging → user-curated review → PR into an 
   <img src="assets/the-loop.svg" alt="The mneme loop: work session → background distiller → machine gate → staging → human gate (/mneme:share) → pull request → merge → consumers inherit → back to the next work session" width="960">
 </p>
 
-Nothing leaves your machine without passing a deterministic machine gate **and** your explicit approval. Nothing enters a shared repo without a human merge. There is no auto-push mode — by design, not by configuration.
+Nothing leaves your machine without passing a deterministic machine gate **and** your explicit approval. Nothing enters a shared repo without a human merge. There is no auto-push mode — and no direct-commit mode either (as of v0.4.0): **mneme never writes a registered repo's `main`**. Every contribution, including classify reorganizations, arrives as a `mneme/*` branch plus a pull request that a human merges — personal repos simply merge their own.
 
 ## What a knowledge plugin looks like
 
@@ -46,8 +46,8 @@ acme-knowledge/
 ├── skills/
 │   ├── <skill-name>/SKILL.md  # procedural units (Agent Skills format, portable to ~40 tools)
 │   └── knowledge-index/       # mechanically regenerated router over the facts tier
-├── facts/
-│   └── <topic>.md             # typed, tagged, dated fact bullets — delta-edited, never rewritten
+│       └── facts/             # typed, tagged, dated fact bullets — delta-edited, never rewritten
+│           └── <topic>.md     #   (v0.5.0 canonical location; legacy top-level facts/ stays readable)
 ├── CODEOWNERS                 # reviewer routing per knowledge area
 ├── CONTRIBUTING.md            # the promotion rule + anti-slop policy
 └── .github/workflows/         # lint, secret scan, auto version bump on merge
@@ -75,6 +75,9 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 05 — Harvest | `/mneme:share` review flow, git/PR plumbing with provenance trailers, staleness sweep, register/adopt for existing repos | ✅ merged |
 | 06 — Adapter | Claude Code plugin wiring: hooks, `/mneme:*` commands, behavioral skills, background distiller | ✅ merged |
 | 07 — Dogfood | End-to-end harness + mneme's own development-knowledge plugin, captured by mneme | ✅ merged |
+| 08 — Detection | Session-start detection of unregistered knowledge repos — the injected brief asks to register (hardened against path/URL injection); persisted declines | ✅ merged (v0.3.0) |
+| 09 — PR-only | Contribution modes removed: mneme never writes a repo's `main` — every harvest is a branch + PR, enforced by an invariant test | ⏳ executing (v0.4.0) |
+| 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | 🗺 queued (v0.5.0) |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 
@@ -104,8 +107,9 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 | `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then commit/PR |
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |
 | `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
+| `/mneme:classify` | Librarian pass on the current repo: triage accumulated facts into the relevant skills' content (you approve the mapping), regenerate the knowledge-index, deliver as its own PR |
 
-And mneme rides the session without being asked: a SessionStart hook injects the noticing brief so the agent flags golden paths as they happen, Stop/PreCompact hooks run the background distiller over what was flagged, and a retrieval skill has the agent search installed knowledge by vague notion before reinventing something the organization already knows.
+And mneme rides the session without being asked: a SessionStart hook injects the noticing brief so the agent flags golden paths as they happen, Stop/PreCompact hooks run the background distiller over what was flagged, and a retrieval skill has the agent search installed knowledge by vague notion before reinventing something the organization already knows. Opening a session inside an unregistered knowledge repo (its `MNEME.md` marker present) makes the brief *ask you* whether to register it — declining is persisted, so you're never nagged twice about the same repo.
 
 ### Under the hood (contributors, CI, scripting)
 
