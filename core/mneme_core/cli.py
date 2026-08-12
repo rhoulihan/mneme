@@ -32,6 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init")
     sub.add_parser("home")
+    sub.add_parser("context")
 
     p_flag = sub.add_parser("flag")
     p_flag.add_argument("text")
@@ -86,6 +87,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
 
+    p_distill = sub.add_parser("distill")
+    distill_sub = p_distill.add_subparsers(dest="distill_command", required=True)
+    p_prep = distill_sub.add_parser("prepare")
+    p_prep.add_argument("--transcript", default="(not provided)")
+    p_ing = distill_sub.add_parser("ingest")
+    p_ing.add_argument("path")
+    p_ing.add_argument("--source", default="unknown")
+    p_ing.add_argument("--source-plugin", default="")
+    p_ing.add_argument("--clear-flags", action="store_true")
+
     p_db = sub.add_parser("db")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
     p_query = db_sub.add_parser("query")
@@ -114,6 +125,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "home":
             print(str(home))
             return 0
+        if args.command == "context":
+            from . import routing, templates
+
+            print(templates.NOTICING_BRIEF)
+            scope_list = routing.scopes(home)
+            if not scope_list:
+                print("Registered knowledge plugins: none — run 'mneme new <name>' to create one.")
+                return 0
+            print("Registered knowledge plugins:")
+            for s in scope_list:
+                first = s.statement.splitlines()[0] if s.statement else "(no scope statement)"
+                print(f"- {s.name} [{s.sensitivity}/{s.mode}]: {first}")
+            return 0
         if args.command == "flag":
             flags.add_flag(home, args.text, kind=args.kind, session=args.session)
             print("flagged")
@@ -132,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
             return _index_cmd(home, args)
         if args.command == "search":
             return _search_cmd(home, args)
+        if args.command == "distill":
+            return _distill_cmd(home, args)
         if args.command == "db":
             return _db_cmd(home, args)
         if args.command == "new":
@@ -159,6 +185,12 @@ def main(argv: list[str] | None = None) -> int:
         # Unreadable/missing/binary files must fail gracefully like any MnemeError,
         # never as a raw traceback.
         print(f"mneme: {e}", file=sys.stderr)
+        return 1
+    except RecursionError:
+        # Backstop for hostile deeply-nested input at any trust boundary: parsers that
+        # recurse raise this instead of their own error type, and it must still honour
+        # the exit-code contract rather than surfacing as a traceback.
+        print("mneme: input is nested too deeply to process", file=sys.stderr)
         return 1
 
 
@@ -324,4 +356,146 @@ def _db_cmd(home: Path, args: argparse.Namespace) -> int:
             print("\t".join(str(v) for v in tuple(r)))
     finally:
         conn.close()
+    return 0
+
+
+def _distill_cmd(home: Path, args: argparse.Namespace) -> int:
+    if args.distill_command == "prepare":
+        import json as json_mod
+
+        from . import flags as flags_mod
+        from . import routing, templates
+
+        scope_list = routing.scopes(home)
+        if scope_list:
+            scope_lines = "\n".join(
+                f"- {s.name} [{s.sensitivity}/{s.mode}]:"
+                f" {' '.join(s.statement.split()) or '(no scope statement)'}"
+                for s in scope_list
+            )
+        else:
+            scope_lines = "- (none registered)"
+        flag_records = flags_mod.read_flags(home)
+        flag_lines = (
+            "\n".join(json_mod.dumps(f) for f in flag_records)
+            if flag_records
+            else "(no flags this session)"
+        )
+        prompt = templates.render(
+            templates.DISTILLER_PROMPT,
+            scopes=scope_lines,
+            flags=flag_lines,
+            transcript_path=args.transcript,
+        )
+        print(json_mod.dumps({"prompt": prompt, "flag_count": len(flag_records)}))
+        return 0
+    if args.distill_command == "ingest":
+        return _distill_ingest(home, args)
+    return 1
+
+
+def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
+    import sys as sys_mod
+    from datetime import datetime, timezone
+
+    from . import compose, proposals as proposals_mod, scan as scan_mod, staging as staging_mod
+    from . import flags as flags_mod
+    from . import routing
+
+    if args.path == "-":
+        raw = sys_mod.stdin.read()
+    else:
+        try:
+            raw = Path(args.path).read_text(encoding="utf-8")
+        except OSError as e:
+            raise MnemeError(f"cannot read proposals: {e}")
+    valid, errors = proposals_mod.parse_proposals(raw)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    staged = quarantined = skipped_declined = skipped_duplicate = 0
+    rejected = list(errors)
+    existing_ids = {
+        c.id for c in staging_mod.load_candidates(home, include_quarantined=True)
+    }
+
+    scope_by_name = {s.name: s for s in routing.scopes(home)}
+    source_scope = scope_by_name.get(args.source_plugin)
+    index_conn = None
+    db_file = paths.db_path(home)
+    if db_file.exists():
+        try:
+            from mneme_index import db as index_db
+
+            index_conn = index_db.open_db_readonly(db_file)
+        except MnemeError:
+            index_conn = None
+    boundary_count = 0
+
+    for p in valid:
+        try:
+            if p.type == "skill":
+                body = compose.render_skill_unit(
+                    p.name, p.description, p.procedure, p.failure_pattern,
+                    source=args.source, captured=today,
+                )
+            else:
+                body = compose.render_fact_bullet(
+                    p.category, p.text, p.tags, verified=today
+                )
+        except MnemeError as e:
+            rejected.append(f"compose ({p.type} -> {p.target}): {e}")
+            continue
+        if staging_mod.is_declined(home, body):
+            skipped_declined += 1
+            continue
+        cand_id = staging_mod.candidate_id(p.type, p.target, body)
+        if cand_id in existing_ids:
+            skipped_duplicate += 1
+            continue
+        findings = scan_mod.scan_text(body)
+        status = "quarantined" if scan_mod.has_blockers(findings) else "staged"
+        similar_to = ""
+        if index_conn is not None:
+            try:
+                from mneme_index import search as index_search
+
+                probe = p.description if p.type == "skill" else p.text
+                hits = index_search.search(index_conn, probe, k=1)
+                if hits:
+                    similar_to = hits[0]["id"]
+            except MnemeError:
+                similar_to = ""
+        warning = ""
+        target_scope = scope_by_name.get(p.target)
+        if source_scope is not None and target_scope is not None:
+            warning = routing.boundary_warning(source_scope.sensitivity, target_scope)
+            if warning:
+                boundary_count += 1
+        cand = staging_mod.Candidate(
+            id=cand_id, type=p.type, edit=p.edit, target=p.target, body=body,
+            confidence=p.confidence, rationale=p.rationale, target_unit=p.target_unit,
+            topic=p.topic, similar_to=similar_to, boundary_warning=warning,
+            status=status,
+            provenance={"source": args.source, "captured": today},
+        )
+        staging_mod.write_candidate(home, cand)
+        existing_ids.add(cand_id)
+        if status == "quarantined":
+            quarantined += 1
+        else:
+            staged += 1
+
+    if index_conn is not None:
+        index_conn.close()
+
+    print(
+        f"staged {staged}  quarantined {quarantined}"
+        f"  skipped-declined {skipped_declined}"
+        f"  skipped-duplicate {skipped_duplicate}  rejected {len(rejected)}"
+        f"  boundary-warnings {boundary_count}"
+    )
+    for r in rejected:
+        print(f"rejected: {r}")
+    if args.clear_flags:
+        flags_mod.clear_flags(home)
     return 0

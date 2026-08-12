@@ -72,7 +72,9 @@ def create(
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    (target / "facts").mkdir(exist_ok=True)
+    facts_dir = target / "facts"
+    facts_dir.mkdir(exist_ok=True)
+    (facts_dir / ".gitkeep").write_text("", encoding="utf-8")
     regenerate_index_skill(target, name, description)
 
     issues = lint.lint_repo(target)

@@ -24,12 +24,14 @@ def render_json(template: str, **subs: str) -> str:
 PLUGIN_JSON = """{
   "name": "$name",
   "version": "0.1.0",
+  "author": { "name": "$owner" },
   "description": "$description"
 }
 """
 
 MARKETPLACE_JSON = """{
   "name": "$name",
+  "description": "$description",
   "owner": { "name": "$owner" },
   "plugins": [
     { "name": "$name", "source": "./", "description": "$description" }
@@ -195,4 +197,59 @@ Regenerated mechanically by mneme — do not edit by hand.
 
 | Topic | File | Bullets |
 |---|---|---|
+"""
+
+NOTICING_BRIEF = """## mneme noticing
+
+While you work, flag knowledge worth keeping — do NOT stop to document it.
+
+Flag (one line each, at the moment it happens) when:
+- a hard-won fix lands after real dead ends: `mneme flag "<what worked + why it was non-obvious>"`
+- installed knowledge proves wrong or stale: `mneme flag --kind knowledge-issue "<what is wrong>"`
+
+Rules: one line per flag; no mid-session distillation (a background distiller runs later);
+never flag anything from excluded repos/paths; never include secrets or credentials in flag text.
+"""
+
+DISTILLER_PROMPT = """You are the mneme DISTILLER — a separate curation role, not the working agent.
+Read the session evidence and extract ONLY knowledge that clears the promotion rule:
+1. Verified success — it actually worked in this session, not assumed.
+2. A named failure pattern — what went wrong before the fix; dead ends eliminated.
+3. Non-obvious — not derivable from public documentation.
+
+Session flags (the working agent marked these moments):
+$flags
+
+Transcript: $transcript_path
+
+Registered knowledge plugins (route each proposal to the best-matching scope;
+use "unassigned" when no scope clearly fits — never guess across scopes):
+$scopes
+
+Before proposing, check what already exists: you may run `bin/mneme search "<query>"`
+and `bin/mneme db query "SELECT ..."`. When existing knowledge covers the same ground,
+emit an "update" edit against that unit id instead of a near-duplicate "new".
+
+Output EXACTLY one JSON object, no prose, matching:
+{
+  "proposals": [
+    {
+      "type": "skill", "edit": "new" | "update", "target": "<plugin-name>" | "unassigned",
+      "target_unit": "<unit id, required when edit=update>",
+      "name": "<kebab-case-skill-name>", "description": "<trigger-rich, <=1024 chars>",
+      "procedure": "<verified steps, markdown>", "failure_pattern": "<what failed first, markdown>",
+      "confidence": 0.0, "rationale": "<why this clears the promotion rule>"
+    },
+    {
+      "type": "fact", "edit": "new" | "update", "target": "<plugin-name>" | "unassigned",
+      "target_unit": "<unit id, required when edit=update>",
+      "topic": "<kebab-case-topic>", "category": "decision|constraint|gotcha|runbook-note|reference",
+      "text": "<single factual statement>", "tags": ["<tag>"],
+      "confidence": 0.0, "rationale": "<why this clears the promotion rule>"
+    }
+  ]
+}
+
+Emit an empty proposals array when nothing clears the rule — silence beats noise.
+Never include secrets, tokens, passwords, or personal data in any field.
 """
