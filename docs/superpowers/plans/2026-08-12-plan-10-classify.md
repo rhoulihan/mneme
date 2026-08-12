@@ -355,7 +355,7 @@ git commit -m "feat: classify branch rails — begin and abort"
 **Interfaces:**
 - `templates.CLASSIFY_INSTRUCTIONS` (no placeholders): the librarian contract for the agent — integrate each fact into the MOST relevant existing skill (append to an appropriate section of its SKILL.md or a file under its directory, preserving the fact's meaning, tags, and verified date and citing it as a fact-derived note); create a new skill only when several related facts justify one; a fact with no good home STAYS in the facts directory; NEVER delete knowledge; when a fact merely restates what a skill already says, record it as retired-into-that-skill in your report to the user; propose the full mapping to the user and get their approval BEFORE editing; after edits run finalize.
 - `classify.bundle(home, cwd) -> dict` — resolves the plugin from cwd via `classify.resolve`; `{"plugin", "repo", "facts": [{"file", "topic", "line", "category", "text", "tags", "verified", "unit_id"}...], "skills": [{"name", "description", "dir", "files": [relative paths]}...], "legacy_layout": bool, "instructions": templates.CLASSIFY_INSTRUCTIONS}`; skills listing walks `skills/*/SKILL.md` (frontmatter name/description; skip unparseable with a note list), EXCLUDING `knowledge-index`. CLI `mneme classify prepare [--cwd DIR]` prints it as JSON.
-- `classify.finalize(home, cwd, *, push=True) -> HarvestResult`-shaped result (reuse `harvest.HarvestResult`): resolves from cwd; requires an active `mneme/classify-*` branch; if a legacy `facts/` dir exists AND the canonical dir is now in use or being created, `git mv` remaining legacy fact files into the canonical dir (creating it); regenerate the knowledge-index skill (reading plugin.json name/description as harvest does); gate: `lint_repo` error-free + `scan` blocker-free over every file changed on the branch (`git diff --name-only main...HEAD` plus working-tree changes); commit ALL changes with subject `knowledge: classify <date>` and body listing changed files; push + `open_pr` when a remote exists (else the local-branch message); checkout `main`, branch preserved; ledger record with `"kind": "classify"`. Failure at any point → same `_abort`-style rollback (restore, checkout main, delete branch) and MnemeError. Nothing-to-commit (agent made no edits and no migration happened) → MnemeError telling the user to abort instead. CLI: `mneme classify finalize [--cwd DIR] [--no-push]`.
+- `classify.finalize(home, cwd, *, push=True) -> HarvestResult`-shaped result (reuse `harvest.HarvestResult`): resolves from cwd; requires an active `mneme/classify-*` branch; if a legacy `facts/` dir exists AND the canonical dir is now in use or being created, `git mv` remaining legacy fact files into the canonical dir (creating it); regenerate the knowledge-index skill (reading plugin.json name/description as harvest does); gate: `lint_repo` error-free + `scan` blocker-free over every file changed on the branch (`git diff --name-only main...HEAD` plus working-tree changes); commit ALL changes with subject `knowledge: classify <date>` and body listing changed files; push + `open_pr` when a remote exists (else the local-branch message); checkout `main`, branch preserved; ledger record with `"kind": "classify"`. Failure at any point → same `_abort`-style rollback (restore, checkout main, delete branch) and MnemeError. Nothing to classify (no working-tree edits, no migration, AND the branch is not ahead of `main`) → MnemeError; the rails discard the branch themselves rather than telling the user to abort — this task's own test asserts `current_branch == main` afterwards, and the earlier "abort instead" wording contradicted it (corrected 2026-08-12 after the Task 4 review; auto-rollback is the behaviour). A branch that IS ahead of `main` is the opposite case — the librarian committed their own edits and index regeneration is a no-op — and finalize must DELIVER those commits (result.commit is the existing HEAD; no empty commit, no rollback), never demand a fresh one. CLI: `mneme classify finalize [--cwd DIR] [--no-push]`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -478,6 +478,22 @@ Add `CLASSIFY_INSTRUCTIONS` to templates (cover every clause in the Interfaces d
 git add core/mneme_core/classify.py core/mneme_core/cli.py core/mneme_core/templates.py tests/core/test_classify_bundle.py
 git commit -m "feat: classify bundle and PR-only finalize with migration"
 ```
+
+**Deviations actually taken (recorded 2026-08-12, after the Task 4 review).** Task 4 was
+reported as `deviations: []`; that was incomplete. The accurate list:
+
+1. `core/mneme_core/gitops.py` was modified in commit `f9cdfd2`, outside Task 4's Files
+   list: `git_raw` was extracted (raw stdout) and `git` reduced to `git_raw(...).strip()`.
+   Behaviour-preserving for every existing caller; needed because `git status --porcelain
+   -z` records open with a significant space that `strip()` was shifting off the path.
+   Covered by Step 3's "extract a shared helper rather than duplicating if cleaner — note
+   it" allowance, but the note landed only in the docstring, not in the report.
+2. Task 4 landed as three commits (`f9cdfd2` feat, `cc20b6b` review fixes — untracked-dir
+   scan coverage, non-UTF-8 scan text, commit subject — and this pass's work-loss fix)
+   against the end-of-plan "one commit per task" item; see Verification note 4.
+3. `tests/core/test_classify_bundle.py` carries assertions beyond the plan's listing
+   (secret-scan coverage of a newly created skill directory, byte-exact changed paths, and
+   the ahead-but-clean delivery case). All are additions — every plan assertion is kept.
 
 ---
 

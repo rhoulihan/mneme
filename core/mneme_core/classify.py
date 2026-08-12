@@ -279,9 +279,21 @@ def _scan_gate(repo: Path, changed: list[str]) -> None:
             raise MnemeError(f"classify fails the secret scan: {rel} ({rules})")
 
 
-def _commit(repo: Path, plugin: str, unit_lines: list[str]) -> str:
+def _commit(repo: Path, plugin: str, unit_lines: list[str], base_sha: str) -> str:
+    """Commit whatever the pass produced; deliver what is already committed unchanged.
+
+    A librarian who commits their own edits on the classify branch — and an index
+    regeneration that is then a no-op — leaves nothing in the working tree. That is a
+    finished classify pass, not an empty one: the emptiness gate in `finalize` already
+    accepted the branch as classifiable because it is ahead of `main`. Demanding a fresh
+    commit here would raise into the rollback path and hard-reset the branch away, so the
+    one thing the gate acknowledged is the one thing that must never be destroyed.
+    """
     gitops.git(repo, "add", "-A")
     if gitops.git(repo, "status", "--porcelain") == "":
+        head = gitops.head_sha(repo)
+        if head != base_sha:
+            return head
         raise MnemeError("nothing to commit for this classify pass")
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     subject = f"knowledge: classify {date}"
@@ -338,7 +350,7 @@ def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResu
     ]
 
     try:
-        result.commit = _commit(repo, scope.name, result.units)
+        result.commit = _commit(repo, scope.name, result.units, base_sha)
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if push and gitops.has_remote(repo):
             gitops.push_branch(repo, branch)

@@ -61,6 +61,23 @@ def integrate(target):
     return skill_md
 
 
+def sync_index(target):
+    """Leave the router index matching the facts, the way an accepted harvest PR does.
+
+    It is what makes the regeneration inside `finalize` a no-op, which is the only way to
+    reach the case where the branch's whole contribution is already committed.
+    """
+    manifest = json.loads(
+        (target / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    scaffold.regenerate_index_skill(
+        target, str(manifest["name"]), str(manifest.get("description", ""))
+    )
+    if not gitops.is_clean(target):
+        gitops.git(target, "add", "-A")
+        gitops.git(target, "commit", "-m", "index in sync")
+
+
 def test_bundle_shape(tmp_path, capsys):
     home, target = make_kb(tmp_path)
     b = classify.bundle(home, target)
@@ -155,6 +172,35 @@ def test_finalize_migrates_surviving_legacy_facts(tmp_path):
     assert "deploys" not in index_md
     body = gitops.git(target, "log", result.branch, "-1", "--format=%b")
     assert "skills/knowledge-index/facts/keepers.md" in body
+
+
+def test_finalize_delivers_work_the_librarian_already_committed(tmp_path):
+    """Committing your edits on the classify branch must never destroy them.
+
+    The emptiness gate already accepts a branch that is ahead of `main` as classifiable.
+    If the commit step then insisted on a fresh working-tree commit, its MnemeError would
+    run the rollback that hard-resets the branch away — orphaning exactly the work the
+    gate acknowledged, while telling the user no edits were made.
+    """
+    home, target = make_kb(tmp_path)
+    sync_index(target)
+    classify.begin(home, target)
+    integrate(target)
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "librarian: integrate the deploy fact")
+    librarian_sha = gitops.head_sha(target)
+    main_before = gitops.git(target, "rev-parse", "main")
+
+    result = classify.finalize(home, target, push=False)
+
+    assert result.commit == librarian_sha  # delivered as it stands, not re-committed
+    assert gitops.git(target, "rev-parse", result.branch) == librarian_sha
+    assert gitops.git(target, "rev-parse", "main") == main_before  # PR-only invariant
+    assert gitops.current_branch(target) == "main"
+    assert result.units == ["skills/deploy-widget/SKILL.md"]
+    assert "Operational notes" in gitops.git(
+        target, "show", f"{result.branch}:skills/deploy-widget/SKILL.md"
+    )
 
 
 def test_changed_paths_are_reported_byte_for_byte(tmp_path):
