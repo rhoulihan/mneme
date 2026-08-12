@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# The background distiller: prepare -> headless agent -> ingest (spec §7.2).
+# Runs detached from the session; failures surface only in the caller's log.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TRANSCRIPT="${1:-}"
+export MNEME_DISTILLING=1
+
+PROMPT="$("$ROOT/bin/mneme" distill prepare --transcript "$TRANSCRIPT" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["prompt"])')"
+
+"${MNEME_CLAUDE_BIN:-claude}" -p "$PROMPT" \
+  --output-format json \
+  --max-turns 30 \
+  --model "${MNEME_DISTILL_MODEL:-sonnet}" \
+  --allowedTools "Read,Grep,Glob" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"])' \
+  | "$ROOT/bin/mneme" distill ingest - --clear-flags --source "session:$(basename "$TRANSCRIPT" 2>/dev/null || echo unknown)"
