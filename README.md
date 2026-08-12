@@ -78,6 +78,7 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 08 — Detection | Session-start detection of unregistered knowledge repos — the injected brief asks to register (hardened against path/URL injection); persisted declines | ✅ merged (v0.3.0) |
 | 09 — PR-only | Contribution modes removed: mneme never writes a repo's `main` — every harvest is a branch + PR, enforced by an invariant test | ✅ merged (v0.4.0) |
 | 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | ✅ merged (v0.5.0) |
+| 11 — Review | `/mneme:review` triages open PRs: duplicate / declined / possibly-integrated / new, then per-PR approved merge, close, or extraction into its own PR; fact-preservation gate at finalize | ⏳ executing (v0.6.0) |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 
@@ -108,6 +109,7 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |
 | `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
 | `/mneme:classify` | Librarian pass on the current repo: triage accumulated facts into the relevant skills' content (you approve the mapping), regenerate the knowledge-index, deliver as its own PR |
+| `/mneme:review` | Maintainer pass over the current repo's open PRs: every proposed fact labelled duplicate, previously declined, possibly already integrated, or new — then, per PR and only with your approval, merge it, close it as covered, or extract just the new facts into their own PR |
 
 And mneme rides the session without being asked: a SessionStart hook injects the noticing brief so the agent flags golden paths as they happen, Stop/PreCompact hooks run the background distiller over what was flagged, and a retrieval skill has the agent search installed knowledge by vague notion before reinventing something the organization already knows. Opening a session inside an unregistered knowledge repo (its `MNEME.md` marker present) makes the brief *ask you* whether to register it — declining is persisted, so you're never nagged twice about the same repo.
 
