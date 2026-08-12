@@ -32,6 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init")
     sub.add_parser("home")
+    sub.add_parser("context")
 
     p_flag = sub.add_parser("flag")
     p_flag.add_argument("text")
@@ -113,6 +114,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "home":
             print(str(home))
+            return 0
+        if args.command == "context":
+            from . import routing, templates
+
+            print(templates.NOTICING_BRIEF)
+            scope_list = routing.scopes(home)
+            if not scope_list:
+                print("Registered knowledge plugins: none — run 'mneme new <name>' to create one.")
+                return 0
+            print("Registered knowledge plugins:")
+            for s in scope_list:
+                first = s.statement.splitlines()[0] if s.statement else "(no scope statement)"
+                print(f"- {s.name} [{s.sensitivity}/{s.mode}]: {first}")
             return 0
         if args.command == "flag":
             flags.add_flag(home, args.text, kind=args.kind, session=args.session)
