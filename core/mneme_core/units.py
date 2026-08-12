@@ -213,6 +213,38 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
 
+# Stamps mneme itself writes onto a rendered unit to record *when and where* it was
+# captured — never what it says. `mneme-captured`/`mneme-last-verified` carry the
+# ingest date; `mneme-source` carries the session label.
+_STAMP_LINE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<key>mneme-captured|mneme-last-verified|mneme-source):[ \t]*.*$",
+    re.MULTILINE,
+)
+# Only the trailing `(verified: YYYY-MM-DD)` a fact bullet ends with. Anchored to end of
+# line so an ISO date inside the fact's own text — which *is* semantic content, e.g. two
+# decisions naming different cutover dates — is left alone.
+_VERIFIED_STAMP_RE = re.compile(
+    r"[ \t]*\(verified:[ \t]*\d{4}-\d{2}-\d{2}\)[ \t]*$", re.MULTILINE
+)
+
+
+def strip_capture_stamps(text: str) -> str:
+    """Blank out mneme's own capture stamps, leaving the knowledge itself."""
+    text = _STAMP_LINE_RE.sub(lambda m: f"{m['indent']}{m['key']}:", text)
+    return _VERIFIED_STAMP_RE.sub("", text)
+
+
+def semantic_hash(text: str) -> str:
+    """Hash of what a unit *says*, independent of when or where it was captured.
+
+    Identity for the declined ledger and duplicate detection must not move with the
+    calendar: `content_hash` normalizes whitespace only, so the same knowledge rendered
+    on a later day (a fresh `verified:`/`mneme-captured` stamp) would hash differently
+    and silently resurface a candidate a human already declined.
+    """
+    return content_hash(strip_capture_stamps(text))
+
+
 def skill_unit_id(skill_name: str) -> str:
     return f"skills/{skill_name}"
 

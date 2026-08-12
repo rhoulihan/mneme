@@ -186,6 +186,12 @@ def main(argv: list[str] | None = None) -> int:
         # never as a raw traceback.
         print(f"mneme: {e}", file=sys.stderr)
         return 1
+    except RecursionError:
+        # Backstop for hostile deeply-nested input at any trust boundary: parsers that
+        # recurse raise this instead of their own error type, and it must still honour
+        # the exit-code contract rather than surfacing as a traceback.
+        print("mneme: input is nested too deeply to process", file=sys.stderr)
+        return 1
 
 
 def _registry_cmd(home: Path, args: argparse.Namespace) -> int:

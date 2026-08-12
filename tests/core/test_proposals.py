@@ -81,3 +81,23 @@ def test_update_with_target_unit_ok():
     valid, errors = parse([fact_entry(edit="update", target_unit="facts/staging-env#db-resets")])
     assert errors == []
     assert valid[0].target_unit == "facts/staging-env#db-resets"
+
+
+def test_deeply_nested_json_raises_mneme_error_not_recursion_error():
+    # json's C scanner raises RecursionError, which is not a JSONDecodeError. Hostile
+    # LLM output must leave this function as a MnemeError like every other bad document.
+    raw = '{"proposals": ' + "[" * 60000 + "]" * 60000 + "}"
+    with pytest.raises(MnemeError, match="nested too deeply"):
+        proposals.parse_proposals(raw)
+
+
+def test_recursion_error_while_validating_rejects_only_that_proposal(monkeypatch):
+    # A value nested just under the parser's limit survives json.loads but can blow the
+    # stack when _validate stringifies it: that is one rejection, not a dead run.
+    def boom(entry):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(proposals, "_validate", boom)
+    valid, errors = proposals.parse_proposals(json.dumps({"proposals": [fact_entry()]}))
+    assert valid == []
+    assert errors == ["proposal 0: value is nested too deeply to validate"]

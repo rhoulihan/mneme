@@ -48,7 +48,10 @@ class Candidate:
 
 
 def candidate_id(type_: str, target: str, body: str) -> str:
-    digest = units.content_hash(target + "\n" + body)
+    # semantic_hash, not content_hash: the body carries a freshly stamped capture date,
+    # so hashing it raw would mint a new id for identical knowledge every day and stage
+    # a duplicate on each run.
+    digest = units.semantic_hash(target + "\n" + body)
     return f"{type_}-{digest}"
 
 
@@ -156,7 +159,7 @@ def decline(home: Path, cand: Candidate, reason: str) -> None:
     paths.ensure_layout(home)
     record = {
         "id": cand.id,
-        "hash": units.content_hash(cand.body),
+        "hash": units.semantic_hash(cand.body),
         "reason": reason,
         "ts": _now(),
     }
@@ -168,5 +171,7 @@ def decline(home: Path, cand: Candidate, reason: str) -> None:
 
 
 def is_declined(home: Path, body: str) -> bool:
-    h = units.content_hash(body)
+    # Compared on the date-independent hash so a decline holds tomorrow too — the spec
+    # §7.3 guarantee is "declined stays declined", not "declined until midnight UTC".
+    h = units.semantic_hash(body)
     return any(rec.get("hash") == h for rec in _read_declined(home))

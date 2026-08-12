@@ -98,8 +98,15 @@ def _validate(entry: dict) -> Proposal:
 def parse_proposals(raw: str) -> tuple[list[Proposal], list[str]]:
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise MnemeError(f"proposals are not valid JSON: {e}")
+    except RecursionError:
+        # Deep nesting (`[[[[...]]]]`) blows the C scanner's stack and raises
+        # RecursionError, which is *not* a JSONDecodeError. This is the LLM-output trust
+        # boundary: hostile input must come back as a MnemeError, never a traceback.
+        raise MnemeError("proposals are nested too deeply to parse") from None
+    except ValueError as e:
+        # JSONDecodeError is a ValueError; catching the base class also covers the
+        # other ValueErrors json can raise (e.g. NaN/Infinity handling).
+        raise MnemeError(f"proposals are not valid JSON: {e}") from None
     if not isinstance(data, dict) or not isinstance(data.get("proposals"), list):
         raise MnemeError("proposals document must be an object with a 'proposals' list")
     valid: list[Proposal] = []
@@ -109,4 +116,9 @@ def parse_proposals(raw: str) -> tuple[list[Proposal], list[str]]:
             valid.append(_validate(entry))
         except MnemeError as e:
             errors.append(f"proposal {i}: {e}")
+        except RecursionError:
+            # A value nested just under the parser's limit survives json.loads but blows
+            # the stack when _validate stringifies it. One bad entry is a rejection, not
+            # a crash of the whole ingest.
+            errors.append(f"proposal {i}: value is nested too deeply to validate")
     return valid, errors

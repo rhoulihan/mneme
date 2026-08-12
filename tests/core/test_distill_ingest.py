@@ -1,6 +1,6 @@
 import json
 
-from mneme_core import flags, staging
+from mneme_core import compose, flags, staging
 from mneme_core.cli import main
 
 
@@ -90,6 +90,71 @@ def test_ingest_skips_duplicates(tmp_path, capsys):
     assert code == 0
     assert "skipped-duplicate 1" in out
     assert len(staging.load_candidates(home)) == 1
+
+
+def earlier_candidate(body, type_="fact", target="acme-knowledge"):
+    """The candidate an ingest run on an earlier day would have produced."""
+    return staging.Candidate(
+        id=staging.candidate_id(type_, target, body),
+        type=type_, edit="new", target=target, body=body,
+    )
+
+
+def test_ingest_respects_declined_ledger_across_a_day_boundary(tmp_path, capsys):
+    # The distiller runs repeatedly, re-rendering the same fact with today's stamp. A
+    # decline from an earlier day must still suppress it (spec §7.3), or every declined
+    # candidate resurfaces at midnight UTC.
+    home = tmp_path / "home"
+    yesterday = compose.render_fact_bullet(
+        "constraint", "DB resets nightly", ["staging"], verified="2000-01-01"
+    )
+    staging.decline(home, earlier_candidate(yesterday), "not useful")
+    path = write_proposals(tmp_path, [fact_entry()])
+    code, out, _ = run(capsys, "--home", str(home), "distill", "ingest", path)
+    assert code == 0
+    assert "skipped-declined 1" in out
+    assert staging.load_candidates(home) == []
+
+
+def test_ingest_skips_a_duplicate_staged_on_an_earlier_day(tmp_path, capsys):
+    home = tmp_path / "home"
+    yesterday = compose.render_fact_bullet(
+        "constraint", "DB resets nightly", ["staging"], verified="2000-01-01"
+    )
+    staging.write_candidate(home, earlier_candidate(yesterday))
+    path = write_proposals(tmp_path, [fact_entry()])
+    code, out, _ = run(capsys, "--home", str(home), "distill", "ingest", path)
+    assert code == 0
+    assert "skipped-duplicate 1" in out
+    assert len(staging.load_candidates(home)) == 1
+
+
+def test_ingest_skips_a_skill_duplicate_from_an_earlier_day_and_session(tmp_path, capsys):
+    home = tmp_path / "home"
+    yesterday = compose.render_skill_unit(
+        "deploy-widget", "Use when deploying widgets", "Steps.", "What failed first.",
+        source="repo@s1", captured="2000-01-01",
+    )
+    staging.write_candidate(home, earlier_candidate(yesterday, type_="skill"))
+    path = write_proposals(tmp_path, [skill_entry()])
+    code, out, _ = run(
+        capsys, "--home", str(home), "distill", "ingest", path, "--source", "repo@s2"
+    )
+    assert code == 0
+    assert "skipped-duplicate 1" in out
+    assert len(staging.load_candidates(home)) == 1
+
+
+def test_ingest_deeply_nested_json_fails_gracefully(tmp_path, capsys):
+    # The proposals file is LLM output — the trust boundary. Deep nesting raises
+    # RecursionError out of the C JSON scanner, not JSONDecodeError, and it must still
+    # honour the exit-code contract instead of printing a traceback.
+    deep = tmp_path / "deep.json"
+    deep.write_text('{"proposals": ' + "[" * 60000 + "]" * 60000 + "}", encoding="utf-8")
+    code, _, err = run(capsys, "--home", str(tmp_path / "h"), "distill", "ingest", str(deep))
+    assert code == 1
+    assert err.startswith("mneme:")
+    assert "Traceback" not in err
 
 
 def test_ingest_reports_rejected(tmp_path, capsys):
