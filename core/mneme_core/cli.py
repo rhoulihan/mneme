@@ -270,11 +270,17 @@ def _status_cmd(home: Path) -> int:
     from . import registry as registry_mod
     from . import staging as staging_mod
 
+    # status is the one command a human runs when things already look wrong, so a
+    # half-written ledger line must degrade to a counted note, never a traceback.
+    unreadable = 0
+
     plugins = registry_mod.load_registry(home)
     print(f"plugins: {len(plugins)} registered")
     for p in plugins:
         print(f"- {p.name} [{p.sensitivity}/{p.mode}]")
-    print(f"flags: {len(flags_mod.read_flags(home))} pending")
+    flag_records, bad_flags = flags_mod._read_flag_lines(home)
+    unreadable += bad_flags
+    print(f"flags: {len(flag_records)} pending")
 
     cands = staging_mod.load_candidates(home, include_quarantined=True)
     staged = sum(1 for c in cands if c.status == "staged")
@@ -290,11 +296,18 @@ def _status_cmd(home: Path) -> int:
     submitted_file = paths.submitted_path(home)
     records = []
     if submitted_file.exists():
-        records = [
-            json_mod.loads(l)
-            for l in submitted_file.read_text(encoding="utf-8").splitlines()
-            if l.strip()
-        ]
+        for line in submitted_file.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json_mod.loads(line)
+            except ValueError:
+                unreadable += 1
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+            else:
+                unreadable += 1
     if records:
         last = records[-1]
         print(
@@ -323,6 +336,8 @@ def _status_cmd(home: Path) -> int:
         except MnemeError:
             built = "unreadable"
         print(f"index: enabled (built {built or 'never'})")
+    if unreadable:
+        print(f"warning: {unreadable} unreadable line(s) skipped")
     return 0
 
 

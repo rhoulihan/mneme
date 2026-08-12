@@ -1,5 +1,6 @@
 {
   "name": "mneme",
+  "description": "Knowledge-mining engine for AI coding agents — the plugin is the memory.",
   "owner": { "name": "rhoulihan" },
   "plugins": [
     {
