@@ -104,9 +104,22 @@ def test_skill_path_occupied_by_a_file_aborts_and_restores(tmp_path):
     assert_pristine(target, base, home)
 
 
-def test_commit_mode_push_failure_rolls_back_and_retry_succeeds(tmp_path):
+def remote_sha(remote, ref="main"):
+    return subprocess.run(
+        ["git", "-C", str(remote), "rev-parse", ref],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def remote_branches(remote):
+    return subprocess.run(
+        ["git", "-C", str(remote), "branch"], capture_output=True, text=True, check=True
+    ).stdout
+
+
+def test_push_failure_rolls_back_and_retry_lands_on_a_branch(tmp_path):
     home = tmp_path / "home"
-    target = scaffold.create(home, "personal-kb", owner="demo", mode="commit")
+    target = scaffold.create(home, "personal-kb", owner="demo")
     remote = bare_remote(tmp_path, target)
     hook = reject_hook(remote, "pre-receive")
     base = gitops.head_sha(target)
@@ -115,22 +128,35 @@ def test_commit_mode_push_failure_rolls_back_and_retry_succeeds(tmp_path):
     with pytest.raises(MnemeError):
         harvest.apply_batch(home, "personal-kb", [cand])
 
-    # The harvest commit is gone with it: nothing half-landed on main.
+    # The harvest commit is gone with it: nothing half-landed, no orphan branch.
     assert_pristine(target, base, home)
     assert not (target / "skills" / "deploy-widget").exists()
 
     # ...and the identical harvest simply works once the remote accepts pushes again.
     hook.unlink()
     result = harvest.apply_batch(home, "personal-kb", staging.load_candidates(home))
-    assert result.pr == "pushed to main"
     assert staging.load_candidates(home) == []
     assert paths.submitted_path(home).exists()
-    assert (target / "skills" / "deploy-widget" / "SKILL.md").exists()
+
+    # PR-only: the retry lands on the harvest branch, never on main. Local main and
+    # remote main both sit exactly where the failed attempt left them.
+    assert result.branch.startswith("mneme/harvest-")
+    assert "no remote" not in result.pr
+    assert gitops.current_branch(target) == "main"
+    assert gitops.head_sha(target) == base
+    assert remote_sha(remote) == base
+    assert not (target / "skills" / "deploy-widget" / "SKILL.md").exists()
+
+    # The knowledge is reachable only on the branch — locally and on the remote.
+    tree = gitops.git(target, "ls-tree", "-r", "--name-only", result.branch)
+    assert "skills/deploy-widget/SKILL.md" in tree
+    assert result.branch in remote_branches(remote)
+    assert remote_sha(remote, result.branch) == result.commit
 
 
 def test_rejected_commit_rolls_back(tmp_path):
     home = tmp_path / "home"
-    target = scaffold.create(home, "personal-kb", owner="demo", mode="commit")
+    target = scaffold.create(home, "personal-kb", owner="demo")
     reject_hook(target / ".git", "pre-commit")
     base = gitops.head_sha(target)
     cand = stage_skill(home, target="personal-kb")
@@ -142,7 +168,7 @@ def test_rejected_commit_rolls_back(tmp_path):
     assert not (target / "skills" / "deploy-widget").exists()
 
 
-def test_pr_mode_push_failure_returns_to_clean_main(tmp_path):
+def test_push_failure_returns_to_clean_main(tmp_path):
     home = tmp_path / "home"
     target = scaffold.create(home, "acme-knowledge", owner="demo")
     remote = bare_remote(tmp_path, target)

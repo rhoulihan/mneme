@@ -144,19 +144,29 @@ def test_update_survives_a_malformed_neighbour_bullet(tmp_path):
 
 
 def test_harvest_commit_diff_is_one_line_on_a_committed_crlf_file(tmp_path):
-    """End-to-end: the harvest commit itself must not rewrite the whole file."""
+    """End-to-end: the harvest commit itself must not rewrite the whole file.
+
+    PR-only doctrine: the harvest commit lands on `mneme/harvest-*`, so the delta to
+    measure is the branch tip against its parent — main never moves.
+    """
     home = tmp_path / "home"
-    target = scaffold.create(home, "acme-knowledge", owner="demo", mode="commit")
+    target = scaffold.create(home, "acme-knowledge", owner="demo")
     crlf_file(target / "facts" / "staging-env.md")
     gitops.git(target, "add", "-A")
     gitops.git(target, "commit", "-m", "chore: hand-authored CRLF fact file")
+    main_before = gitops.head_sha(target)
 
     cand = update_candidate()
     staging.write_candidate(home, cand)
-    harvest.apply_batch(home, "acme-knowledge", [cand], push=False)
+    result = harvest.apply_batch(home, "acme-knowledge", [cand], push=False)
+
+    # The harvest commit is the branch tip, sitting directly on the untouched main.
+    assert gitops.head_sha(target) == main_before
+    assert gitops.git(target, "rev-parse", f"{result.branch}~1") == main_before
+    assert gitops.git(target, "rev-parse", result.branch) == result.commit
 
     numstat = subprocess.run(
-        ["git", "-C", str(target), "diff", "--numstat", "HEAD~1", "HEAD",
+        ["git", "-C", str(target), "diff", "--numstat", f"{result.branch}~1", result.branch,
          "--", "facts/staging-env.md"],
         capture_output=True, text=True, check=True,
     ).stdout.split()
