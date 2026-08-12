@@ -43,7 +43,7 @@ def scopes(home: Path) -> list[Scope]:
             Scope(
                 name=p.name,
                 sensitivity=p.sensitivity,
-                mode=p.mode,
+                mode="",
                 path=p.path,
                 statement=statement,
             )

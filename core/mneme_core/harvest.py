@@ -202,7 +202,6 @@ class HarvestResult:
     branch: str = ""
     commit: str = ""
     pr: str = ""
-    mode: str = ""
 
 
 def _regenerate_index(repo: Path) -> None:
@@ -224,7 +223,7 @@ def _regenerate_index(repo: Path) -> None:
     )
 
 
-def _abort(repo: Path, mode: str, branch: str, base_sha: str) -> None:
+def _abort(repo: Path, branch: str, base_sha: str) -> None:
     """Put the knowledge repo back exactly where the harvest found it: clean, on main.
 
     Best-effort by design — a failure while cleaning up must never mask the failure that
@@ -234,11 +233,10 @@ def _abort(repo: Path, mode: str, branch: str, base_sha: str) -> None:
     try:
         gitops.reset_hard(repo, base_sha)
         gitops.restore(repo)
-        if mode == "pr":
-            if gitops.current_branch(repo) != "main":
-                gitops.git(repo, "checkout", "main")
-            if branch and branch != "main":
-                gitops.git(repo, "branch", "-D", branch)
+        if gitops.current_branch(repo) != "main":
+            gitops.git(repo, "checkout", "main")
+        if branch and branch != "main":
+            gitops.git(repo, "branch", "-D", branch)
     except MnemeError:
         pass
 
@@ -260,15 +258,14 @@ def apply_batch(
                 f"candidate {cand.id} is quarantined — redact and re-stage before harvesting"
             )
 
+    # PR-only doctrine (spec §7.3): `sync_main` is the last thing that touches main, and
+    # it only reads it. Every byte of knowledge mneme writes lands on the harvest branch.
     gitops.sync_main(repo)
     base_sha = gitops.head_sha(repo)
-    result = HarvestResult(target=target_name, mode=plugin.mode)
-    if plugin.mode == "pr":
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        result.branch = f"mneme/harvest-{stamp}"
-        gitops.create_branch(repo, result.branch)
-    else:
-        result.branch = "main"
+    result = HarvestResult(target=target_name)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    result.branch = f"mneme/harvest-{stamp}"
+    gitops.create_branch(repo, result.branch)
 
     # Apply + gate. `except Exception`, not `except MnemeError`: an unexpected failure
     # here (a malformed manifest, an odd repo shape, a filesystem error) must still hit
@@ -291,34 +288,29 @@ def apply_batch(
             if scan.has_blockers(scan.scan_text(cand.body)):
                 raise MnemeError(f"candidate {cand.id} re-scan found blocking findings")
     except MnemeError:
-        _abort(repo, plugin.mode, result.branch, base_sha)
+        _abort(repo, result.branch, base_sha)
         raise
     except Exception as e:
-        _abort(repo, plugin.mode, result.branch, base_sha)
+        _abort(repo, result.branch, base_sha)
         raise MnemeError(f"harvest aborted — {type(e).__name__}: {e}") from e
 
-    # Finalize: commit, push, and (for PR mode) return to main. Guarded the same way —
-    # a rejected commit or a failed push after the gate passed must roll all the way
-    # back, leaving staging intact so the identical harvest can simply be retried.
+    # Finalize: commit on the branch, offer it upstream, and return to main. Guarded the
+    # same way — a rejected commit or a failed push after the gate passed must roll all
+    # the way back, leaving staging intact so the identical harvest can simply be retried.
     sources = [str(c.provenance.get("source", "unknown")) for c in candidates]
     try:
         result.commit = gitops.commit_harvest(repo, result.units, sources)
-        if plugin.mode == "pr":
-            if push and gitops.has_remote(repo):
-                gitops.push_branch(repo, result.branch)
-                title = f"knowledge: harvest ({len(result.units)} units)"
-                result.pr = gitops.open_pr(repo, result.branch, title, "\n".join(result.units))
-            else:
-                result.pr = "no remote — branch is local only"
-            gitops.git(repo, "checkout", "main")
+        if push and gitops.has_remote(repo):
+            gitops.push_branch(repo, result.branch)
+            title = f"knowledge: harvest ({len(result.units)} units)"
+            result.pr = gitops.open_pr(repo, result.branch, title, "\n".join(result.units))
         else:
-            if push and gitops.has_remote(repo):
-                gitops.push_main(repo)
-                result.pr = "pushed to main"
-            else:
-                result.pr = "no remote — committed to local main"
+            result.pr = "no remote — branch left local; merge it or add a remote and push"
+        # Back to main with the branch preserved: mneme hands the contribution over, it
+        # never merges it.
+        gitops.git(repo, "checkout", "main")
     except Exception as e:
-        _abort(repo, plugin.mode, result.branch, base_sha)
+        _abort(repo, result.branch, base_sha)
         raise MnemeError(
             f"harvest rolled back after the validation gate — {type(e).__name__}: {e};"
             " the repo is back on a clean main and the candidates are still staged"
@@ -328,7 +320,6 @@ def apply_batch(
         "target": target_name,
         "branch": result.branch,
         "commit": result.commit,
-        "mode": plugin.mode,
         "pr": result.pr,
         "units": result.units,
         "candidates": [c.id for c in candidates],

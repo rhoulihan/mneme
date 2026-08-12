@@ -10,9 +10,9 @@ def run(capsys, *argv):
     return code, captured.out, captured.err
 
 
-def seed(tmp_path, capsys, name="acme-knowledge", mode="pr"):
+def seed(tmp_path, capsys, name="acme-knowledge"):
     home = tmp_path / "home"
-    target = scaffold.create(home, name, owner="demo", mode=mode)
+    target = scaffold.create(home, name, owner="demo")
     props = {
         "proposals": [
             {
@@ -69,13 +69,17 @@ def test_share_diff_new_prints_body(tmp_path, capsys):
 
 
 def test_share_diff_update_shows_unified_diff(tmp_path, capsys):
-    # mode="commit": the diff reads the *working tree* of the clone, and a pr-mode harvest
-    # lands the unit on a branch and checks main back out, leaving nothing to diff against.
-    home, target = seed(tmp_path, capsys, mode="commit")
+    # The diff reads the *working tree* of the clone. Every harvest now lands on a branch
+    # and checks main back out, so the human's merge is what puts the unit in the tree —
+    # do that explicitly here so there is a current version to diff the update against.
+    home, target = seed(tmp_path, capsys)
     skill = next(c for c in staging.load_candidates(home) if c.type == "skill")
-    from mneme_core import harvest
+    from mneme_core import gitops, harvest
 
-    harvest.apply_batch(home, "acme-knowledge", [skill], push=False)
+    result = harvest.apply_batch(home, "acme-knowledge", [skill], push=False)
+    assert result.branch.startswith("mneme/harvest-")
+    gitops.git(target, "merge", "--ff-only", result.branch)
+    assert (target / "skills" / "deploy-widget" / "SKILL.md").exists()
     props = {
         "proposals": [
             {

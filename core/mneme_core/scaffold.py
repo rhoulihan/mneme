@@ -92,7 +92,6 @@ def create(
             name=name,
             repo=repo_url or f"local:{target}",
             path=str(target),
-            mode=mode,
             sensitivity=sensitivity,
         ),
     )

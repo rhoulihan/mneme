@@ -1,6 +1,6 @@
 import json
 
-from mneme_core import paths, scaffold, staging
+from mneme_core import gitops, paths, scaffold, staging
 from mneme_core.cli import main
 
 
@@ -10,9 +10,9 @@ def run(capsys, *argv):
     return code, captured.out, captured.err
 
 
-def seed(tmp_path, capsys, name="acme-knowledge", mode="pr"):
+def seed(tmp_path, capsys, name="acme-knowledge"):
     home = tmp_path / "home"
-    target = scaffold.create(home, name, owner="demo", mode=mode)
+    target = scaffold.create(home, name, owner="demo")
     props = {
         "proposals": [
             {
@@ -47,13 +47,25 @@ def test_apply_dry_run_touches_nothing(tmp_path, capsys):
     assert not (target / "skills" / "deploy-widget").exists()
 
 
-def test_apply_commit_mode_end_to_end(tmp_path, capsys):
-    home, target = seed(tmp_path, capsys, name="personal-kb", mode="commit")
+def test_apply_end_to_end_lands_on_a_harvest_branch(tmp_path, capsys):
+    home, target = seed(tmp_path, capsys, name="personal-kb")
+    main_before = gitops.git(target, "rev-parse", "main")
     ids = ",".join(c.id for c in staging.load_candidates(home))
     code, out, _ = run(capsys, "--home", str(home), "share", "apply", "--ids", ids)
     assert code == 0
-    assert "harvested personal-kb: 2 units on main" in out
-    assert (target / "skills" / "deploy-widget" / "SKILL.md").exists()
+    assert "harvested personal-kb: 2 units on mneme/harvest-" in out
+    assert "pr:" in out
+    branch = out.split(" units on ")[1].splitlines()[0].strip()
+    # The units are reachable on the branch, and only there: main did not move and the
+    # working tree (back on main) is untouched.
+    log = gitops.git(target, "log", branch, "-1", "--format=%B")
+    assert log.splitlines()[0].startswith("knowledge: harvest")
+    assert "skills/deploy-widget/SKILL.md" in gitops.git(
+        target, "ls-tree", "-r", "--name-only", branch
+    )
+    assert gitops.git(target, "rev-parse", "main") == main_before
+    assert gitops.current_branch(target) == "main"
+    assert not (target / "skills" / "deploy-widget" / "SKILL.md").exists()
     assert staging.load_candidates(home) == []
     assert paths.submitted_path(home).exists()
 

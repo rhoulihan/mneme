@@ -49,7 +49,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("name")
     p_add.add_argument("--repo", required=True)
     p_add.add_argument("--path", default=None)
-    p_add.add_argument("--mode", default="pr", choices=sorted(registry.MODES))
+    p_add.add_argument("--mode", default="pr")
     p_add.add_argument(
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
@@ -106,7 +106,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_new.add_argument("--description", default="")
     p_new.add_argument("--owner", default="maintainers")
     p_new.add_argument("--repo", default="")
-    p_new.add_argument("--mode", default="pr", choices=sorted(registry.MODES))
+    p_new.add_argument("--mode", default="pr")
     p_new.add_argument(
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
