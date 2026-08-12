@@ -60,6 +60,24 @@ def test_corrupt_ledger_lines_skipped(tmp_path, capsys):
     assert "Unregistered knowledge repo detected" in out  # corrupt line neither crashes nor suppresses
 
 
+def test_decline_survives_a_half_written_ledger_tail(tmp_path, capsys):
+    """A crash-interrupted prior append must not swallow the next decline."""
+    home = tmp_path / "home"
+    kb = make_kb(tmp_path)
+    paths.ensure_layout(home)
+    # No trailing newline: exactly what a crash mid-append (or a hand edit) leaves.
+    paths.detection_declined_path(home).write_text('{"path": "/half/writ', encoding="utf-8")
+    code, out, _ = run(capsys, "--home", str(home), "detection", "decline", "--cwd", str(kb))
+    assert code == 0
+    assert out.strip() == f"declined {kb.resolve()}"
+    code, out, _ = run(capsys, "--home", str(home), "detection", "list")
+    assert code == 0
+    assert out.strip().splitlines() == [str(kb.resolve())]
+    code, out, _ = run(capsys, "--home", str(home), "context", "--cwd", str(kb))
+    assert code == 0
+    assert "Unregistered knowledge repo detected" not in out
+
+
 def test_declined_subdirectory_resolves_to_the_repo_root(tmp_path, capsys):
     """Declining from inside the repo declines the repo, not the subdirectory."""
     home = tmp_path / "home"

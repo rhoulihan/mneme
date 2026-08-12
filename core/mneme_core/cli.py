@@ -817,7 +817,17 @@ def _detection_cmd(home: Path, args: argparse.Namespace) -> int:
                 "path": kb_text,
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
-            with paths.detection_declined_path(home).open("a", encoding="utf-8") as f:
+            ledger = paths.detection_declined_path(home)
+            # An append that died mid-write (or a hand edit) leaves an unterminated
+            # tail line. Appending straight onto that fuses the two into one line
+            # that no longer parses, which would lose this decline while the command
+            # still reported success — so close the tail first. The ledger is one
+            # short line per declined repo; the idempotence check above already
+            # reads it whole.
+            existing = ledger.read_bytes() if ledger.exists() else b""
+            with ledger.open("a", encoding="utf-8") as f:
+                if existing and not existing.endswith(b"\n"):
+                    f.write("\n")
                 f.write(json_mod.dumps(record) + "\n")
         print(f"declined {kb_text}")
         return 0
