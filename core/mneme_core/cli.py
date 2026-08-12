@@ -94,6 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ing = distill_sub.add_parser("ingest")
     p_ing.add_argument("path")
     p_ing.add_argument("--source", default="unknown")
+    p_ing.add_argument("--source-plugin", default="")
     p_ing.add_argument("--clear-flags", action="store_true")
 
     p_db = sub.add_parser("db")
@@ -393,6 +394,7 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
 
     from . import compose, proposals as proposals_mod, scan as scan_mod, staging as staging_mod
     from . import flags as flags_mod
+    from . import routing
 
     if args.path == "-":
         raw = sys_mod.stdin.read()
@@ -409,6 +411,20 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     existing_ids = {
         c.id for c in staging_mod.load_candidates(home, include_quarantined=True)
     }
+
+    scope_by_name = {s.name: s for s in routing.scopes(home)}
+    source_scope = scope_by_name.get(args.source_plugin)
+    index_conn = None
+    db_file = paths.db_path(home)
+    if db_file.exists():
+        try:
+            from mneme_index import db as index_db
+
+            index_conn = index_db.open_db_readonly(db_file)
+        except MnemeError:
+            index_conn = None
+    boundary_count = 0
+
     for p in valid:
         try:
             if p.type == "skill":
@@ -432,10 +448,28 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             continue
         findings = scan_mod.scan_text(body)
         status = "quarantined" if scan_mod.has_blockers(findings) else "staged"
+        similar_to = ""
+        if index_conn is not None:
+            try:
+                from mneme_index import search as index_search
+
+                probe = p.description if p.type == "skill" else p.text
+                hits = index_search.search(index_conn, probe, k=1)
+                if hits:
+                    similar_to = hits[0]["id"]
+            except MnemeError:
+                similar_to = ""
+        warning = ""
+        target_scope = scope_by_name.get(p.target)
+        if source_scope is not None and target_scope is not None:
+            warning = routing.boundary_warning(source_scope.sensitivity, target_scope)
+            if warning:
+                boundary_count += 1
         cand = staging_mod.Candidate(
             id=cand_id, type=p.type, edit=p.edit, target=p.target, body=body,
             confidence=p.confidence, rationale=p.rationale, target_unit=p.target_unit,
-            topic=p.topic, status=status,
+            topic=p.topic, similar_to=similar_to, boundary_warning=warning,
+            status=status,
             provenance={"source": args.source, "captured": today},
         )
         staging_mod.write_candidate(home, cand)
@@ -445,10 +479,14 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
         else:
             staged += 1
 
+    if index_conn is not None:
+        index_conn.close()
+
     print(
         f"staged {staged}  quarantined {quarantined}"
         f"  skipped-declined {skipped_declined}"
         f"  skipped-duplicate {skipped_duplicate}  rejected {len(rejected)}"
+        f"  boundary-warnings {boundary_count}"
     )
     for r in rejected:
         print(f"rejected: {r}")
