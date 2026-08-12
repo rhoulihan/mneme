@@ -49,9 +49,18 @@ def create_branch(repo: Path, name: str) -> None:
     git(repo, "checkout", "-b", name)
 
 
+def head_sha(repo: Path) -> str:
+    return git(repo, "rev-parse", "HEAD")
+
+
 def restore(repo: Path) -> None:
     git(repo, "checkout", "--", ".")
     git(repo, "clean", "-fd")
+
+
+def reset_hard(repo: Path, sha: str) -> None:
+    """Drop every commit and working-tree change made after `sha` on the current branch."""
+    git(repo, "reset", "--hard", sha)
 
 
 def commit_harvest(repo: Path, unit_lines: list[str], sources: list[str]) -> str:
