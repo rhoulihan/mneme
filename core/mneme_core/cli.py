@@ -32,7 +32,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init")
     sub.add_parser("home")
-    sub.add_parser("context")
+    p_context = sub.add_parser("context")
+    p_context.add_argument("--cwd", type=Path, default=None)
     sub.add_parser("status")
 
     p_flag = sub.add_parser("flag")
@@ -160,11 +161,17 @@ def main(argv: list[str] | None = None) -> int:
             scope_list = routing.scopes(home)
             if not scope_list:
                 print("Registered knowledge plugins: none — run 'mneme new <name>' to create one.")
-                return 0
-            print("Registered knowledge plugins:")
-            for s in scope_list:
-                first = s.statement.splitlines()[0] if s.statement else "(no scope statement)"
-                print(f"- {s.name} [{s.sensitivity}/{s.mode}]: {first}")
+            else:
+                print("Registered knowledge plugins:")
+                for s in scope_list:
+                    first = (
+                        s.statement.splitlines()[0] if s.statement else "(no scope statement)"
+                    )
+                    print(f"- {s.name} [{s.sensitivity}/{s.mode}]: {first}")
+            if args.cwd is not None:
+                nudge = _registration_nudge(home, args.cwd)
+                if nudge:
+                    print(nudge)
             return 0
         if args.command == "status":
             return _status_cmd(home)
@@ -921,3 +928,50 @@ def _flags_snapshot(path: str) -> list[dict] | None:
     if not isinstance(records, list):
         raise MnemeError(f"flags snapshot has no flag list: {path}")
     return [r for r in records if isinstance(r, dict)]
+
+
+def _registration_nudge(home: Path, cwd: Path) -> str:
+    """Ask-to-register block for an unregistered knowledge repo at or above cwd.
+
+    Returns "" whenever there is nothing to say — no marker, already registered,
+    or anything at all went wrong. The blanket `except Exception` is deliberate:
+    this runs on the SessionStart path, where detection may never break a session.
+    """
+    import json as json_mod
+    import re as re_mod
+
+    from . import gitops, routing
+    from .units import KEBAB_RE
+
+    try:
+        kb = routing.find_knowledge_repo(cwd)
+        if kb is None or routing.plugin_for_path(home, kb) is not None:
+            return ""
+        name = ""
+        manifest = kb / ".claude-plugin" / "plugin.json"
+        if manifest.is_file():
+            try:
+                name = str(json_mod.loads(manifest.read_text(encoding="utf-8")).get("name", ""))
+            except (json_mod.JSONDecodeError, OSError):
+                name = ""
+        if not name or not KEBAB_RE.match(name):
+            slug = re_mod.sub(r"[^a-z0-9]+", "-", kb.name.lower()).strip("-")
+            name = slug if KEBAB_RE.match(slug) else "detected-knowledge"
+        repo_url = f"local:{kb}"
+        if gitops.is_git_repo(kb):
+            try:
+                url = gitops.git(kb, "remote", "get-url", "origin")
+                if url:
+                    repo_url = url
+            except MnemeError:
+                pass
+        return (
+            "\n## Unregistered knowledge repo detected\n\n"
+            f"{kb} carries a MNEME.md but is not registered with mneme.\n"
+            "At the START of this session, ask the user whether to register it. If yes, run:\n"
+            f"  mneme registry add {name} --repo {repo_url} --path {kb}\n"
+            f"then offer /mneme:adopt {name} if governance files are missing.\n"
+            "If the user declines, respect that for the rest of the session and do not ask again."
+        )
+    except Exception:
+        return ""
