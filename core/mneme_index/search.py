@@ -29,7 +29,7 @@ def search(
     plugin: str | None = None,
 ) -> list[dict]:
     sql = (
-        "SELECT u.plugin, u.id, u.kind, u.name, u.description, u.category, u.tags,"
+        "SELECT u.plugin, u.id, u.kind, u.name, u.description, u.summary, u.category, u.tags,"
         " u.path, u.line, u.verified, rank AS score"
         " FROM units_fts JOIN units u"
         " ON u.plugin = units_fts.plugin AND u.id = units_fts.id"

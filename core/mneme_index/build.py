@@ -40,6 +40,10 @@ def _read_unit_text(path: Path, rel: str, skipped: list[str]) -> str | None:
     return None
 
 
+def _summarize(body: str) -> str:
+    return " ".join(body.split())[:400]
+
+
 def prune_plugins(conn: sqlite3.Connection, keep: Iterable[str]) -> list[str]:
     """Drop every indexed plugin whose name is not in ``keep``; return the names dropped.
 
@@ -77,7 +81,7 @@ def index_tree(
     rows: list[tuple] = []
     for r in raw_rows:
         if r[1] in seen:
-            stats.skipped.append(f"{r[7]}:{r[8]}: duplicate unit id {r[1]}")
+            stats.skipped.append(f"{r[8]}:{r[9]}: duplicate unit id {r[1]}")
             continue
         seen.add(r[1])
         rows.append(r)
@@ -87,13 +91,14 @@ def index_tree(
     conn.execute("DELETE FROM units WHERE plugin = ?", (plugin,))
     conn.execute("DELETE FROM units_fts WHERE plugin = ?", (plugin,))
     conn.executemany(
-        "INSERT INTO units (plugin, id, kind, name, description, category, tags,"
-        " path, line, verified, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO units (plugin, id, kind, name, description, summary, category, tags,"
+        " path, line, verified, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.executemany(
-        "INSERT INTO units_fts (plugin, id, name, description, tags) VALUES (?, ?, ?, ?, ?)",
-        [(r[0], r[1], r[3], r[4], r[6]) for r in rows],
+        "INSERT INTO units_fts (plugin, id, name, description, summary, tags)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        [(r[0], r[1], r[3], r[4], r[5], r[7]) for r in rows],
     )
     conn.execute(
         "INSERT INTO plugins (name, root, repo, mode, sensitivity, built_at)"
@@ -121,7 +126,7 @@ def _skill_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
         if text is None:
             continue
         try:
-            meta, _body = units.parse_frontmatter(text)
+            meta, body = units.parse_frontmatter(text)
         except MnemeError as e:
             skipped.append(f"{rel}: {e}")
             continue
@@ -141,6 +146,7 @@ def _skill_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
                 "skill",
                 name,
                 description,
+                _summarize(body),
                 "",
                 tags,
                 rel,
@@ -185,6 +191,7 @@ def _fact_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
                     "fact",
                     topic,
                     bullet.text,
+                    "",
                     bullet.category,
                     " ".join(bullet.tags),
                     rel,

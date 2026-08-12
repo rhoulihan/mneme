@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from mneme_core.errors import MnemeError
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS units (
   kind TEXT NOT NULL,
   name TEXT NOT NULL,
   description TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
   path TEXT NOT NULL,
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS units (
 
 _FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS units_fts USING fts5(
-  plugin UNINDEXED, id UNINDEXED, name, description, tags
+  plugin UNINDEXED, id UNINDEXED, name, description, summary, tags
 );
 """
 

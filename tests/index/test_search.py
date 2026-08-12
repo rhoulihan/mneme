@@ -54,7 +54,7 @@ def test_search_finds_fact_by_vague_words(conn):
     hit = hits[0]
     assert set(hit) == {
         "plugin", "id", "kind", "name", "description", "category",
-        "tags", "path", "line", "verified", "score",
+        "tags", "path", "line", "verified", "score", "summary",
     }
 
 
