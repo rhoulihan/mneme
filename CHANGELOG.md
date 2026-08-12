@@ -1,8 +1,12 @@
 # Changelog
 
-All notable changes to the mneme engine. Versions track the plugin manifest
-(`.claude-plugin/plugin.json`) and `mneme_core.__version__`; knowledge plugins
-scaffolded by `mneme new` carry their own independent versions.
+All notable changes to the mneme engine. The engine ships as a single versioned
+unit: the distribution (`pyproject.toml`), the plugin manifest
+(`.claude-plugin/plugin.json`), and both packages (`mneme_core.__version__`,
+`mneme_index.__version__`) always carry the same version, and
+`tests/e2e/test_release.py` enforces it. `mneme-index` is standalone by import
+boundary, not by release cadence — it is not independently versioned. Knowledge
+plugins scaffolded by `mneme new` do carry their own independent versions.
 
 ## 0.2.0 — 2026-08-11
 
