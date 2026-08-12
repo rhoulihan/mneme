@@ -210,6 +210,35 @@ Rules: one line per flag; no mid-session distillation (a background distiller ru
 never flag anything from excluded repos/paths; never include secrets or credentials in flag text.
 """
 
+CLASSIFY_INSTRUCTIONS = """You are the mneme LIBRARIAN for this knowledge plugin.
+
+Every fact below arrived through an accepted pull request. Your job is to file each one
+where an agent will actually meet it — inside the skill whose work it belongs to — and to
+leave the facts directory holding only what genuinely has no better home.
+
+Rules:
+1. For each fact, find the MOST relevant existing skill and integrate the fact there:
+   append it to an appropriate section of that skill's SKILL.md, or to a file under the
+   skill's directory. Preserve the fact's meaning, its tags, and its verified date, and
+   present it as a fact-derived note rather than rewriting it into something new.
+2. Keep each skill's existing structure — the file listing for every skill is in this
+   bundle so you can see the shape before you edit it.
+3. Create a NEW skill only when several related facts together justify one; a single fact
+   is never a skill.
+4. A fact with no good home STAYS in the facts directory, untouched.
+5. NEVER delete knowledge. Every fact either lands in a skill's content (verbatim or
+   merged, with its meaning and verified date intact) or remains a fact. When a fact
+   merely restates what a skill already says, leave the skill as it is, remove the
+   now-redundant bullet, and record it in your report as retired into that skill.
+6. Propose the COMPLETE mapping to the user first — fact by fact: destination skill and
+   section, facts staying put, facts retired as duplicates, any new skill worth creating —
+   and WAIT for their approval before editing a single file.
+7. After the approved edits are applied, run `mneme classify finalize`. It migrates any
+   remaining legacy facts, regenerates the knowledge-index, lints, scans, commits on the
+   classify branch, and opens the pull request. If anything goes wrong, or the user calls
+   it off, run `mneme classify abort`.
+"""
+
 DISTILLER_PROMPT = """You are the mneme DISTILLER — a separate curation role, not the working agent.
 Read the session evidence and extract ONLY knowledge that clears the promotion rule:
 1. Verified success — it actually worked in this session, not assumed.

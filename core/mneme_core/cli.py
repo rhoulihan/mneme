@@ -121,6 +121,11 @@ def _build_parser() -> argparse.ArgumentParser:
     classify_sub = p_classify.add_subparsers(dest="classify_command", required=True)
     p_cbegin = classify_sub.add_parser("begin")
     p_cbegin.add_argument("--cwd", type=Path, default=None)
+    p_cprepare = classify_sub.add_parser("prepare")
+    p_cprepare.add_argument("--cwd", type=Path, default=None)
+    p_cfinalize = classify_sub.add_parser("finalize")
+    p_cfinalize.add_argument("--cwd", type=Path, default=None)
+    p_cfinalize.add_argument("--no-push", action="store_true")
     p_cabort = classify_sub.add_parser("abort")
     p_cabort.add_argument("--cwd", type=Path, default=None)
 
@@ -739,6 +744,16 @@ def _classify_cmd(home: Path, args: argparse.Namespace) -> int:
     cwd = args.cwd if args.cwd is not None else Path.cwd()
     if args.classify_command == "begin":
         print(classify_mod.begin(home, cwd))
+        return 0
+    if args.classify_command == "prepare":
+        import json as json_mod
+
+        print(json_mod.dumps(classify_mod.bundle(home, cwd)))
+        return 0
+    if args.classify_command == "finalize":
+        result = classify_mod.finalize(home, cwd, push=not args.no_push)
+        print(f"classified {result.target}: {len(result.units)} changes on {result.branch}")
+        print(f"pr: {result.pr}")
         return 0
     if args.classify_command == "abort":
         classify_mod.abort(home, cwd)

@@ -9,7 +9,14 @@ from pathlib import Path
 from .errors import MnemeError
 
 
-def git(repo: Path, *args: str) -> str:
+def git_raw(repo: Path, *args: str) -> str:
+    """Exactly what git wrote to stdout — nothing trimmed.
+
+    `git` below strips, which is right for the single values most callers want and wrong
+    for machine formats: a `status --porcelain -z` record begins with its status field,
+    whose first character is a space for an unstaged change, and stripping that away
+    shifts the record's path by one byte.
+    """
     cmd = [
         "git",
         "-c", "user.name=mneme",
@@ -20,7 +27,11 @@ def git(repo: Path, *args: str) -> str:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise MnemeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:300]}")
-    return result.stdout.strip()
+    return result.stdout
+
+
+def git(repo: Path, *args: str) -> str:
+    return git_raw(repo, *args).strip()
 
 
 def is_git_repo(repo: Path) -> bool:
