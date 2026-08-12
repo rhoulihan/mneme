@@ -107,6 +107,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
 
+    p_adopt = sub.add_parser("adopt")
+    p_adopt.add_argument("name")
+    p_adopt.add_argument("--description", default="")
+    p_adopt.add_argument("--owner", default="maintainers")
+
     p_distill = sub.add_parser("distill")
     distill_sub = p_distill.add_subparsers(dest="distill_command", required=True)
     p_prep = distill_sub.add_parser("prepare")
@@ -212,6 +217,28 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"created {target}")
             print(f"registered {args.name}")
+            return 0
+        if args.command == "adopt":
+            from . import lint as lint_mod
+            from . import registry as registry_mod
+            from . import scaffold as scaffold_mod
+
+            added = scaffold_mod.adopt(
+                home, args.name, description=args.description, owner=args.owner
+            )
+            for rel in added:
+                print(f"added: {rel}")
+            if not added:
+                print("nothing to add")
+            plugin = registry_mod.get_plugin(home, args.name)
+            issues = lint_mod.lint_repo(Path(plugin.path))
+            errors = [i for i in issues if i.severity == "error"]
+            if errors:
+                print(
+                    f"warning: existing content has {len(errors)} lint error(s)"
+                    f" — run: mneme lint {plugin.path}"
+                )
+            print("review and commit these files through your repo's normal process")
             return 0
         parser.print_help()
         return 1
