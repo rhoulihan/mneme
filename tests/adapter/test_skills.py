@@ -55,3 +55,12 @@ def test_new_interviews_before_creating():
     assert "MNEME.md" in body
     assert "mneme new" in body
     assert "scope" in body.lower()
+
+
+def test_retrieval_skill_is_model_invocable():
+    d = SKILLS_DIR / "retrieval"
+    assert lint.lint_skill(d) == []
+    meta, body = units.parse_frontmatter((d / "SKILL.md").read_text(encoding="utf-8"))
+    assert "disable-model-invocation" not in meta
+    assert "mneme search" in body
+    assert "mneme db query" in body
