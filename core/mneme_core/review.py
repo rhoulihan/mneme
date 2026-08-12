@@ -3,14 +3,17 @@
 Everything this module reads is UNTRUSTED contributor text — bullet bodies, file paths,
 PR titles. Parsing is therefore total: a malformed hunk, a binary blob, a CRLF diff, or a
 path trying to walk out of the repo yields a `skipped` note, never an exception and never
-a path a later write could follow. Nothing here touches the filesystem or the network.
+a path a later write could follow. Nothing here writes anything: triage reads the repo's
+own facts and shells out to READ-ONLY `gh` commands, and every remote-mutating action
+(merge, close, comment) stays a human-approved agent action outside these rails.
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
-from . import units
+from . import gitops, paths, staging, templates, units
 from .errors import MnemeError
 
 # Facts live in exactly two places (`units.facts_dirs`), each a FLAT directory of topic
@@ -135,3 +138,128 @@ def parse_added_skills(pr_number: int, diff: str) -> list[dict]:
         if m:
             added.append({"pr": pr_number, "file": path, "name": m.group("name")})
     return added
+
+
+def _repo_bullet_hashes(repo: Path) -> set[str]:
+    """Semantic hash of every fact bullet the repo already carries, both layouts.
+
+    Date-independent by construction (`units.semantic_hash`): a PR re-proposing a known
+    fact with today's `verified:` stamp is the ordinary duplicate, and hashing the raw
+    line would miss exactly that case.
+    """
+    hashes: set[str] = set()
+    for f in units.fact_files(repo):
+        try:
+            _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        except (MnemeError, OSError, UnicodeDecodeError):
+            continue  # lint owns file health; triage must still report the other PRs
+        for line in body.splitlines():
+            if line.startswith("- ["):
+                hashes.add(units.semantic_hash(line))
+    return hashes
+
+
+def _open_index(home: Path):
+    """A read-only index connection, or None — the hint is optional by design."""
+    db_file = paths.db_path(home)
+    if not db_file.exists():
+        return None
+    try:
+        from mneme_index import db as index_db
+
+        return index_db.open_db_readonly(db_file)
+    except MnemeError:
+        return None
+
+
+def _similar_to(conn, plugin: str, text: str) -> str:
+    """The index's nearest unit id in THIS plugin, or "" — never a blocker.
+
+    Scoped to the plugin under review because the label answers "may this repo already
+    cover it": a near hit in some other registered plugin is not evidence about this PR.
+    """
+    if conn is None:
+        return ""
+    try:
+        from mneme_index import search as index_search
+
+        hits = index_search.search(conn, text, k=1, plugin=plugin)
+    except MnemeError:
+        return ""
+    return str(hits[0]["id"]) if hits else ""
+
+
+def _status(duplicate: bool, declined: bool, similar_to: str) -> str:
+    # Ordered by how conclusive the evidence is: an exact match against the repo settles
+    # the question, a human's decline settles it next, and an index neighbour only raises
+    # one. Whatever the label, the verdict is the agent's and the action is the user's.
+    if duplicate:
+        return "duplicate"
+    if declined:
+        return "declined"
+    if similar_to.startswith("skills/"):
+        return "possibly-integrated"
+    return "new"
+
+
+def triage(home: Path, cwd: Path) -> dict:
+    """Every open PR of the plugin containing `cwd`, with each addition annotated."""
+    from . import classify
+
+    scope, repo = classify.resolve(home, cwd)
+    # Seeded with the repo, then grown PR by PR in listing order: that single set is what
+    # makes the second PR proposing a fact a duplicate of the first, not of nothing.
+    seen = _repo_bullet_hashes(repo)
+    conn = _open_index(home)
+    prs: list[dict] = []
+    try:
+        for pr in gitops.list_open_prs(repo):
+            try:
+                number = int(pr.get("number"))
+            except (TypeError, ValueError):
+                continue  # nothing to fetch a diff for
+            skipped: list[str] = []
+            try:
+                diff = gitops.pr_diff(repo, number)
+            except MnemeError as exc:
+                # One unreadable PR must not hide the others: report it and move on.
+                diff = ""
+                skipped.append(f"PR {number}: diff unavailable ({exc})")
+            facts, parse_skipped = parse_added_facts(number, diff)
+            skipped.extend(parse_skipped)
+            entries: list[dict] = []
+            for fact in facts:
+                digest = units.semantic_hash(fact.line)
+                duplicate = digest in seen
+                seen.add(digest)
+                declined = staging.is_declined(home, fact.line)
+                similar_to = _similar_to(conn, scope.name, fact.text)
+                entries.append(
+                    asdict(fact)
+                    | {
+                        "duplicate": duplicate,
+                        "declined": declined,
+                        "similar_to": similar_to,
+                        "status": _status(duplicate, declined, similar_to),
+                    }
+                )
+            prs.append(
+                {
+                    "number": number,
+                    "title": str(pr.get("title", "")),
+                    "author": str(pr.get("author", "")),
+                    "url": str(pr.get("url", "")),
+                    "facts": entries,
+                    "skills_added": parse_added_skills(number, diff),
+                    "skipped": skipped,
+                }
+            )
+    finally:
+        if conn is not None:
+            conn.close()
+    return {
+        "plugin": scope.name,
+        "repo": str(repo),
+        "prs": prs,
+        "instructions": templates.REVIEW_INSTRUCTIONS,
+    }

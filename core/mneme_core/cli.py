@@ -129,6 +129,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cabort = classify_sub.add_parser("abort")
     p_cabort.add_argument("--cwd", type=Path, default=None)
 
+    # Review is cwd-scoped exactly like classify: the repo you are standing in is the one
+    # whose inbound pull requests get triaged. Nothing here mutates a remote.
+    p_review = sub.add_parser("review")
+    review_sub = p_review.add_subparsers(dest="review_command", required=True)
+    p_rtriage = review_sub.add_parser("triage")
+    p_rtriage.add_argument("--cwd", type=Path, default=None)
+
     # Detection declines are per-repo and permanent: the nudge asks once, and a
     # decline recorded here suppresses it for good — across sessions and compactions.
     p_detect = sub.add_parser("detection")
@@ -235,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
             return _search_cmd(home, args)
         if args.command == "classify":
             return _classify_cmd(home, args)
+        if args.command == "review":
+            return _review_cmd(home, args)
         if args.command == "detection":
             return _detection_cmd(home, args)
         if args.command == "distill":
@@ -771,6 +780,18 @@ def _classify_cmd(home: Path, args: argparse.Namespace) -> int:
     if args.classify_command == "abort":
         classify_mod.abort(home, cwd)
         print("aborted")
+        return 0
+    return 1
+
+
+def _review_cmd(home: Path, args: argparse.Namespace) -> int:
+    from . import review as review_mod
+
+    cwd = args.cwd if args.cwd is not None else Path.cwd()
+    if args.review_command == "triage":
+        import json as json_mod
+
+        print(json_mod.dumps(review_mod.triage(home, cwd)))
         return 0
     return 1
 
