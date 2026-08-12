@@ -159,7 +159,10 @@ def _skill_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
 
 def _fact_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
     rows: list[tuple] = []
-    facts_dir = root / "facts"
+    # Physical location varies (canonical under the router skill, or legacy top-level);
+    # the unit ids built below are `facts/<stem>#<key>` in both layouts, so moving the
+    # files never renames a unit.
+    facts_dir = units.facts_dir(root)
     if not facts_dir.is_dir():
         return rows
     for f in sorted(facts_dir.glob("*.md")):

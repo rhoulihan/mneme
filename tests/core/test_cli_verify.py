@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from mneme_core import registry, scaffold
+from mneme_core import registry, scaffold, units
 from mneme_core.cli import main
 from mneme_core.registry import Plugin
 
@@ -24,7 +24,7 @@ def make_kb(tmp_path, home):
         f"  mneme-last-verified: {old_date(200)}\n---\nBody\n",
         encoding="utf-8",
     )
-    (target / "facts" / "mixed.md").write_text(
+    (units.facts_dir(target) / "mixed.md").write_text(
         "---\ntopic: mixed\n---\n"
         f"- [gotcha] Fresh fact #x (verified: {old_date(5)})\n"
         f"- [gotcha] Stale fact number two #x (verified: {old_date(120)})\n"
@@ -66,13 +66,33 @@ def test_verify_days_override(tmp_path, capsys):
 def test_verify_all_fresh_exits_0(tmp_path, capsys):
     home = tmp_path / "home"
     target = scaffold.create(home, "fresh-kb", owner="demo")
-    (target / "facts" / "t.md").write_text(
+    (units.facts_dir(target) / "t.md").write_text(
         f"---\ntopic: t\n---\n- [gotcha] Fresh #x (verified: {old_date(1)})\n",
         encoding="utf-8",
     )
     code, out, _ = run(capsys, "--home", str(home), "verify", "fresh-kb")
     assert code == 0
     assert "stale 0 of" in out
+
+
+def test_verify_sweeps_a_legacy_facts_layout(tmp_path, capsys):
+    """A repo that still keeps facts at the top level is swept the same way."""
+    home = tmp_path / "home"
+    target = scaffold.create(home, "legacy-verify-kb", owner="demo")
+    (target / units.FACTS_CANONICAL / ".gitkeep").unlink()
+    (target / units.FACTS_CANONICAL).rmdir()
+    legacy = target / "facts"
+    legacy.mkdir()
+    (legacy / "mixed.md").write_text(
+        "---\ntopic: mixed\n---\n"
+        f"- [gotcha] Fresh fact #x (verified: {old_date(5)})\n"
+        f"- [gotcha] Stale fact number two #x (verified: {old_date(120)})\n",
+        encoding="utf-8",
+    )
+    code, out, _ = run(capsys, "--home", str(home), "verify", "legacy-verify-kb")
+    assert code == 2
+    assert "facts/mixed#stale-fact-number-two" in out
+    assert "stale 1 of 2" in out
 
 
 def test_verify_unknown_plugin(tmp_path, capsys):

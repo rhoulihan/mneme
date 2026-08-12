@@ -69,9 +69,9 @@ def create(
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    facts_dir = target / "facts"
-    facts_dir.mkdir(exist_ok=True)
-    (facts_dir / ".gitkeep").write_text("", encoding="utf-8")
+    facts = target / units.FACTS_CANONICAL
+    facts.mkdir(parents=True, exist_ok=True)
+    (facts / ".gitkeep").write_text("", encoding="utf-8")
     regenerate_index_skill(target, name, description)
 
     issues = lint.lint_repo(target)
@@ -121,8 +121,12 @@ def adopt(
             templates.MARKETPLACE_JSON, **subs
         ),
         "skills/knowledge-index/SKILL.md": templates.render(templates.INDEX_SKILL_MD, **subs),
-        "facts/.gitkeep": "",
     }
+    # Adoption seeds the canonical facts location — unless this repo already files facts
+    # at the top level, which stays readable (both layouts resolve via `units.facts_dir`)
+    # and must not be shadowed by an empty canonical directory.
+    if not (target / "facts").is_dir():
+        candidates[f"{units.FACTS_CANONICAL}/.gitkeep"] = ""
     added: list[str] = []
     for rel, content in candidates.items():
         path = target / rel
@@ -137,10 +141,10 @@ def adopt(
 
 
 def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
-    facts_dir = target / "facts"
+    facts = units.facts_dir(target)
     entries: list[tuple[str, str, int]] = []
-    if facts_dir.is_dir():
-        for f in sorted(facts_dir.glob("*.md")):
+    if facts.is_dir():
+        for f in sorted(facts.glob("*.md")):
             topic = f.stem
             count = 0
             try:
@@ -155,6 +159,9 @@ def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
                             continue
             except MnemeError:
                 pass
+            # `facts/<file>` in both layouts: relative to this skill's own directory in
+            # the canonical layout, relative to the repo root in a legacy one — and it is
+            # also the prefix of the unit id, which never moves with the files.
             entries.append((topic, f"facts/{f.name}", count))
 
     # The description lands on a single frontmatter line: fold any newline/tab the

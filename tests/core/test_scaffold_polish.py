@@ -1,7 +1,7 @@
 import json
 import subprocess
 
-from mneme_core import scaffold, templates
+from mneme_core import scaffold, templates, units
 
 
 SUBS = dict(
@@ -29,4 +29,5 @@ def test_facts_dir_tracked_in_initial_commit(tmp_path):
         ["git", "-C", str(target), "ls-files"],
         capture_output=True, text=True, check=True,
     ).stdout
-    assert "facts/.gitkeep" in tracked
+    assert f"{units.FACTS_CANONICAL}/.gitkeep" in tracked
+    assert "\nfacts/.gitkeep" not in "\n" + tracked

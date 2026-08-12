@@ -19,18 +19,43 @@ def make_candidate(body, topic="staging-env", edit="new", target_unit=""):
 
 def test_apply_new_fact_creates_file(tmp_path):
     line = harvest.apply_fact(tmp_path, make_candidate(bullet()))
-    text = (tmp_path / "facts" / "staging-env.md").read_text(encoding="utf-8")
+    # A repo with neither layout on disk gets the canonical one.
+    assert (tmp_path / units.FACTS_CANONICAL / "staging-env.md").exists()
+    text = (units.facts_dir(tmp_path) / "staging-env.md").read_text(encoding="utf-8")
     meta, body = units.parse_frontmatter(text)
     assert meta["topic"] == "staging-env"
     assert body.strip().startswith("- [constraint] Staging DB resets nightly")
     assert line == "facts/staging-env#staging-db-resets-nightly-at-04 (new fact)"
 
 
+def test_apply_new_and_update_in_a_legacy_layout(tmp_path):
+    """A repo with a top-level `facts/` keeps it — and the unit id is identical."""
+    (tmp_path / "facts").mkdir()
+    line = harvest.apply_fact(tmp_path, make_candidate(bullet()))
+    assert line == "facts/staging-env#staging-db-resets-nightly-at-04 (new fact)"
+    assert not (tmp_path / units.FACTS_CANONICAL).exists()
+    updated = compose.render_fact_bullet(
+        "constraint", "Staging DB resets nightly at 03:00 UTC now", ["staging"],
+        verified="2026-08-12",
+    )
+    result = harvest.apply_fact(
+        tmp_path,
+        make_candidate(
+            updated, edit="update",
+            target_unit="facts/staging-env#staging-db-resets-nightly-at-04",
+        ),
+    )
+    assert result.endswith("(updated fact)")
+    text = (tmp_path / "facts" / "staging-env.md").read_text(encoding="utf-8")
+    assert "03:00 UTC now" in text
+    assert "04:00 UTC" not in text
+
+
 def test_apply_new_fact_appends_preserving_existing(tmp_path):
     harvest.apply_fact(tmp_path, make_candidate(bullet()))
     other = bullet(text="v2 API truncates batch writes over 500 items", category="gotcha")
     harvest.apply_fact(tmp_path, make_candidate(other))
-    text = (tmp_path / "facts" / "staging-env.md").read_text(encoding="utf-8")
+    text = (units.facts_dir(tmp_path) / "staging-env.md").read_text(encoding="utf-8")
     lines = [l for l in text.splitlines() if l.startswith("- [")]
     assert len(lines) == 2
     assert "resets nightly" in lines[0]
@@ -67,7 +92,7 @@ def test_apply_update_replaces_single_line(tmp_path):
         ),
     )
     assert result.endswith("(updated fact)")
-    text = (tmp_path / "facts" / "staging-env.md").read_text(encoding="utf-8")
+    text = (units.facts_dir(tmp_path) / "staging-env.md").read_text(encoding="utf-8")
     assert "03:00 UTC now" in text
     assert "04:00 UTC" not in text
     assert "truncates batch" in text  # untouched neighbor

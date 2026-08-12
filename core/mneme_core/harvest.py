@@ -22,8 +22,12 @@ def _skill_name(cand: Candidate) -> str:
     return name
 
 
-def _unit_path(repo: Path, kind: str, name: str, what: str, *tail: str, suffix: str = "") -> Path:
-    """A path under `repo/<kind>/` built from a candidate-supplied unit name.
+def _unit_path(root: Path, kind: str, name: str, what: str, *tail: str, suffix: str = "") -> Path:
+    """A path under `root` (the repo's `<kind>` directory) built from a candidate name.
+
+    ``root`` is passed in rather than derived, because facts live in one of two places
+    (canonical under the router skill, or a legacy top-level `facts/`) — the containment
+    proof below has to be made against the directory actually being written.
 
     Skill names and fact topics arrive as candidate frontmatter — model-generated or
     hand-placed text, i.e. untrusted input to a filesystem write. Unchecked, a name of
@@ -39,7 +43,6 @@ def _unit_path(repo: Path, kind: str, name: str, what: str, *tail: str, suffix: 
     """
     if not units.KEBAB_RE.fullmatch(name):
         raise MnemeError(f"{what} must be kebab-case: {name!r}")
-    root = repo / kind
     path = root.joinpath(name + suffix, *tail)
     if not path.resolve().is_relative_to(root.resolve()):
         raise MnemeError(f"{what} escapes {kind}/: {name!r}")
@@ -49,7 +52,7 @@ def _unit_path(repo: Path, kind: str, name: str, what: str, *tail: str, suffix: 
 def apply_skill(repo: Path, cand: Candidate) -> str:
     name = _skill_name(cand)
     skill_md = _unit_path(
-        repo, "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
+        repo / "skills", "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
     )
     if cand.edit == "new":
         if skill_md.exists():
@@ -140,7 +143,8 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
 
     if cand.edit == "new":
         path = _unit_path(
-            repo, "facts", cand.topic, f"candidate {cand.id}: fact topic", suffix=".md"
+            units.facts_dir(repo), "facts", cand.topic,
+            f"candidate {cand.id}: fact topic", suffix=".md",
         )
         text, bom = _read_raw(path) if path.exists() else ("", "")
         if not text.strip():
@@ -195,7 +199,8 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
         raise MnemeError(f"candidate {cand.id}: malformed fact target_unit {cand.target_unit!r}")
     file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
     path = _unit_path(
-        repo, "facts", file_part, f"candidate {cand.id}: fact topic in target_unit", suffix=".md"
+        units.facts_dir(repo), "facts", file_part,
+        f"candidate {cand.id}: fact topic in target_unit", suffix=".md",
     )
     if not path.exists():
         raise MnemeError(f"candidate {cand.id}: update target file {path.name} not found")

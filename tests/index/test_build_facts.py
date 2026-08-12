@@ -1,5 +1,6 @@
 import pytest
 
+from mneme_core import units
 from mneme_index import build, db
 
 
@@ -100,3 +101,24 @@ def test_topic_falls_back_to_stem(conn, tmp_path):
     row = conn.execute("SELECT * FROM units WHERE kind = 'fact'").fetchone()
     assert row["name"] == "notopic"
     assert row["line"] == 1
+
+
+def test_index_facts_in_the_canonical_layout(conn, tmp_path):
+    """Facts under the router skill index identically — only `path` follows the files."""
+    root = tmp_path / "tree"
+    facts = root / units.FACTS_CANONICAL
+    facts.mkdir(parents=True)
+    (facts / "staging-env.md").write_text(
+        "---\n"
+        "topic: staging-env\n"
+        "---\n"
+        "- [constraint] Staging DB resets nightly at 04:00 UTC #staging (verified: 2026-08-11)\n",
+        encoding="utf-8",
+    )
+    stats = build.index_tree(conn, "p", root)
+    assert stats.facts == 1
+    row = conn.execute("SELECT * FROM units WHERE kind = 'fact'").fetchone()
+    assert row["id"] == "facts/staging-env#staging-db-resets-nightly-at-04"
+    assert row["name"] == "staging-env"
+    assert row["line"] == 4
+    assert row["path"] == f"{units.FACTS_CANONICAL}/staging-env.md"

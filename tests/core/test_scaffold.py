@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from mneme_core import lint, paths, registry, scaffold
+from mneme_core import lint, paths, registry, scaffold, units
 from mneme_core.errors import MnemeError
 
 
@@ -25,7 +25,10 @@ def test_create_full_tree(tmp_path):
         "skills/knowledge-index/SKILL.md",
     ):
         assert (target / rel).exists(), rel
-    assert (target / "facts").is_dir()
+    # Facts travel inside the router skill; nothing is left at the top level.
+    assert (target / units.FACTS_CANONICAL).is_dir()
+    assert not (target / "facts").exists()
+    assert units.facts_dir(target) == target / units.FACTS_CANONICAL
     data = json.loads((target / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert data["name"] == "acme-knowledge"
     assert data["version"] == "0.1.0"

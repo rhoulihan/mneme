@@ -481,7 +481,7 @@ def _share_diff(home: Path, args: argparse.Namespace) -> int:
         if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
             raise MnemeError(f"malformed fact target_unit: {cand.target_unit!r}")
         file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
-        path = repo / "facts" / f"{file_part}.md"
+        path = units_mod.facts_dir(repo) / f"{file_part}.md"
         if not path.exists():
             raise MnemeError(f"update target file {path} not found")
         _meta, body = units_mod.parse_frontmatter(path.read_text(encoding="utf-8-sig"))
@@ -552,7 +552,7 @@ def _verify_cmd(home: Path, args: argparse.Namespace) -> int:
                      str(a) if a is not None else "unknown")
                 )
 
-    facts_dir = repo / "facts"
+    facts_dir = units_mod.facts_dir(repo)
     if facts_dir.is_dir():
         for f in sorted(facts_dir.glob("*.md")):
             try:

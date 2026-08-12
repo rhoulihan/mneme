@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mneme_core import registry, scaffold
+from mneme_core import registry, scaffold, units
 from mneme_core.cli import main
 from mneme_core.registry import Plugin
 
@@ -35,6 +35,8 @@ def test_adopt_adds_only_missing(tmp_path, capsys):
     assert "MNEME.md" in added
     assert ".claude-plugin/plugin.json" in added
     assert "skills/knowledge-index/SKILL.md" in added
+    assert f"{units.FACTS_CANONICAL}/.gitkeep" in added
+    assert not (repo / "facts").exists()
     # never overwrites
     assert (repo / "README.md").read_text(encoding="utf-8") == "# existing\n"
     # registry sensitivity flows into MNEME.md
@@ -43,6 +45,24 @@ def test_adopt_adds_only_missing(tmp_path, capsys):
     # PR-only doctrine: adopt writes no contribution mode into the scope doc.
     assert "Contribution mode" not in text
     assert "* @team-leads" in (repo / "CODEOWNERS").read_text(encoding="utf-8")
+
+
+def test_adopt_keeps_an_existing_legacy_facts_dir(tmp_path, capsys):
+    """An adopted repo that already files facts at the top level is left in that layout."""
+    home = tmp_path / "home"
+    repo = make_existing_plugin(tmp_path, home)
+    (repo / "facts").mkdir()
+    (repo / "facts" / "billing.md").write_text(
+        "---\ntopic: billing\n---\n"
+        "- [decision] Invoices settle monthly #billing (verified: 2026-08-11)\n",
+        encoding="utf-8",
+    )
+    added = scaffold.adopt(home, "existing-kb")
+    assert f"{units.FACTS_CANONICAL}/.gitkeep" not in added
+    assert not (repo / units.FACTS_CANONICAL).exists()
+    assert units.facts_dir(repo) == repo / "facts"
+    index = (repo / "skills" / "knowledge-index" / "SKILL.md").read_text(encoding="utf-8")
+    assert "| billing | facts/billing.md | 1 |" in index
 
 
 def test_adopt_is_idempotent(tmp_path, capsys):

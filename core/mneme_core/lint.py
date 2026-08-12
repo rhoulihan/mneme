@@ -97,9 +97,9 @@ def lint_repo(root: Path) -> list[LintIssue]:
     if skills_dir.is_dir():
         for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
             issues.extend(lint_skill(d))
-    facts_dir = root / "facts"
-    if facts_dir.is_dir():
-        for f in sorted(facts_dir.glob("*.md")):
+    facts = units.facts_dir(root)
+    if facts.is_dir():
+        for f in sorted(facts.glob("*.md")):
             issues.extend(lint_fact_file(f))
     return issues
 

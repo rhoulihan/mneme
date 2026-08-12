@@ -5,7 +5,7 @@ mneme's own output — CRLF line endings, a BOM, frontmatter comments, legacy bu
 """
 import subprocess
 
-from mneme_core import compose, gitops, harvest, scaffold, staging
+from mneme_core import compose, gitops, harvest, scaffold, staging, units
 from mneme_core.staging import Candidate, candidate_id
 
 BULLET_A = (
@@ -151,7 +151,8 @@ def test_harvest_commit_diff_is_one_line_on_a_committed_crlf_file(tmp_path):
     """
     home = tmp_path / "home"
     target = scaffold.create(home, "acme-knowledge", owner="demo")
-    crlf_file(target / "facts" / "staging-env.md")
+    fact_rel = f"{units.FACTS_CANONICAL}/staging-env.md"
+    crlf_file(target / fact_rel)
     gitops.git(target, "add", "-A")
     gitops.git(target, "commit", "-m", "chore: hand-authored CRLF fact file")
     main_before = gitops.head_sha(target)
@@ -167,7 +168,7 @@ def test_harvest_commit_diff_is_one_line_on_a_committed_crlf_file(tmp_path):
 
     numstat = subprocess.run(
         ["git", "-C", str(target), "diff", "--numstat", f"{result.branch}~1", result.branch,
-         "--", "facts/staging-env.md"],
+         "--", fact_rel],
         capture_output=True, text=True, check=True,
     ).stdout.split()
     assert numstat[:2] == ["1", "1"]  # one line added, one removed — not the whole file
