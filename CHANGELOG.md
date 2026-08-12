@@ -8,7 +8,7 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
-## 0.2.0 — 2026-08-11
+## 0.2.0 — 2026-08-12
 
 The first version that closes the loop end to end: notice → flag → distill →
 machine gate → human gate → pull request → team inheritance.
@@ -30,8 +30,8 @@ machine gate → human gate → pull request → team inheritance.
   two-phase `mneme distill prepare` / `mneme distill ingest` gate: the model
   returns structured proposals only, and tested code validates, renders
   canonically, secret-scans, dedups, routes, and stages.
-- **Harvest and pull requests (Phase 05)** — `mneme share list/diff/apply/decline`
-  as the human gate; git plumbing that commits units with `Mneme-Source:`
+- **Harvest and pull requests (Phase 05)** — `mneme share list/diff/apply` and
+  `mneme decline` as the human gate; git plumbing that commits units with `Mneme-Source:`
   provenance trailers, pushes harvest branches, and opens PRs through `gh` with
   graceful degradation to commit mode; `mneme verify` staleness sweep;
   `mneme registry add --clone` and `mneme adopt` for repos that already exist.
@@ -60,6 +60,11 @@ machine gate → human gate → pull request → team inheritance.
 - **SQLite URI encoding** — index paths are percent-encoded before being built
   into `file:` URIs; previously a `#`, `?`, or `%` in a path silently voided the
   `mode=ro` guarantee and could open a different database.
+- **Line-granular fact edits** — `apply_fact` originally rewrote whole fact
+  files through a frontmatter round-trip, a whole-file rewrite masquerading as a
+  delta edit that could reformat files mneme did not create; it now splices
+  exactly one bullet line, byte-preserving everything else including BOMs and
+  CRLF endings.
 - **Atomic harvest rollback** — a harvest that fails at any point (apply, lint
   gate, re-scan, commit, or push) resets the knowledge repo to a clean `main`,
   deletes the abandoned harvest branch, and leaves every candidate staged, so

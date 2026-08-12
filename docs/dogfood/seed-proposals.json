@@ -6,14 +6,14 @@
       "description": "Use when committing executable scripts from a WSL checkout on a Windows drvfs mount (/mnt/c) and the executable bit must reach git",
       "procedure": "1. chmod +x the file as usual (harmless, but insufficient on drvfs).\n2. Record the bit directly in the index: `git update-index --add --chmod=+x <file>`.\n3. Verify with `git ls-files --stage <file>` — expect mode 100755 before committing.",
       "failure_pattern": "chmod alone silently does nothing on drvfs mounts: the file commits as 100644, and launchers fail with 'Permission denied' only for users cloning to real POSIX filesystems — the author never sees the breakage.",
-      "confidence": 0.95, "rationale": "hit on every plan of this build; verified by inspecting index modes"
+      "confidence": 0.95, "rationale": "required for every executable committed in this build (plans 02, 03, and 06 record the git update-index step); verified by inspecting index modes"
     },
     {
       "type": "skill", "edit": "new", "target": "mneme-dev-knowledge",
       "name": "cross-module-audit-after-per-task-review",
       "description": "Use when orchestrating multi-agent implementation with per-task review and deciding whether a final whole-branch audit is worth the cost",
       "procedure": "1. Keep per-task adversarial review (it keeps implementers honest — near-zero fix rounds).\n2. After all tasks land, run two independent whole-branch auditors: one attacking correctness across module boundaries, one checking plan/spec compliance.\n3. Give auditors concrete attack lanes drawn from the plan's trust boundaries, and require demonstrated findings only.\n4. Route blocking findings through one fix pass plus an independent re-check.",
-      "failure_pattern": "Per-task review structurally cannot see cross-module composition bugs: in this build it missed a staging-store frontmatter injection, a date-in-hash dedup defeat, and a whole-file rewrite masquerading as a delta edit — every one was caught by the whole-branch audit instead.",
+      "failure_pattern": "Per-task review structurally cannot see cross-module composition bugs: in this build it missed a staging-store frontmatter injection, a date-in-hash dedup defeat, and a whole-file rewrite masquerading as a delta edit — every one caught by the whole-branch audit instead (all three recorded in CHANGELOG 0.2.0, Hardened section).",
       "confidence": 0.9, "rationale": "audit layer found 13+ demonstrated defects across five plans that per-task review approved"
     },
     {
@@ -36,7 +36,7 @@
       "category": "gotcha",
       "text": "Ubuntu marks the system Python externally managed (PEP 668), so pip install --user fails until you pass --break-system-packages or use a venv",
       "tags": ["python", "ubuntu"], "confidence": 0.9,
-      "rationale": "hit installing pytest on this machine"
+      "rationale": "encountered installing pytest for this build; verifiable via the EXTERNALLY-MANAGED marker in the system Python's stdlib directory on stock Ubuntu"
     },
     {
       "type": "fact", "edit": "new", "target": "mneme-dev-knowledge", "topic": "python-stdlib",

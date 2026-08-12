@@ -160,7 +160,7 @@ Everything runs locally plus your own git remote. Capture exclusions bind at the
 ```
 core/mneme_core/    # engine: registry, staging, scan, lint, routing, scaffold, CLI
 core/mneme_index/   # standalone retrieval component (imports only units+errors from core)
-bin/                # zero-install launchers: mneme, mneme-index
+bin/                # zero-install launchers (mneme, mneme-index) + the background distill pipeline
 docs/
 ├── superpowers/specs/    # the design specification
 ├── superpowers/plans/    # per-phase implementation plans (full TDD detail)
