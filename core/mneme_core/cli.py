@@ -65,6 +65,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_slist2.add_argument("--all", action="store_true")
     p_sdiff = share_sub.add_parser("diff")
     p_sdiff.add_argument("id")
+    p_sapply = share_sub.add_parser("apply")
+    p_sapply.add_argument("--ids", required=True)
+    p_sapply.add_argument("--no-push", action="store_true")
+    p_sapply.add_argument("--dry-run", action="store_true")
+
+    p_decline = sub.add_parser("decline")
+    p_decline.add_argument("id")
+    p_decline.add_argument("--reason", required=True)
 
     p_scan = sub.add_parser("scan")
     p_scan.add_argument("path")
@@ -157,6 +165,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "share":
             return _share_cmd(home, args)
+        if args.command == "decline":
+            from . import staging as staging_mod
+
+            cands = {
+                c.id: c
+                for c in staging_mod.load_candidates(home, include_quarantined=True)
+            }
+            cand = cands.get(args.id)
+            if cand is None:
+                raise MnemeError(f"no staged candidate with id: {args.id}")
+            staging_mod.decline(home, cand, args.reason)
+            print(f"declined {args.id}")
+            return 0
         if args.command == "scan":
             return _scan_cmd(args.path)
         if args.command == "lint":
@@ -256,7 +277,38 @@ def _share_cmd(home: Path, args: argparse.Namespace) -> int:
 
     if args.share_command == "diff":
         return _share_diff(home, args)
+    if args.share_command == "apply":
+        return _share_apply(home, args)
     return 1
+
+
+def _share_apply(home: Path, args: argparse.Namespace) -> int:
+    from . import harvest as harvest_mod
+    from . import staging as staging_mod
+
+    wanted = [i.strip() for i in args.ids.split(",") if i.strip()]
+    all_cands = {c.id: c for c in staging_mod.load_candidates(home)}
+    missing = [i for i in wanted if i not in all_cands]
+    if missing:
+        raise MnemeError(f"unknown or quarantined candidate ids: {', '.join(missing)}")
+    selected = [all_cands[i] for i in wanted]
+    by_target: dict[str, list] = {}
+    for c in selected:
+        by_target.setdefault(c.target, []).append(c)
+
+    if args.dry_run:
+        for target in sorted(by_target):
+            for c in by_target[target]:
+                print(f"would apply {c.id} -> {target} ({c.type}/{c.edit})")
+        return 0
+
+    for target in sorted(by_target):
+        result = harvest_mod.apply_batch(
+            home, target, by_target[target], push=not args.no_push
+        )
+        print(f"harvested {target}: {len(result.units)} units on {result.branch}")
+        print(f"pr: {result.pr}")
+    return 0
 
 
 def _share_diff(home: Path, args: argparse.Namespace) -> int:
