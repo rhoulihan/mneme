@@ -88,7 +88,7 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 03 — Factory | `mneme new` scaffold factory + security hardening (SELECT-only queries, schema v2 with summaries, `db enable/disable`) | ✅ merged |
 | 04 — Distiller | Routing scopes, sensitivity boundaries, session noticing brief, two-phase distill machine gate | ✅ merged |
 | 05 — Harvest | `/mneme:share` review flow, git/PR plumbing with provenance trailers, staleness sweep, register/adopt for existing repos | 🔨 in progress |
-| 06 — Adapter | Claude Code plugin wiring: hooks, `/mneme:*` commands, behavioral skills, background distiller | 📝 planned |
+| 06 — Adapter | Claude Code plugin wiring: hooks, `/mneme:*` commands, behavioral skills, background distiller | ✅ merged |
 | 07 — Dogfood | End-to-end harness + mneme's own development-knowledge plugin, captured by mneme | 📝 planned |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
@@ -102,7 +102,9 @@ Mneme installs like any Claude Code plugin — its repo is its own marketplace:
 /plugin install mneme@mneme
 ```
 
-Requires Python ≥ 3.10 and git on the machine; the engine is standard-library-only. (The plugin surface ships with Phase 06, in progress now — until it merges, the contributor CLI below is the interim interface.)
+Requires Python ≥ 3.10 and git on the machine; the engine is standard-library-only.
+
+First run, hook behavior, configuration env vars, and troubleshooting: see [docs/install.md](docs/install.md).
 
 ## Using mneme
 
