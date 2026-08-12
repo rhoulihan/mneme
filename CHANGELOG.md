@@ -12,11 +12,13 @@ plugins scaffolded by `mneme new` do carry their own independent versions.
 
 - **Facts live under the router skill** — the canonical fact location is
   `skills/knowledge-index/facts/`, so the generated index skill and the files it
-  routes to travel as one self-contained directory. Every consumer (scaffold,
-  adopt, regenerate, lint, index build, harvest, verify) resolves the location
-  through one rule, `units.facts_dir`: canonical when present, legacy top-level
-  `facts/` when that is what a repo has, canonical when creating. **Legacy repos
-  keep working unchanged** — nothing is migrated behind your back — and unit ids
+  routes to travel as one self-contained directory. Writes pick one destination
+  (`units.facts_dir`: canonical when present, legacy top-level `facts/` when that
+  is what a repo has, canonical when creating); every reader (regenerate, lint,
+  index build, verify, classify) sweeps `units.fact_files` — **both** layouts —
+  so a repo mid-migration never has facts that are committed but unsearchable.
+  **Legacy repos keep working unchanged** — nothing is migrated behind your back
+  — and unit ids
   stay `facts/<stem>#<topic-key>` in both layouts, so dedup, the declined
   ledger, and `similar-to` continuity survive the move.
 - **`/mneme:classify` — the librarian pass** — a prompt-driven triage of the

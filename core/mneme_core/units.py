@@ -262,7 +262,7 @@ FACTS_CANONICAL = "skills/knowledge-index/facts"
 
 
 def facts_dir(root: Path) -> Path:
-    """Resolve a repo's facts directory: canonical, else legacy, else canonical."""
+    """Resolve where a NEW fact is written: canonical, else legacy, else canonical."""
     canonical = root / FACTS_CANONICAL
     if canonical.is_dir():
         return canonical
@@ -270,3 +270,41 @@ def facts_dir(root: Path) -> Path:
     if legacy.is_dir():
         return legacy
     return canonical
+
+
+def facts_dirs(root: Path) -> list[Path]:
+    """Every directory that currently holds facts, canonical first.
+
+    `facts_dir` answers "where does the next fact go" — one directory, so writes never
+    fork a repo's layout. Readers must answer a different question: "where IS the
+    knowledge". A repo carrying BOTH layouts is ordinary, not exotic — a 0.5 scaffold
+    ships the canonical dir, and a contributor can still add a top-level `facts/` file by
+    hand — and resolving to one directory there makes real, committed facts invisible to
+    lint, verify, index, and search until a classify pass migrates them. Every reader
+    sweeps this list instead.
+    """
+    return [d for d in (root / FACTS_CANONICAL, root / "facts") if d.is_dir()]
+
+
+def fact_files(root: Path) -> list[Path]:
+    """Every fact file in the repo, canonical layout first, sorted within each layout."""
+    return [f for d in facts_dirs(root) for f in sorted(d.glob("*.md"))]
+
+
+def find_fact_file(root: Path, stem: str) -> Path | None:
+    """The existing file for topic `stem`, in whichever layout carries it.
+
+    `stem` arrives from candidate frontmatter (model-generated text), so the join is
+    proven contained rather than trusted: a name that escapes its facts directory
+    resolves to no file at all instead of reaching a sibling repo.
+    """
+    for d in facts_dirs(root):
+        path = d / f"{stem}.md"
+        try:
+            if not path.resolve().is_relative_to(d.resolve()):
+                continue
+        except OSError:
+            continue
+        if path.is_file():
+            return path
+    return None

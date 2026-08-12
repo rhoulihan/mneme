@@ -64,53 +64,43 @@ def abort(home: Path, cwd: Path) -> None:
     gitops.git(repo, "branch", "-D", branch)
 
 
-def _facts_dirs(repo: Path) -> list[Path]:
-    """Every directory that currently holds fact files, canonical first.
-
-    `units.facts_dir` answers "where do NEW facts go" — one directory. The librarian
-    has to *see* everything, and a repo mid-migration can carry both layouts, so the
-    bundle reads them all.
-    """
-    out = [d for d in (repo / units.FACTS_CANONICAL, repo / "facts") if d.is_dir()]
-    return out
-
-
 def _fact_entries(repo: Path, notes: list[str]) -> list[dict]:
+    # `units.fact_files` sweeps both layouts (canonical first): the librarian has to *see*
+    # every fact, and a repo mid-migration can carry both.
     entries: list[dict] = []
-    for facts in _facts_dirs(repo):
-        for f in sorted(facts.glob("*.md")):
-            rel = f.relative_to(repo).as_posix()
-            try:
-                text = f.read_text(encoding="utf-8-sig")
-                meta, body = units.parse_frontmatter(text)
-            except (MnemeError, OSError, UnicodeDecodeError) as e:
-                notes.append(f"{rel}: unreadable ({e})")
+    for f in units.fact_files(repo):
+        rel = f.relative_to(repo).as_posix()
+        try:
+            text = f.read_text(encoding="utf-8-sig")
+            meta, body = units.parse_frontmatter(text)
+        except (MnemeError, OSError, UnicodeDecodeError) as e:
+            notes.append(f"{rel}: unreadable ({e})")
+            continue
+        topic = str(meta.get("topic", f.stem))
+        # Absolute line numbers, so the librarian can point at the bullet it moved.
+        offset = len(text.splitlines()) - len(body.splitlines())
+        for n, line in enumerate(body.splitlines(), start=1):
+            if not line.startswith("- ["):
                 continue
-            topic = str(meta.get("topic", f.stem))
-            # Absolute line numbers, so the librarian can point at the bullet it moved.
-            offset = len(text.splitlines()) - len(body.splitlines())
-            for n, line in enumerate(body.splitlines(), start=1):
-                if not line.startswith("- ["):
-                    continue
-                try:
-                    bullet = units.parse_bullet_line(line, n)
-                except MnemeError:
-                    notes.append(f"{rel}:{offset + n}: malformed fact bullet — left in place")
-                    continue
-                entries.append(
-                    {
-                        "file": rel,
-                        "topic": topic,
-                        "line": offset + n,
-                        "category": bullet.category,
-                        "text": bullet.text,
-                        "tags": bullet.tags,
-                        "verified": bullet.verified or "",
-                        # Physical location never enters the id: a fact keeps its identity
-                        # (and its declined-ledger / similar-to continuity) across the move.
-                        "unit_id": units.fact_unit_id(f.stem, bullet.text),
-                    }
-                )
+            try:
+                bullet = units.parse_bullet_line(line, n)
+            except MnemeError:
+                notes.append(f"{rel}:{offset + n}: malformed fact bullet — left in place")
+                continue
+            entries.append(
+                {
+                    "file": rel,
+                    "topic": topic,
+                    "line": offset + n,
+                    "category": bullet.category,
+                    "text": bullet.text,
+                    "tags": bullet.tags,
+                    "verified": bullet.verified or "",
+                    # Physical location never enters the id: a fact keeps its identity
+                    # (and its declined-ledger / similar-to continuity) across the move.
+                    "unit_id": units.fact_unit_id(f.stem, bullet.text),
+                }
+            )
     return entries
 
 

@@ -159,13 +159,12 @@ def _skill_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
 
 def _fact_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
     rows: list[tuple] = []
-    # Physical location varies (canonical under the router skill, or legacy top-level);
-    # the unit ids built below are `facts/<stem>#<key>` in both layouts, so moving the
-    # files never renames a unit.
-    facts_dir = units.facts_dir(root)
-    if not facts_dir.is_dir():
-        return rows
-    for f in sorted(facts_dir.glob("*.md")):
+    # Physical location varies (canonical under the router skill, or legacy top-level) and
+    # a repo mid-migration carries both, so every fact file is swept — knowledge that is on
+    # disk must be searchable. The unit ids built below are `facts/<stem>#<key>` in both
+    # layouts, so moving the files never renames a unit (and the same stem in both layouts
+    # collides on id, which `index_tree` reports as a duplicate rather than indexing twice).
+    for f in units.fact_files(root):
         rel = str(f.relative_to(root))
         text = _read_unit_text(f, rel, skipped)
         if text is None:

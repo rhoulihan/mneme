@@ -49,6 +49,21 @@ def _unit_path(root: Path, kind: str, name: str, what: str, *tail: str, suffix: 
     return path
 
 
+def _fact_path(repo: Path, stem: str, what: str) -> Path:
+    """The file for topic `stem`: where it already lives, else where a new one goes.
+
+    Existing layouts are searched first (canonical, then legacy) so appending to a topic
+    a repo already carries at the top level cannot fork it into a second file under the
+    router skill — two files, one unit id, half the bullets in each. The name is validated
+    against whichever directory is actually being written, never trusted.
+    """
+    for d in units.facts_dirs(repo):
+        path = _unit_path(d, "facts", stem, what, suffix=".md")
+        if path.exists():
+            return path
+    return _unit_path(units.facts_dir(repo), "facts", stem, what, suffix=".md")
+
+
 def apply_skill(repo: Path, cand: Candidate) -> str:
     name = _skill_name(cand)
     skill_md = _unit_path(
@@ -142,10 +157,7 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
     bullet = units.parse_bullet_line(line, 1)
 
     if cand.edit == "new":
-        path = _unit_path(
-            units.facts_dir(repo), "facts", cand.topic,
-            f"candidate {cand.id}: fact topic", suffix=".md",
-        )
+        path = _fact_path(repo, cand.topic, f"candidate {cand.id}: fact topic")
         text, bom = _read_raw(path) if path.exists() else ("", "")
         if not text.strip():
             # Only a genuinely new (or empty) topic file is written whole.
@@ -198,10 +210,7 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
     if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
         raise MnemeError(f"candidate {cand.id}: malformed fact target_unit {cand.target_unit!r}")
     file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
-    path = _unit_path(
-        units.facts_dir(repo), "facts", file_part,
-        f"candidate {cand.id}: fact topic in target_unit", suffix=".md",
-    )
+    path = _fact_path(repo, file_part, f"candidate {cand.id}: fact topic in target_unit")
     if not path.exists():
         raise MnemeError(f"candidate {cand.id}: update target file {path.name} not found")
     text, bom = _read_raw(path)

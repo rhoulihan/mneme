@@ -141,28 +141,28 @@ def adopt(
 
 
 def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
-    facts = units.facts_dir(target)
     entries: list[tuple[str, str, int]] = []
-    if facts.is_dir():
-        for f in sorted(facts.glob("*.md")):
-            topic = f.stem
-            count = 0
-            try:
-                meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
-                topic = str(meta.get("topic", f.stem))
-                for n, line in enumerate(body.splitlines(), start=1):
-                    if line.startswith("- ["):
-                        try:
-                            units.parse_bullet_line(line, n)
-                            count += 1
-                        except MnemeError:
-                            continue
-            except MnemeError:
-                pass
-            # `facts/<file>` in both layouts: relative to this skill's own directory in
-            # the canonical layout, relative to the repo root in a legacy one — and it is
-            # also the prefix of the unit id, which never moves with the files.
-            entries.append((topic, f"facts/{f.name}", count))
+    # Every fact file, in both layouts: the index skill IS the routing surface, so a topic
+    # missing from this table is a topic no agent is told exists.
+    for f in units.fact_files(target):
+        topic = f.stem
+        count = 0
+        try:
+            meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+            topic = str(meta.get("topic", f.stem))
+            for n, line in enumerate(body.splitlines(), start=1):
+                if line.startswith("- ["):
+                    try:
+                        units.parse_bullet_line(line, n)
+                        count += 1
+                    except MnemeError:
+                        continue
+        except MnemeError:
+            pass
+        # `facts/<file>` in both layouts: relative to this skill's own directory in
+        # the canonical layout, relative to the repo root in a legacy one — and it is
+        # also the prefix of the unit id, which never moves with the files.
+        entries.append((topic, f"facts/{f.name}", count))
 
     # The description lands on a single frontmatter line: fold any newline/tab the
     # caller supplied so the rendered template stays parseable before we cap it.

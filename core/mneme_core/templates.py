@@ -68,9 +68,9 @@ against it. Keep it specific — name the products, systems, and processes this 
 AGENTS_MD = """# $name
 
 Agent-facing knowledge plugin. Procedural knowledge lives in `skills/` (Agent Skills
-format); durable facts live in `facts/` and are routed through the `knowledge-index`
-skill. See `MNEME.md` for what belongs here and `CONTRIBUTING.md` for how knowledge
-gets in.
+format); durable facts live in `skills/knowledge-index/facts/` and are routed through the
+`knowledge-index` skill that ships beside them. See `MNEME.md` for what belongs here and
+`CONTRIBUTING.md` for how knowledge gets in.
 """
 
 README_MD = """# $name
@@ -78,8 +78,9 @@ README_MD = """# $name
 $description
 
 A [mneme](https://github.com/rhoulihan/mneme) knowledge plugin: procedures as Agent
-Skills in `skills/`, durable facts in `facts/`, governance in CI. Install it through
-your agent's plugin marketplace tooling and inherit every merged update.
+Skills in `skills/`, durable facts in `skills/knowledge-index/facts/`, governance in CI.
+Install it through your agent's plugin marketplace tooling and inherit every merged
+update.
 
 - Scope and routing: `MNEME.md`
 - Contribution pipeline: `CONTRIBUTING.md`
@@ -103,7 +104,7 @@ A contribution must carry:
 
 - Skills: `skills/<name>/SKILL.md`, kebab-case `name` matching the directory,
   trigger-rich `description` (it IS the retrieval surface), provenance in `metadata`.
-- Facts: one topic per file in `facts/`, typed bullets
+- Facts: one topic per file in `skills/knowledge-index/facts/`, typed bullets
   (`decision | constraint | gotcha | runbook-note | reference`), tags, verified dates.
 - Delta edits only — never regenerate whole files.
 

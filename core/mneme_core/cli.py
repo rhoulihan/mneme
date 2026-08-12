@@ -508,9 +508,12 @@ def _share_diff(home: Path, args: argparse.Namespace) -> int:
         if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
             raise MnemeError(f"malformed fact target_unit: {cand.target_unit!r}")
         file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
-        path = units_mod.facts_dir(repo) / f"{file_part}.md"
-        if not path.exists():
-            raise MnemeError(f"update target file {path} not found")
+        # Whichever layout carries the topic — the diff must show the file the apply will
+        # actually edit, not the one a fresh fact would be created in.
+        path = units_mod.find_fact_file(repo, file_part)
+        if path is None:
+            missing = units_mod.facts_dir(repo) / f"{file_part}.md"
+            raise MnemeError(f"update target file {missing} not found")
         _meta, body = units_mod.parse_frontmatter(path.read_text(encoding="utf-8-sig"))
         existing = ""
         for n, line in enumerate(body.splitlines(), start=1):
@@ -579,27 +582,27 @@ def _verify_cmd(home: Path, args: argparse.Namespace) -> int:
                      str(a) if a is not None else "unknown")
                 )
 
-    facts_dir = units_mod.facts_dir(repo)
-    if facts_dir.is_dir():
-        for f in sorted(facts_dir.glob("*.md")):
+    # Both fact layouts: a repo mid-migration must not report a smaller, rosier universe
+    # of units than it actually carries.
+    for f in units_mod.fact_files(repo):
+        try:
+            _meta, body = units_mod.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        except MnemeError:
+            continue
+        for n, line in enumerate(body.splitlines(), start=1):
+            if not line.startswith("- ["):
+                continue
             try:
-                _meta, body = units_mod.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+                b = units_mod.parse_bullet_line(line, n)
             except MnemeError:
                 continue
-            for n, line in enumerate(body.splitlines(), start=1):
-                if not line.startswith("- ["):
-                    continue
-                try:
-                    b = units_mod.parse_bullet_line(line, n)
-                except MnemeError:
-                    continue
-                total += 1
-                a = age(b.verified) if b.verified else None
-                if a is None or a > args.days:
-                    stale.append(
-                        (units_mod.fact_unit_id(f.stem, b.text), b.verified or "none",
-                         str(a) if a is not None else "unknown")
-                    )
+            total += 1
+            a = age(b.verified) if b.verified else None
+            if a is None or a > args.days:
+                stale.append(
+                    (units_mod.fact_unit_id(f.stem, b.text), b.verified or "none",
+                     str(a) if a is not None else "unknown")
+                )
 
     for unit_id, verified, age_days in stale:
         print(f"{unit_id}  last-verified={verified}  age-days={age_days}")

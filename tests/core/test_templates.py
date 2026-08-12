@@ -47,6 +47,17 @@ def test_contributing_has_rubric_and_ai_policy():
     assert "unreviewed" in text.lower()
 
 
+def test_governance_docs_name_the_canonical_facts_location():
+    """These docs ARE the contribution instructions: naming the pre-0.5 top-level
+    `facts/` sent every contributor's fact into a second layout."""
+    from mneme_core import units
+
+    for template in (templates.CONTRIBUTING_MD, templates.AGENTS_MD, templates.README_MD):
+        text = templates.render(template, **SUBS)
+        assert units.FACTS_CANONICAL in text
+        assert "in `facts/`" not in text
+
+
 def test_workflows_reference_mneme_tooling():
     assert "bin/mneme lint" in templates.VALIDATE_YML
     assert "plugin.json" in templates.RELEASE_YML

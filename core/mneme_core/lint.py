@@ -97,10 +97,10 @@ def lint_repo(root: Path) -> list[LintIssue]:
     if skills_dir.is_dir():
         for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
             issues.extend(lint_skill(d))
-    facts = units.facts_dir(root)
-    if facts.is_dir():
-        for f in sorted(facts.glob("*.md")):
-            issues.extend(lint_fact_file(f))
+    # Both layouts, never just one: an unlinted fact file is an unenforced format, and CI
+    # would pass over a malformed bullet that is committed and on disk.
+    for f in units.fact_files(root):
+        issues.extend(lint_fact_file(f))
     return issues
 
 
