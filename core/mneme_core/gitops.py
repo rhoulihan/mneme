@@ -1,6 +1,7 @@
 """Git side effects for harvest — subprocess-wrapped, never networked implicitly (spec §7.3, §8)."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,3 +77,19 @@ def push_main(repo: Path) -> None:
     if not has_remote(repo):
         raise MnemeError("no 'origin' remote to push to")
     git(repo, "push", "origin", "main")
+
+
+def open_pr(repo: Path, branch: str, title: str, body: str) -> str:
+    fallback = (
+        f"manual: branch '{branch}' is pushed — open the pull request yourself"
+        f" (title: {title})"
+    )
+    if shutil.which("gh") is None:
+        return fallback
+    result = subprocess.run(
+        ["gh", "pr", "create", "--head", branch, "--title", title, "--body", body],
+        capture_output=True, text=True, cwd=str(repo),
+    )
+    if result.returncode != 0:
+        return fallback
+    return result.stdout.strip()
