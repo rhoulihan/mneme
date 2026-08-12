@@ -40,6 +40,15 @@ def submitted_path(home: Path) -> Path:
     return home / "submitted.jsonl"
 
 
+def detection_declined_path(home: Path) -> Path:
+    """Repos the user declined to register — a decline that outlives the session.
+
+    Separate from declined_path (candidate bodies): this ledger keys on repo
+    paths, and its only job is to stop the registration nudge coming back.
+    """
+    return home / "detection-declined.jsonl"
+
+
 def flags_path(home: Path) -> Path:
     return staging_dir(home) / "flags.jsonl"
 
