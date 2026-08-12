@@ -91,6 +91,10 @@ def _build_parser() -> argparse.ArgumentParser:
     distill_sub = p_distill.add_subparsers(dest="distill_command", required=True)
     p_prep = distill_sub.add_parser("prepare")
     p_prep.add_argument("--transcript", default="(not provided)")
+    p_ing = distill_sub.add_parser("ingest")
+    p_ing.add_argument("path")
+    p_ing.add_argument("--source", default="unknown")
+    p_ing.add_argument("--clear-flags", action="store_true")
 
     p_db = sub.add_parser("db")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
@@ -378,4 +382,76 @@ def _distill_cmd(home: Path, args: argparse.Namespace) -> int:
         )
         print(json_mod.dumps({"prompt": prompt, "flag_count": len(flag_records)}))
         return 0
+    if args.distill_command == "ingest":
+        return _distill_ingest(home, args)
     return 1
+
+
+def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
+    import sys as sys_mod
+    from datetime import datetime, timezone
+
+    from . import compose, proposals as proposals_mod, scan as scan_mod, staging as staging_mod
+    from . import flags as flags_mod
+
+    if args.path == "-":
+        raw = sys_mod.stdin.read()
+    else:
+        try:
+            raw = Path(args.path).read_text(encoding="utf-8")
+        except OSError as e:
+            raise MnemeError(f"cannot read proposals: {e}")
+    valid, errors = proposals_mod.parse_proposals(raw)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    staged = quarantined = skipped_declined = skipped_duplicate = 0
+    rejected = list(errors)
+    existing_ids = {
+        c.id for c in staging_mod.load_candidates(home, include_quarantined=True)
+    }
+    for p in valid:
+        try:
+            if p.type == "skill":
+                body = compose.render_skill_unit(
+                    p.name, p.description, p.procedure, p.failure_pattern,
+                    source=args.source, captured=today,
+                )
+            else:
+                body = compose.render_fact_bullet(
+                    p.category, p.text, p.tags, verified=today
+                )
+        except MnemeError as e:
+            rejected.append(f"compose ({p.type} -> {p.target}): {e}")
+            continue
+        if staging_mod.is_declined(home, body):
+            skipped_declined += 1
+            continue
+        cand_id = staging_mod.candidate_id(p.type, p.target, body)
+        if cand_id in existing_ids:
+            skipped_duplicate += 1
+            continue
+        findings = scan_mod.scan_text(body)
+        status = "quarantined" if scan_mod.has_blockers(findings) else "staged"
+        cand = staging_mod.Candidate(
+            id=cand_id, type=p.type, edit=p.edit, target=p.target, body=body,
+            confidence=p.confidence, rationale=p.rationale, target_unit=p.target_unit,
+            topic=p.topic, status=status,
+            provenance={"source": args.source, "captured": today},
+        )
+        staging_mod.write_candidate(home, cand)
+        existing_ids.add(cand_id)
+        if status == "quarantined":
+            quarantined += 1
+        else:
+            staged += 1
+
+    print(
+        f"staged {staged}  quarantined {quarantined}"
+        f"  skipped-declined {skipped_declined}"
+        f"  skipped-duplicate {skipped_duplicate}  rejected {len(rejected)}"
+    )
+    for r in rejected:
+        print(f"rejected: {r}")
+    if args.clear_flags:
+        flags_mod.clear_flags(home)
+    return 0
