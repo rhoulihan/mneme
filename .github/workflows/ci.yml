@@ -14,8 +14,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "${{ matrix.python }}"
-      - name: Install dev dependency
-        run: python -m pip install pytest
+      - name: Install dev dependencies
+        run: python -m pip install pytest pyyaml
       - name: Test suite
         run: python -m pytest
       - name: Lint our own skills with our own linter

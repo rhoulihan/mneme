@@ -689,7 +689,10 @@ def _db_cmd(home: Path, args: argparse.Namespace) -> int:
     try:
         try:
             rows = conn.execute(args.sql).fetchall()
-        except sqlite3.Error as e:
+        # Python <= 3.11 raises sqlite3.Warning (not a subclass of sqlite3.Error)
+        # for multi-statement SQL; 3.12+ raises sqlite3.ProgrammingError. Catch both
+        # so rejection is identical on every supported interpreter.
+        except (sqlite3.Error, sqlite3.Warning) as e:
             raise MnemeError(f"query failed: {e}")
         for r in rows:
             print("\t".join(str(v) for v in tuple(r)))
