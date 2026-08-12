@@ -27,24 +27,9 @@ Nobody ships **capture → local staging → user-curated review → PR into an 
 
 ## The loop
 
-```
-work session ──one-line flags──▶ Stop / PreCompact hook ──▶ distiller (background, separate role)
-                                                              │  machine gate: promotion rule,
-                                                              │  secret scan, dedup, routing
-                                                              ▼
-                                                    ~/.mneme/staging/
-                                                              │
-                                          /mneme:share  (human gate: review diffs,
-                                                         edit, approve, re-route, decline)
-                                                              ▼
-                                    per-target repo: branch ─ commit ─ pull request
-                                                              │
-                                        CODEOWNERS review ─ CI validation ─ merge
-                                                              ▼
-                                          version bump ⇒ marketplace update
-                                                              ▼
-                                     every consumer inherits on plugin update
-```
+<p align="center">
+  <img src="assets/the-loop.svg" alt="The mneme loop: work session → background distiller → machine gate → staging → human gate (/mneme:share) → pull request → merge → consumers inherit → back to the next work session" width="960">
+</p>
 
 Nothing leaves your machine without passing a deterministic machine gate **and** your explicit approval. Nothing enters a shared repo without a human merge. There is no auto-push mode — by design, not by configuration.
 

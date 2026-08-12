@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="480" viewBox="0 0 1160 480"
+     font-family="'Segoe UI',system-ui,-apple-system,sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="context-stroke"/>
+    </marker>
+  </defs>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+
+  <!-- ================= top row (capture, left to right) ================= -->
+  <!-- 1. Work session -->
+  <g>
+    <rect x="40" y="64" width="240" height="86" rx="6" fill="#ffffff" stroke="#334155" stroke-width="1.6"/>
+    <rect x="42" y="70" width="4" height="74" rx="2" fill="#2563eb"/>
+    <text x="160" y="94" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1a1a">Work session</text>
+    <text x="160" y="114" text-anchor="middle" font-size="10.5" fill="#5b6570">agent flags golden paths</text>
+    <text x="160" y="132" text-anchor="middle" font-size="10.5" fill="#5b6570">one line, zero overhead</text>
+  </g>
+  <!-- 2. Background distiller -->
+  <g>
+    <rect x="320" y="64" width="240" height="86" rx="6" fill="#ffffff" stroke="#334155" stroke-width="1.6"/>
+    <rect x="322" y="70" width="4" height="74" rx="2" fill="#2563eb"/>
+    <text x="440" y="94" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1a1a">Background distiller</text>
+    <text x="440" y="114" text-anchor="middle" font-size="10.5" fill="#5b6570">Stop / PreCompact hooks</text>
+    <text x="440" y="132" text-anchor="middle" font-size="10.5" fill="#5b6570">a separate curation role</text>
+  </g>
+  <!-- 3. Machine gate -->
+  <g>
+    <rect x="600" y="64" width="240" height="86" rx="6" fill="#fdf6f5" stroke="#C74634" stroke-width="1.6"/>
+    <rect x="602" y="70" width="4" height="74" rx="2" fill="#C74634"/>
+    <text x="720" y="94" text-anchor="middle" font-size="13" font-weight="700" fill="#C74634">Machine gate</text>
+    <text x="720" y="114" text-anchor="middle" font-size="10.5" fill="#5b6570">validate &#183; render &#183; secret-scan</text>
+    <text x="720" y="132" text-anchor="middle" font-size="10.5" fill="#5b6570">dedup &#183; route by scope</text>
+  </g>
+  <!-- 4. Staging -->
+  <g>
+    <rect x="880" y="64" width="240" height="86" rx="6" fill="#f8f8f8" stroke="#334155" stroke-width="1.6"/>
+    <rect x="882" y="70" width="4" height="74" rx="2" fill="#334155"/>
+    <text x="1000" y="94" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1a1a">Staging</text>
+    <text x="1000" y="114" text-anchor="middle" font-size="10.5" fill="#5b6570">~/.mneme/staging</text>
+    <text x="1000" y="132" text-anchor="middle" font-size="10.5" fill="#5b6570">nothing has left the machine</text>
+  </g>
+
+  <!-- ================= bottom row (share, right to left) ================= -->
+  <!-- 5. Human gate -->
+  <g>
+    <rect x="880" y="330" width="240" height="86" rx="6" fill="#fdf6f5" stroke="#C74634" stroke-width="1.6"/>
+    <rect x="882" y="336" width="4" height="74" rx="2" fill="#C74634"/>
+    <text x="1000" y="360" text-anchor="middle" font-size="13" font-weight="700" fill="#C74634">Human gate &#183; /mneme:share</text>
+    <text x="1000" y="380" text-anchor="middle" font-size="10.5" fill="#5b6570">review diffs &#183; approve &#183; decline</text>
+    <text x="1000" y="398" text-anchor="middle" font-size="10.5" fill="#5b6570">no auto-push exists</text>
+  </g>
+  <!-- 6. Pull request -->
+  <g>
+    <rect x="600" y="330" width="240" height="86" rx="6" fill="#ffffff" stroke="#334155" stroke-width="1.6"/>
+    <rect x="602" y="336" width="4" height="74" rx="2" fill="#334155"/>
+    <text x="720" y="360" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1a1a">Pull request</text>
+    <text x="720" y="380" text-anchor="middle" font-size="10.5" fill="#5b6570">CODEOWNERS review &#183; CI checks</text>
+    <text x="720" y="398" text-anchor="middle" font-size="10.5" fill="#5b6570">provenance in every commit</text>
+  </g>
+  <!-- 7. Merge -->
+  <g>
+    <rect x="320" y="330" width="240" height="86" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.6"/>
+    <rect x="322" y="336" width="4" height="74" rx="2" fill="#16a34a"/>
+    <text x="440" y="360" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1a1a">Merge</text>
+    <text x="440" y="380" text-anchor="middle" font-size="10.5" fill="#5b6570">version bump on main</text>
+    <text x="440" y="398" text-anchor="middle" font-size="10.5" fill="#5b6570">marketplace update ships</text>
+  </g>
+  <!-- 8. Consumers inherit -->
+  <g>
+    <rect x="40" y="330" width="240" height="86" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.6"/>
+    <rect x="42" y="336" width="4" height="74" rx="2" fill="#16a34a"/>
+    <text x="160" y="360" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1a1a">Consumers inherit</text>
+    <text x="160" y="380" text-anchor="middle" font-size="10.5" fill="#5b6570">one install, every future update</text>
+    <text x="160" y="398" text-anchor="middle" font-size="10.5" fill="#5b6570">plugins are the memory</text>
+  </g>
+
+  <!-- ================= connectors (clockwise, no crossings) ================= -->
+  <!-- top row, left to right (blue capture flow) -->
+  <line x1="280" y1="107" x2="316" y2="107" stroke="#2563eb" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="560" y1="107" x2="596" y2="107" stroke="#2563eb" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="840" y1="107" x2="876" y2="107" stroke="#2563eb" stroke-width="2" marker-end="url(#ar)"/>
+  <!-- right side, down: staging -> human gate -->
+  <line x1="1000" y1="150" x2="1000" y2="326" stroke="#C74634" stroke-width="2" marker-end="url(#ar)"/>
+  <!-- bottom row, right to left (green distribution flow) -->
+  <line x1="880" y1="373" x2="844" y2="373" stroke="#16a34a" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="600" y1="373" x2="564" y2="373" stroke="#16a34a" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="320" y1="373" x2="284" y2="373" stroke="#16a34a" stroke-width="2" marker-end="url(#ar)"/>
+  <!-- left side, up: consumers -> next work session -->
+  <line x1="160" y1="330" x2="160" y2="154" stroke="#16a34a" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- connector annotations -->
+  <text x="1012" y="234" text-anchor="start" font-size="10" fill="#5b6570">curated</text>
+  <text x="1012" y="250" text-anchor="start" font-size="10" fill="#5b6570">candidates</text>
+  <text x="148" y="234" text-anchor="end" font-size="10" fill="#5b6570">knowledge returns</text>
+  <text x="148" y="250" text-anchor="end" font-size="10" fill="#5b6570">to every session</text>
+
+  <!-- ================= center title ================= -->
+  <text x="580" y="228" text-anchor="middle" font-size="20" font-weight="700" fill="#C74634">The mneme loop</text>
+  <text x="580" y="254" text-anchor="middle" font-size="11.5" fill="#5b6570">machines settle format &#183; humans gate what merges</text>
+  <text x="580" y="272" text-anchor="middle" font-size="11.5" fill="#5b6570">git carries the provenance</text>
+</svg>
