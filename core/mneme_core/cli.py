@@ -114,6 +114,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_adopt.add_argument("--description", default="")
     p_adopt.add_argument("--owner", default="maintainers")
 
+    # No plugin-name positional anywhere in the classify surface: the current directory
+    # is the argument. `--cwd` exists so tests (and wrappers) can point at a directory
+    # without chdir'ing the process — users never pass it.
+    p_classify = sub.add_parser("classify")
+    classify_sub = p_classify.add_subparsers(dest="classify_command", required=True)
+    p_cbegin = classify_sub.add_parser("begin")
+    p_cbegin.add_argument("--cwd", type=Path, default=None)
+    p_cabort = classify_sub.add_parser("abort")
+    p_cabort.add_argument("--cwd", type=Path, default=None)
+
     p_distill = sub.add_parser("distill")
     distill_sub = p_distill.add_subparsers(dest="distill_command", required=True)
     distill_sub.add_parser("pending")
@@ -210,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
             return _index_cmd(home, args)
         if args.command == "search":
             return _search_cmd(home, args)
+        if args.command == "classify":
+            return _classify_cmd(home, args)
         if args.command == "distill":
             return _distill_cmd(home, args)
         if args.command == "db":
@@ -719,6 +731,20 @@ def _db_cmd(home: Path, args: argparse.Namespace) -> int:
     finally:
         conn.close()
     return 0
+
+
+def _classify_cmd(home: Path, args: argparse.Namespace) -> int:
+    from . import classify as classify_mod
+
+    cwd = args.cwd if args.cwd is not None else Path.cwd()
+    if args.classify_command == "begin":
+        print(classify_mod.begin(home, cwd))
+        return 0
+    if args.classify_command == "abort":
+        classify_mod.abort(home, cwd)
+        print("aborted")
+        return 0
+    return 1
 
 
 def _distill_cmd(home: Path, args: argparse.Namespace) -> int:
