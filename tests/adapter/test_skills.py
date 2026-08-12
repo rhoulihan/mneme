@@ -7,7 +7,7 @@ from mneme_core import lint, units
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILLS_DIR = REPO_ROOT / "skills"
 
-IMPERATIVE = ["capture", "status", "verify", "adopt", "register"]
+IMPERATIVE = ["capture", "status", "verify", "adopt", "register", "classify"]
 
 
 def test_imperative_skills_exist_and_lint_clean():
@@ -66,6 +66,33 @@ def test_retrieval_skill_is_model_invocable():
     assert "disable-model-invocation" not in meta
     assert "mneme search" in body
     assert "mneme db query" in body
+
+
+def test_classify_drives_the_rails_end_to_end():
+    body = (SKILLS_DIR / "classify" / "SKILL.md").read_text(encoding="utf-8")
+    for token in (
+        "classify begin",
+        "classify prepare",
+        "classify finalize",
+        "classify abort",
+        "approval",
+    ):
+        assert token in body, token
+    # The precondition the rails enforce has to be relayed, not paraphrased away.
+    assert "registered knowledge plugin" in body
+    assert "/mneme:register" in body
+    # Never-delete is the guarantee the whole pass rests on.
+    assert "delete" in body.lower()
+
+
+def test_classify_takes_no_argument():
+    # The current directory IS the argument (spec §7.7) — an argument-hint would
+    # advertise a plugin-name parameter that does not exist anywhere in the surface.
+    meta, body = units.parse_frontmatter(
+        (SKILLS_DIR / "classify" / "SKILL.md").read_text(encoding="utf-8")
+    )
+    assert "argument-hint" not in meta
+    assert "$ARGUMENTS" not in body
 
 
 def frontmatter_block(path):
