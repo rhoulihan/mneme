@@ -75,6 +75,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_srch.add_argument("--kind", choices=["skill", "fact"], default=None)
     p_srch.add_argument("--plugin", default=None)
 
+    p_new = sub.add_parser("new")
+    p_new.add_argument("name")
+    p_new.add_argument("--dir", type=Path, default=None)
+    p_new.add_argument("--description", default="")
+    p_new.add_argument("--owner", default="maintainers")
+    p_new.add_argument("--repo", default="")
+    p_new.add_argument("--mode", default="pr", choices=sorted(registry.MODES))
+    p_new.add_argument(
+        "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
+    )
+
     p_db = sub.add_parser("db")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
     p_query = db_sub.add_parser("query")
@@ -123,6 +134,22 @@ def main(argv: list[str] | None = None) -> int:
             return _search_cmd(home, args)
         if args.command == "db":
             return _db_cmd(home, args)
+        if args.command == "new":
+            from . import scaffold
+
+            target = scaffold.create(
+                home,
+                args.name,
+                directory=args.dir,
+                description=args.description,
+                owner=args.owner,
+                repo_url=args.repo,
+                mode=args.mode,
+                sensitivity=args.sensitivity,
+            )
+            print(f"created {target}")
+            print(f"registered {args.name}")
+            return 0
         parser.print_help()
         return 1
     except MnemeError as e:
