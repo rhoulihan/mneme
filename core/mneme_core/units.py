@@ -12,7 +12,10 @@ _KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):\s*(.*)$")
 _NESTED_RE = re.compile(r"^\s+([A-Za-z0-9_-]+):\s*(.*)$")
 _VALID_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# `\Z` (end of string), never `$`: `$` also matches before a single trailing newline,
+# so `"deploy-widget\n"` would pass as kebab-case and then break every consumer that
+# treats the name as a path segment or a frontmatter scalar.
+KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*\Z")
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:

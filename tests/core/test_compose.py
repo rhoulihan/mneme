@@ -66,3 +66,51 @@ def test_invalid_inputs_raise():
         compose.render_fact_bullet("gotcha", "", [], verified="2026-08-11")
     with pytest.raises(MnemeError):
         compose.render_fact_bullet("gotcha", "text", ["bad tag!"], verified="2026-08-11")
+
+
+def test_trailing_newline_never_passes_a_gate():
+    # `$`-anchored regexes match before a trailing newline; these must not slip through.
+    with pytest.raises(MnemeError):
+        compose.render_skill_unit(
+            "deploy-widget\n", "d", "p", "f", source="s", captured="2026-08-11"
+        )
+    with pytest.raises(MnemeError):
+        compose.render_fact_bullet("gotcha", "text here", ["staging\n"], verified="2026-08-11")
+
+
+def test_fact_bullet_is_always_one_line(tmp_path):
+    line = compose.render_fact_bullet(
+        "gotcha", "text here", ["staging"], verified="2026-08-11"
+    )
+    assert "\n" not in line and "\r" not in line
+    # Written to a facts file and re-read line-by-line, the fields must survive intact.
+    f = tmp_path / "facts.md"
+    f.write_text(f"---\ntopic: t\n---\n\n{line}\n", encoding="utf-8")
+    _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8"))
+    bullets = units.parse_fact_bullets(body)
+    assert len(bullets) == 1
+    assert bullets[0].verified == "2026-08-11"
+    assert bullets[0].tags == ["staging"]
+    assert lint.lint_fact_file(f) == []
+
+
+def test_fact_text_cannot_smuggle_fields():
+    with pytest.raises(MnemeError):
+        compose.render_fact_bullet("gotcha", "evil #smuggled", [], verified="2026-08-11")
+    # A `(verified: ...)` inside the text stays inside the text — the real trailing date
+    # wins — so this one is faithful and is allowed through.
+    line = compose.render_fact_bullet(
+        "gotcha", "evil (verified: 2001-01-01)", [], verified="2026-08-11"
+    )
+    b = units.parse_bullet_line(line, 1)
+    assert b.text == "evil (verified: 2001-01-01)"
+    assert b.verified == "2026-08-11"
+
+
+def test_verified_must_be_an_iso_date():
+    with pytest.raises(MnemeError):
+        compose.render_fact_bullet("gotcha", "text", [], verified="yesterday")
+    with pytest.raises(MnemeError):
+        compose.render_fact_bullet(
+            "gotcha", "text", [], verified="2026-08-11\n- [gotcha] injected"
+        )
