@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from .errors import MnemeError
 
@@ -251,3 +252,21 @@ def skill_unit_id(skill_name: str) -> str:
 
 def fact_unit_id(topic_file_stem: str, bullet_text: str) -> str:
     return f"facts/{topic_file_stem}#{normalize_topic_key(bullet_text)}"
+
+
+# Facts live *inside* the router skill, so the index and the files it routes to travel as
+# one self-contained directory. Repos scaffolded before this change keep a top-level
+# `facts/`; both layouts stay readable and unit ids (`facts/<stem>#<key>`) never move with
+# the physical path.
+FACTS_CANONICAL = "skills/knowledge-index/facts"
+
+
+def facts_dir(root: Path) -> Path:
+    """Resolve a repo's facts directory: canonical, else legacy, else canonical."""
+    canonical = root / FACTS_CANONICAL
+    if canonical.is_dir():
+        return canonical
+    legacy = root / "facts"
+    if legacy.is_dir():
+        return legacy
+    return canonical
