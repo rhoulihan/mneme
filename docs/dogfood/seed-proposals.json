@@ -1,0 +1,70 @@
+{
+  "proposals": [
+    {
+      "type": "skill", "edit": "new", "target": "mneme-dev-knowledge",
+      "name": "record-executable-bits-on-drvfs",
+      "description": "Use when committing executable scripts from a WSL checkout on a Windows drvfs mount (/mnt/c) and the executable bit must reach git",
+      "procedure": "1. chmod +x the file as usual (harmless, but insufficient on drvfs).\n2. Record the bit directly in the index: `git update-index --add --chmod=+x <file>`.\n3. Verify with `git ls-files --stage <file>` — expect mode 100755 before committing.",
+      "failure_pattern": "chmod alone silently does nothing on drvfs mounts: the file commits as 100644, and launchers fail with 'Permission denied' only for users cloning to real POSIX filesystems — the author never sees the breakage.",
+      "confidence": 0.95, "rationale": "hit on every plan of this build; verified by inspecting index modes"
+    },
+    {
+      "type": "skill", "edit": "new", "target": "mneme-dev-knowledge",
+      "name": "cross-module-audit-after-per-task-review",
+      "description": "Use when orchestrating multi-agent implementation with per-task review and deciding whether a final whole-branch audit is worth the cost",
+      "procedure": "1. Keep per-task adversarial review (it keeps implementers honest — near-zero fix rounds).\n2. After all tasks land, run two independent whole-branch auditors: one attacking correctness across module boundaries, one checking plan/spec compliance.\n3. Give auditors concrete attack lanes drawn from the plan's trust boundaries, and require demonstrated findings only.\n4. Route blocking findings through one fix pass plus an independent re-check.",
+      "failure_pattern": "Per-task review structurally cannot see cross-module composition bugs: in this build it missed a staging-store frontmatter injection, a date-in-hash dedup defeat, and a whole-file rewrite masquerading as a delta edit — every one was caught by the whole-branch audit instead.",
+      "confidence": 0.9, "rationale": "audit layer found 13+ demonstrated defects across five plans that per-task review approved"
+    },
+    {
+      "type": "skill", "edit": "new", "target": "mneme-dev-knowledge",
+      "name": "two-phase-llm-gate",
+      "description": "Use when an LLM must contribute content to a persistent store and you need the store protected from model failure modes",
+      "procedure": "1. Split the flow: a 'prepare' step assembles the prompt bundle deterministically; the LLM returns STRUCTURED PROPOSALS only; an 'ingest' step validates, renders canonically, scans, dedups, and stages in tested code.\n2. Treat every proposal field as untrusted input: enum/length/shape validation, size caps, secret scan, canonical rendering by construction.\n3. Hash on semantic content (strip your own stamps like dates and session labels) so decline/dedup ledgers survive across days and sessions.",
+      "failure_pattern": "Letting the model write the store directly invites context collapse and format drift; even with proposals, hashing date-stamped renderings meant declined items resurfaced the next day with fresh hashes until semantic hashing landed.",
+      "confidence": 0.9, "rationale": "distiller architecture of this repo; both failure modes demonstrated by audit before fixes"
+    },
+    {
+      "type": "fact", "edit": "new", "target": "mneme-dev-knowledge", "topic": "python-stdlib",
+      "category": "constraint",
+      "text": "CPython's bundled SQLite ships with FTS5 enabled on mainstream Linux, macOS, and Windows builds, so full-text search needs no third-party dependency",
+      "tags": ["sqlite", "python"], "confidence": 0.9,
+      "rationale": "mneme-index runs FTS5 through stdlib sqlite3 across the test matrix"
+    },
+    {
+      "type": "fact", "edit": "new", "target": "mneme-dev-knowledge", "topic": "python-packaging",
+      "category": "gotcha",
+      "text": "Ubuntu marks the system Python externally managed (PEP 668), so pip install --user fails until you pass --break-system-packages or use a venv",
+      "tags": ["python", "ubuntu"], "confidence": 0.9,
+      "rationale": "hit installing pytest on this machine"
+    },
+    {
+      "type": "fact", "edit": "new", "target": "mneme-dev-knowledge", "topic": "python-stdlib",
+      "category": "gotcha",
+      "text": "argparse's action=version raises SystemExit, which escapes an in-process main() under test — implement version flags as store_true when you test CLIs in-process",
+      "tags": ["python", "argparse", "testing"], "confidence": 0.9,
+      "rationale": "caught in Plan 01 self-review before execution"
+    },
+    {
+      "type": "fact", "edit": "new", "target": "mneme-dev-knowledge", "topic": "python-stdlib",
+      "category": "gotcha",
+      "text": "SQLite URI filenames treat hash, question mark, and percent specially — percent-encode paths before building file: URIs or mode=ro silently drops and the wrong file opens",
+      "tags": ["sqlite", "security"], "confidence": 0.9,
+      "rationale": "demonstrated by the Plan 02 audit: a # in the path voided the read-only guarantee"
+    },
+    {
+      "type": "fact", "edit": "new", "target": "mneme-dev-knowledge", "topic": "claude-code-platform",
+      "category": "constraint",
+      "text": "Claude Code hook stdout is injected as context only for SessionStart, UserPromptSubmit, and UserPromptExpansion; other events log stdout without showing it",
+      "tags": ["claude-code", "hooks"], "confidence": 0.9,
+      "rationale": "verified against code.claude.com hook docs and shipping plugins"
+    },
+    {
+      "type": "fact", "edit": "new", "target": "mneme-dev-knowledge", "topic": "claude-code-platform",
+      "category": "gotcha",
+      "text": "string.Template substitution into JSON templates breaks on quote-bearing values — JSON-escape each value (json.dumps of the string, shorn of quotes) before substituting",
+      "tags": ["python", "templates"], "confidence": 0.9,
+      "rationale": "Plan 03 audit demonstrated broken manifests from a quoted --description"
+    }
+  ]
+}
