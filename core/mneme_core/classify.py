@@ -4,6 +4,12 @@ Classification itself is LLM judgment over repo structures that vary, so it live
 session. These rails are the deterministic frame around it: the directory the user is
 standing in must resolve to a registered knowledge plugin, the work happens on a
 `mneme/classify-*` branch, and `main` is never written (Plan 09 doctrine).
+
+Review extraction (spec §7.8) needs the identical frame — an agent editing the same
+working tree under the same gates — differing only in the branch namespace, the commit
+subject, and the ledger kind. So the rails take a `kind` ("classify" or "review") and both
+flows run the SAME code: a gate the review rail skipped would be a gate that stopped
+holding for knowledge arriving from strangers, which is the traffic that needs it most.
 """
 from __future__ import annotations
 
@@ -14,7 +20,17 @@ from pathlib import Path
 from . import gitops, harvest, lint, paths, scan, templates, units
 from .errors import MnemeError
 
-BRANCH_PREFIX = "mneme/classify-"
+# The kind word is the whole difference between the rails: it names the branch namespace,
+# the commit subject, the ledger record, and every message the user reads.
+_RAIL_KINDS = ("classify", "review")
+
+
+def _branch_prefix(kind: str) -> str:
+    return f"mneme/{kind}-"
+
+
+BRANCH_PREFIX = _branch_prefix("classify")
+REVIEW_BRANCH_PREFIX = _branch_prefix("review")
 
 
 def resolve(home: Path, cwd: Path):
@@ -38,30 +54,60 @@ def resolve(home: Path, cwd: Path):
     return scope, repo
 
 
-def begin(home: Path, cwd: Path) -> str:
+def _active_rail(repo: Path) -> str | None:
+    """The kind of rail branch this repo is standing on, or None."""
+    branch = gitops.current_branch(repo)
+    for kind in _RAIL_KINDS:
+        if branch.startswith(_branch_prefix(kind)):
+            return kind
+    return None
+
+
+def _begin(home: Path, cwd: Path, kind: str) -> str:
     _scope, repo = resolve(home, cwd)
-    # Order matters: an already-active classify branch is the more specific diagnosis, and
+    # Order matters: an already-active rail branch is the more specific diagnosis, and
     # such a branch is usually dirty by design (the agent is mid-edit) — reporting it as
     # "uncommitted changes" would send the user to stash work the abort rail exists for.
-    if gitops.current_branch(repo).startswith(BRANCH_PREFIX):
-        raise MnemeError("a classify branch is already active — finalize or abort it first")
+    # Either kind blocks either begin: both flows rewrite the one working tree, so a
+    # review extraction started mid-classify would deliver the librarian's edits too.
+    active = _active_rail(repo)
+    if active is not None:
+        raise MnemeError(f"a {active} branch is already active — finalize or abort it first")
     if not gitops.is_clean(repo):
         raise MnemeError(f"{repo} has uncommitted changes — commit or stash them first")
     gitops.sync_main(repo)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    branch = f"{BRANCH_PREFIX}{stamp}"
+    branch = f"{_branch_prefix(kind)}{stamp}"
     gitops.create_branch(repo, branch)
     return branch
 
 
-def abort(home: Path, cwd: Path) -> None:
+def _abort(home: Path, cwd: Path, kind: str) -> None:
     _scope, repo = resolve(home, cwd)
     branch = gitops.current_branch(repo)
-    if not branch.startswith(BRANCH_PREFIX):
-        raise MnemeError("not on a classify branch — nothing to abort")
+    # Deliberately the one prefix, not both: `mneme review abort` deleting a classify
+    # branch would discard a pass its user never asked to end.
+    if not branch.startswith(_branch_prefix(kind)):
+        raise MnemeError(f"not on a {kind} branch — nothing to abort")
     gitops.restore(repo)
     gitops.git(repo, "checkout", "main")
     gitops.git(repo, "branch", "-D", branch)
+
+
+def begin(home: Path, cwd: Path) -> str:
+    return _begin(home, cwd, "classify")
+
+
+def abort(home: Path, cwd: Path) -> None:
+    _abort(home, cwd, "classify")
+
+
+def review_begin(home: Path, cwd: Path) -> str:
+    return _begin(home, cwd, "review")
+
+
+def review_abort(home: Path, cwd: Path) -> None:
+    _abort(home, cwd, "review")
 
 
 def _fact_entries(repo: Path, notes: list[str]) -> list[dict]:
@@ -255,7 +301,7 @@ def _scannable_text(path: Path) -> str | None:
     return raw.decode("utf-8", errors="replace")
 
 
-def _scan_gate(repo: Path, changed: list[str]) -> None:
+def _scan_gate(repo: Path, changed: list[str], kind: str) -> None:
     for rel in changed:
         path = repo / rel
         if not path.is_file():
@@ -266,10 +312,12 @@ def _scan_gate(repo: Path, changed: list[str]) -> None:
         findings = scan.scan_text(text)
         if scan.has_blockers(findings):
             rules = ", ".join(sorted({f.rule for f in findings if f.severity == scan.BLOCK}))
-            raise MnemeError(f"classify fails the secret scan: {rel} ({rules})")
+            raise MnemeError(f"{kind} fails the secret scan: {rel} ({rules})")
 
 
-def _commit(repo: Path, plugin: str, unit_lines: list[str], base_sha: str) -> str:
+def _commit(
+    repo: Path, plugin: str, kind: str, unit_lines: list[str], base_sha: str
+) -> str:
     """Commit whatever the pass produced; deliver what is already committed unchanged.
 
     A librarian who commits their own edits on the classify branch — and an index
@@ -284,17 +332,17 @@ def _commit(repo: Path, plugin: str, unit_lines: list[str], base_sha: str) -> st
         head = gitops.head_sha(repo)
         if head != base_sha:
             return head
-        raise MnemeError("nothing to commit for this classify pass")
+        raise MnemeError(f"nothing to commit for this {kind} pass")
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    subject = f"knowledge: classify {date}"
+    subject = f"knowledge: {kind} {date}"
     body = "\n".join(f"- {line}" for line in unit_lines)
-    message = f"{subject}\n\n{body}\n\nMneme-Classify: {plugin}\n"
+    message = f"{subject}\n\n{body}\n\nMneme-{kind.capitalize()}: {plugin}\n"
     gitops.git(repo, "commit", "-m", message)
     return gitops.head_sha(repo)
 
 
-def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
-    """Migrate, regenerate, gate, commit, and offer the reorganization as a PR.
+def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest.HarvestResult:
+    """Migrate, regenerate, gate, commit, and offer the branch's work as a PR.
 
     The rollback and index-regeneration behaviour is deliberately the harvest's own
     (`harvest._abort` / `harvest._regenerate_index`) rather than a second implementation:
@@ -303,11 +351,11 @@ def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResu
     """
     scope, repo = resolve(home, cwd)
     branch = gitops.current_branch(repo)
-    if not branch.startswith(BRANCH_PREFIX):
+    if not branch.startswith(_branch_prefix(kind)):
         raise MnemeError(
-            "not on a classify branch — run 'mneme classify begin' before finalizing"
+            f"not on a {kind} branch — run 'mneme {kind} begin' before finalizing"
         )
-    # main is only ever read: the classify branch is the whole deliverable (spec §7.3).
+    # main is only ever read: the rail's branch is the whole deliverable (spec §7.3).
     base_sha = gitops.git(repo, "rev-parse", "main")
     result = harvest.HarvestResult(target=scope.name, branch=branch)
 
@@ -317,22 +365,22 @@ def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResu
         moves = _migrate_legacy_facts(repo)
         if not (dirty or ahead or moves):
             raise MnemeError(
-                "nothing to classify — no edits were made and no legacy facts needed"
-                " migrating; the classify branch has been discarded"
+                f"nothing to {kind} — no edits were made and no legacy facts needed"
+                f" migrating; the {kind} branch has been discarded"
             )
         harvest._regenerate_index(repo)
         issues = lint.lint_repo(repo)
         if lint.has_errors(issues):
             details = "; ".join(f"{i.code} {i.message}" for i in issues if i.severity == "error")
-            raise MnemeError(f"classify fails repo lint: {details}")
+            raise MnemeError(f"{kind} fails repo lint: {details}")
         changed = _changed_files(repo)
-        _scan_gate(repo, changed)
+        _scan_gate(repo, changed, kind)
     except MnemeError:
         harvest._abort(repo, branch, base_sha)
         raise
     except Exception as e:
         harvest._abort(repo, branch, base_sha)
-        raise MnemeError(f"classify aborted — {type(e).__name__}: {e}") from e
+        raise MnemeError(f"{kind} aborted — {type(e).__name__}: {e}") from e
 
     moved_dests = {dest for _src, dest in moves}
     result.units = [f"{src} -> {dest} (migrated)" for src, dest in moves] + [
@@ -340,27 +388,27 @@ def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResu
     ]
 
     try:
-        result.commit = _commit(repo, scope.name, result.units, base_sha)
+        result.commit = _commit(repo, scope.name, kind, result.units, base_sha)
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if push and gitops.has_remote(repo):
             gitops.push_branch(repo, branch)
-            title = f"knowledge: classify {date} ({len(result.units)} changes)"
+            title = f"knowledge: {kind} {date} ({len(result.units)} changes)"
             result.pr = gitops.open_pr(repo, branch, title, "\n".join(result.units))
         elif not gitops.has_remote(repo):
             result.pr = "no remote — branch left local; merge it or add a remote and push"
         else:
             result.pr = "push skipped (--no-push) — branch left local"
-        # The reorganization is handed over, never merged: back to an untouched main.
+        # The work is handed over, never merged: back to an untouched main.
         gitops.git(repo, "checkout", "main")
     except Exception as e:
         harvest._abort(repo, branch, base_sha)
         raise MnemeError(
-            f"classify rolled back after the validation gate — {type(e).__name__}: {e};"
+            f"{kind} rolled back after the validation gate — {type(e).__name__}: {e};"
             " the repo is back on a clean main"
         ) from e
 
     record = {
-        "kind": "classify",
+        "kind": kind,
         "target": scope.name,
         "branch": branch,
         "commit": result.commit,
@@ -374,6 +422,16 @@ def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResu
             f.write(json.dumps(record) + "\n")
     except OSError:
         # The knowledge is committed and the branch is pushed — a ledger write that
-        # fails must not turn a delivered classify into an error the user has to undo.
+        # fails must not turn a delivered pass into an error the user has to undo.
         pass
     return result
+
+
+def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
+    """Deliver the librarian's reorganization as a pull request."""
+    return _finalize(home, cwd, "classify", push=push)
+
+
+def review_finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
+    """Deliver facts extracted from inbound pull requests as mneme's own pull request."""
+    return _finalize(home, cwd, "review", push=push)

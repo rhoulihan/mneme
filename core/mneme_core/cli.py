@@ -135,6 +135,15 @@ def _build_parser() -> argparse.ArgumentParser:
     review_sub = p_review.add_subparsers(dest="review_command", required=True)
     p_rtriage = review_sub.add_parser("triage")
     p_rtriage.add_argument("--cwd", type=Path, default=None)
+    # Extraction runs the classify rails under the `mneme/review-*` prefix: same gates,
+    # same PR-only delivery, different branch namespace and ledger kind.
+    p_rbegin = review_sub.add_parser("begin")
+    p_rbegin.add_argument("--cwd", type=Path, default=None)
+    p_rfinalize = review_sub.add_parser("finalize")
+    p_rfinalize.add_argument("--cwd", type=Path, default=None)
+    p_rfinalize.add_argument("--no-push", action="store_true")
+    p_rabort = review_sub.add_parser("abort")
+    p_rabort.add_argument("--cwd", type=Path, default=None)
 
     # Detection declines are per-repo and permanent: the nudge asks once, and a
     # decline recorded here suppresses it for good — across sessions and compactions.
@@ -785,6 +794,7 @@ def _classify_cmd(home: Path, args: argparse.Namespace) -> int:
 
 
 def _review_cmd(home: Path, args: argparse.Namespace) -> int:
+    from . import classify as classify_mod
     from . import review as review_mod
 
     cwd = args.cwd if args.cwd is not None else Path.cwd()
@@ -792,6 +802,18 @@ def _review_cmd(home: Path, args: argparse.Namespace) -> int:
         import json as json_mod
 
         print(json_mod.dumps(review_mod.triage(home, cwd)))
+        return 0
+    if args.review_command == "begin":
+        print(classify_mod.review_begin(home, cwd))
+        return 0
+    if args.review_command == "finalize":
+        result = classify_mod.review_finalize(home, cwd, push=not args.no_push)
+        print(f"reviewed {result.target}: {len(result.units)} changes on {result.branch}")
+        print(f"pr: {result.pr}")
+        return 0
+    if args.review_command == "abort":
+        classify_mod.review_abort(home, cwd)
+        print("aborted")
         return 0
     return 1
 
