@@ -8,6 +8,14 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.4.0 — 2026-08-12
+
+- **PR-only contributions** — the `pr | commit` registry mode is gone; mneme
+  never writes a registered repo's `main`. Every harvest lands on a
+  `mneme/harvest-*` branch (pushed with a PR when a remote exists, left local
+  otherwise), enforced by an invariant test that main never advances. Legacy
+  registries carrying the old `mode` key load cleanly and shed it on save.
+
 ## 0.3.0 — 2026-08-12
 
 - **Session-start knowledge-repo detection** — opening a session inside an
