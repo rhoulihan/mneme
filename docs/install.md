@@ -4,6 +4,8 @@ Mneme ships as a Claude Code plugin, and its repository is its own marketplace �
 
 **Requirements:** Claude Code, Python ≥ 3.10, and git. The engine is standard-library-only — there is nothing to `pip install`.
 
+**Optional, except for review:** the GitHub CLI ([`gh`](https://cli.github.com), authenticated with `gh auth login`). Harvest and classify degrade gracefully without it — the branch is pushed and you open the pull request yourself. `/mneme:review` cannot: reading your repo's open pull requests *is* the command, so `mneme review triage` fails with a message naming the requirement when `gh` is missing or unauthenticated.
+
 ## 1. Install the plugin
 
 ```
@@ -14,7 +16,7 @@ Mneme ships as a Claude Code plugin, and its repository is its own marketplace �
 That registers the marketplace defined by `.claude-plugin/marketplace.json` at the repo root and installs the `mneme` plugin it points at. The plugin contributes:
 
 - **hooks** — a SessionStart context injector and a Stop/PreCompact background distiller trigger (`hooks/hooks.json`).
-- **skills** — the `/mneme:*` commands (`capture`, `share`, `new`, `register`, `adopt`, `status`, `verify`, `classify`) plus a model-invocable `retrieval` skill.
+- **skills** — the `/mneme:*` commands (`capture`, `share`, `new`, `register`, `adopt`, `status`, `verify`, `classify`, `review`) plus a model-invocable `retrieval` skill.
 - **`bin/`** — `mneme` and `mneme-index`, which Claude Code puts on the Bash `PATH` while the plugin is enabled.
 
 To install from a local checkout instead (development, air-gapped machines):
@@ -77,6 +79,16 @@ old one are read exactly as before, and nothing moves until you run this), regen
 knowledge-index, and delivers the whole reorganization as its own `mneme/classify-*` branch
 and PR. No fact is ever deleted: each one either lands in a skill or stays a fact. Change
 your mind at any point and `mneme classify abort` puts the repo back as it was.
+
+When you maintain a repo other people contribute to, run `/mneme:review` from inside it (the
+current directory is the argument here too, and this is the one command that requires `gh`).
+It reads every open pull request and annotates each fact bullet they add — already in the
+repo, previously declined by a human, possibly covered by an existing skill, or genuinely
+new — recommends one verdict per PR, and then does only what you approve for that specific
+PR: merge it, close it as a duplicate with a comment naming the covering units, or extract
+just the new bullets onto a `mneme/review-*` branch and open mneme's own PR
+(`mneme review begin` / `finalize`, with `mneme review abort` to back out). Nothing is
+merged or closed on your behalf.
 
 ## 3. What the hooks do
 

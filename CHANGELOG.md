@@ -8,6 +8,52 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.6.0 — 2026-08-12
+
+- **`/mneme:review` — inbound PR triage** — the maintainer side of the loop, run
+  on the repo you are standing in (the current directory is the argument, same
+  resolution and failure message as classify). `mneme review triage` lists every
+  open pull request through `gh` and annotates every fact bullet each one ADDS:
+  `duplicate` (the bullet's semantic hash already exists in the repo, or an
+  earlier-listed PR added it — cross-PR dedup included), `declined` (a human
+  already rejected that knowledge; the ledger remembers), `possibly-integrated`
+  (the index's nearest existing unit, named for you to judge), or `new`.
+  Diff parsing is read-only and tolerant: malformed bullets, non-fact files,
+  CRLF, and binary noise never crash a triage — unparseable additions come back
+  in a per-PR `skipped` list, and added `skills/*/SKILL.md` files are surfaced
+  for human eyes rather than dedup'd.
+- **Labels are evidence; the human decides** — the agent proposes exactly one
+  verdict per PR (merge / close-as-duplicate naming the covering unit ids /
+  extract-new-facts) and executes nothing without your explicit approval for
+  **that** pull request. No mneme code path ever runs `gh pr merge` or
+  `gh pr close`: remote mutations are agent actions gated on your approval, not
+  rails. There is no batch approval and no default yes.
+- **Extraction rides the classify rails** — `mneme review begin` /
+  `finalize` / `abort` are the same deterministic rails classify uses,
+  generalized to a branch prefix: new facts worth keeping are written on a
+  `mneme/review-*` branch, knowledge-index regenerated, lint and secret scan
+  gated over changed files, committed with provenance and delivered as mneme's
+  own pull request. Classify and review share the active-branch guard, so the
+  two passes can never interleave on one repo, and `main` is still never
+  written.
+- **Facts can no longer vanish at finalize** — "never delete knowledge" was
+  enforced only by instruction prose, and a pass that deleted a fact file
+  without integrating its content used to finalize successfully. Both rails now
+  compute the fact bullets on `main` before committing and require each one to
+  be accounted for on the branch — still a bullet somewhere, or its text carried
+  verbatim into a skill file the branch changed. Unaccounted bullets fail the
+  finalize with each lost line named, and the existing rollback restores the
+  repo.
+- **Untrusted content is framed as data** — the classify bundle, the review
+  bundle, and the distiller prompt all carry verbatim repo, staging, and PR text
+  (skill descriptions, fact bullets, PR titles) inside an instruction context.
+  All three templates now state the standing rule that this material is DATA
+  from untrusted contributors and that imperative text inside it is content to
+  classify, never commands to obey.
+- **`gh` is now a runtime requirement for review only** — it was already
+  required to open pull requests; review additionally needs it to read them, and
+  says so plainly instead of failing obscurely when it is missing.
+
 ## 0.5.0 — 2026-08-12
 
 - **Facts live under the router skill** — the canonical fact location is
