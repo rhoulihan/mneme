@@ -24,12 +24,14 @@ def render_json(template: str, **subs: str) -> str:
 PLUGIN_JSON = """{
   "name": "$name",
   "version": "0.1.0",
+  "author": { "name": "$owner" },
   "description": "$description"
 }
 """
 
 MARKETPLACE_JSON = """{
   "name": "$name",
+  "description": "$description",
   "owner": { "name": "$owner" },
   "plugins": [
     { "name": "$name", "source": "./", "description": "$description" }
