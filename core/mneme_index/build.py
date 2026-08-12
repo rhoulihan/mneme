@@ -69,7 +69,6 @@ def index_tree(
     root: Path,
     *,
     repo: str = "",
-    mode: str = "",
     sensitivity: str = "",
 ) -> IndexStats:
     if not root.is_dir():
@@ -101,11 +100,11 @@ def index_tree(
         [(r[0], r[1], r[3], r[4], r[5], r[7]) for r in rows],
     )
     conn.execute(
-        "INSERT INTO plugins (name, root, repo, mode, sensitivity, built_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO plugins (name, root, repo, sensitivity, built_at)"
+        " VALUES (?, ?, ?, ?, ?)"
         " ON CONFLICT(name) DO UPDATE SET root = excluded.root, repo = excluded.repo,"
-        " mode = excluded.mode, sensitivity = excluded.sensitivity, built_at = excluded.built_at",
-        (plugin, str(root), repo, mode, sensitivity, _now()),
+        " sensitivity = excluded.sensitivity, built_at = excluded.built_at",
+        (plugin, str(root), repo, sensitivity, _now()),
     )
     conn.commit()
     return stats

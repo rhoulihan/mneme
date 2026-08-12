@@ -23,7 +23,7 @@ def make_existing_plugin(tmp_path, home):
     registry.add_plugin(
         home,
         Plugin(name="existing-kb", repo="git@example.com:kb.git", path=str(repo),
-               sensitivity="restricted", mode="pr"),
+               sensitivity="restricted"),
     )
     return repo
 
@@ -40,6 +40,8 @@ def test_adopt_adds_only_missing(tmp_path, capsys):
     # registry sensitivity flows into MNEME.md
     text = (repo / "MNEME.md").read_text(encoding="utf-8")
     assert "restricted" in text
+    # PR-only doctrine: adopt writes no contribution mode into the scope doc.
+    assert "Contribution mode" not in text
     assert "* @team-leads" in (repo / "CODEOWNERS").read_text(encoding="utf-8")
 
 

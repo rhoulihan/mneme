@@ -31,7 +31,6 @@ def create(
     description: str = "",
     owner: str = "maintainers",
     repo_url: str = "",
-    mode: str = "pr",
     sensitivity: str = "internal",
 ) -> Path:
     if not KEBAB_RE.match(name):
@@ -41,9 +40,7 @@ def create(
         raise MnemeError(f"target already exists: {target}")
     if not description:
         description = f"Institutional knowledge maintained with mneme: {name}."
-    subs = dict(
-        name=name, description=description, owner=owner, sensitivity=sensitivity, mode=mode
-    )
+    subs = dict(name=name, description=description, owner=owner, sensitivity=sensitivity)
 
     files = {
         ".claude-plugin/plugin.json": templates.render_json(templates.PLUGIN_JSON, **subs),
@@ -92,7 +89,6 @@ def create(
             name=name,
             repo=repo_url or f"local:{target}",
             path=str(target),
-            mode=mode,
             sensitivity=sensitivity,
         ),
     )
@@ -112,7 +108,7 @@ def adopt(
         description = f"Institutional knowledge maintained with mneme: {name}."
     subs = dict(
         name=name, description=description, owner=owner,
-        sensitivity=plugin.sensitivity, mode=plugin.mode,
+        sensitivity=plugin.sensitivity,
     )
     candidates = {
         "MNEME.md": templates.render(templates.MNEME_MD, **subs),
@@ -165,7 +161,7 @@ def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
     # caller supplied so the rendered template stays parseable before we cap it.
     text = templates.render(
         templates.INDEX_SKILL_MD, name=name, description=" ".join(description.split()),
-        owner="", sensitivity="", mode="",
+        owner="", sensitivity="",
     )
     meta, body = units.parse_frontmatter(text)
     rendered = str(meta["description"])

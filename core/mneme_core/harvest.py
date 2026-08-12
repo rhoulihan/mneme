@@ -22,9 +22,35 @@ def _skill_name(cand: Candidate) -> str:
     return name
 
 
+def _unit_path(repo: Path, kind: str, name: str, what: str, *tail: str, suffix: str = "") -> Path:
+    """A path under `repo/<kind>/` built from a candidate-supplied unit name.
+
+    Skill names and fact topics arrive as candidate frontmatter — model-generated or
+    hand-placed text, i.e. untrusted input to a filesystem write. Unchecked, a name of
+    `../../other-kb/skills/injected` writes into a *sibling* registered repo's working
+    tree, and `../../../loose` writes outside every repo. Both escape the harvest's own
+    safety net: `_abort` only restores the target repo, and lint (MN002) never sees a
+    file that never landed in the target repo.
+
+    Kebab-case is the unit-name contract everywhere else (lint MN002, scaffold,
+    proposals, registry), and it is what makes a name exactly one literal path segment.
+    The containment assert behind it is belt-and-braces: the write is what is dangerous,
+    so it is proven in terms of the resolved path, not only the spelling of the name.
+    """
+    if not units.KEBAB_RE.fullmatch(name):
+        raise MnemeError(f"{what} must be kebab-case: {name!r}")
+    root = repo / kind
+    path = root.joinpath(name + suffix, *tail)
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise MnemeError(f"{what} escapes {kind}/: {name!r}")
+    return path
+
+
 def apply_skill(repo: Path, cand: Candidate) -> str:
     name = _skill_name(cand)
-    skill_md = repo / "skills" / name / "SKILL.md"
+    skill_md = _unit_path(
+        repo, "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
+    )
     if cand.edit == "new":
         if skill_md.exists():
             raise MnemeError(
@@ -113,7 +139,9 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
     bullet = units.parse_bullet_line(line, 1)
 
     if cand.edit == "new":
-        path = repo / "facts" / f"{cand.topic}.md"
+        path = _unit_path(
+            repo, "facts", cand.topic, f"candidate {cand.id}: fact topic", suffix=".md"
+        )
         text, bom = _read_raw(path) if path.exists() else ("", "")
         if not text.strip():
             # Only a genuinely new (or empty) topic file is written whole.
@@ -166,7 +194,9 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
     if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
         raise MnemeError(f"candidate {cand.id}: malformed fact target_unit {cand.target_unit!r}")
     file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
-    path = repo / "facts" / f"{file_part}.md"
+    path = _unit_path(
+        repo, "facts", file_part, f"candidate {cand.id}: fact topic in target_unit", suffix=".md"
+    )
     if not path.exists():
         raise MnemeError(f"candidate {cand.id}: update target file {path.name} not found")
     text, bom = _read_raw(path)
@@ -202,7 +232,6 @@ class HarvestResult:
     branch: str = ""
     commit: str = ""
     pr: str = ""
-    mode: str = ""
 
 
 def _regenerate_index(repo: Path) -> None:
@@ -224,7 +253,7 @@ def _regenerate_index(repo: Path) -> None:
     )
 
 
-def _abort(repo: Path, mode: str, branch: str, base_sha: str) -> None:
+def _abort(repo: Path, branch: str, base_sha: str) -> None:
     """Put the knowledge repo back exactly where the harvest found it: clean, on main.
 
     Best-effort by design — a failure while cleaning up must never mask the failure that
@@ -234,11 +263,10 @@ def _abort(repo: Path, mode: str, branch: str, base_sha: str) -> None:
     try:
         gitops.reset_hard(repo, base_sha)
         gitops.restore(repo)
-        if mode == "pr":
-            if gitops.current_branch(repo) != "main":
-                gitops.git(repo, "checkout", "main")
-            if branch and branch != "main":
-                gitops.git(repo, "branch", "-D", branch)
+        if gitops.current_branch(repo) != "main":
+            gitops.git(repo, "checkout", "main")
+        if branch and branch != "main":
+            gitops.git(repo, "branch", "-D", branch)
     except MnemeError:
         pass
 
@@ -260,15 +288,14 @@ def apply_batch(
                 f"candidate {cand.id} is quarantined — redact and re-stage before harvesting"
             )
 
+    # PR-only doctrine (spec §7.3): `sync_main` is the last thing that touches main, and
+    # it only reads it. Every byte of knowledge mneme writes lands on the harvest branch.
     gitops.sync_main(repo)
     base_sha = gitops.head_sha(repo)
-    result = HarvestResult(target=target_name, mode=plugin.mode)
-    if plugin.mode == "pr":
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        result.branch = f"mneme/harvest-{stamp}"
-        gitops.create_branch(repo, result.branch)
-    else:
-        result.branch = "main"
+    result = HarvestResult(target=target_name)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    result.branch = f"mneme/harvest-{stamp}"
+    gitops.create_branch(repo, result.branch)
 
     # Apply + gate. `except Exception`, not `except MnemeError`: an unexpected failure
     # here (a malformed manifest, an odd repo shape, a filesystem error) must still hit
@@ -291,34 +318,29 @@ def apply_batch(
             if scan.has_blockers(scan.scan_text(cand.body)):
                 raise MnemeError(f"candidate {cand.id} re-scan found blocking findings")
     except MnemeError:
-        _abort(repo, plugin.mode, result.branch, base_sha)
+        _abort(repo, result.branch, base_sha)
         raise
     except Exception as e:
-        _abort(repo, plugin.mode, result.branch, base_sha)
+        _abort(repo, result.branch, base_sha)
         raise MnemeError(f"harvest aborted — {type(e).__name__}: {e}") from e
 
-    # Finalize: commit, push, and (for PR mode) return to main. Guarded the same way —
-    # a rejected commit or a failed push after the gate passed must roll all the way
-    # back, leaving staging intact so the identical harvest can simply be retried.
+    # Finalize: commit on the branch, offer it upstream, and return to main. Guarded the
+    # same way — a rejected commit or a failed push after the gate passed must roll all
+    # the way back, leaving staging intact so the identical harvest can simply be retried.
     sources = [str(c.provenance.get("source", "unknown")) for c in candidates]
     try:
         result.commit = gitops.commit_harvest(repo, result.units, sources)
-        if plugin.mode == "pr":
-            if push and gitops.has_remote(repo):
-                gitops.push_branch(repo, result.branch)
-                title = f"knowledge: harvest ({len(result.units)} units)"
-                result.pr = gitops.open_pr(repo, result.branch, title, "\n".join(result.units))
-            else:
-                result.pr = "no remote — branch is local only"
-            gitops.git(repo, "checkout", "main")
+        if push and gitops.has_remote(repo):
+            gitops.push_branch(repo, result.branch)
+            title = f"knowledge: harvest ({len(result.units)} units)"
+            result.pr = gitops.open_pr(repo, result.branch, title, "\n".join(result.units))
         else:
-            if push and gitops.has_remote(repo):
-                gitops.push_main(repo)
-                result.pr = "pushed to main"
-            else:
-                result.pr = "no remote — committed to local main"
+            result.pr = "no remote — branch left local; merge it or add a remote and push"
+        # Back to main with the branch preserved: mneme hands the contribution over, it
+        # never merges it.
+        gitops.git(repo, "checkout", "main")
     except Exception as e:
-        _abort(repo, plugin.mode, result.branch, base_sha)
+        _abort(repo, result.branch, base_sha)
         raise MnemeError(
             f"harvest rolled back after the validation gate — {type(e).__name__}: {e};"
             " the repo is back on a clean main and the candidates are still staged"
@@ -328,7 +350,6 @@ def apply_batch(
         "target": target_name,
         "branch": result.branch,
         "commit": result.commit,
-        "mode": plugin.mode,
         "pr": result.pr,
         "units": result.units,
         "candidates": [c.id for c in candidates],

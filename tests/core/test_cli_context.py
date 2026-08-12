@@ -23,7 +23,7 @@ def test_context_with_plugins(tmp_path, capsys):
     code, out, _ = run(capsys, "--home", str(home), "context")
     assert code == 0
     assert "mneme flag" in out
-    assert "- acme-knowledge [restricted/pr]: Widget platform operations." in out
+    assert "- acme-knowledge [restricted]: Widget platform operations." in out
     assert "More detail." not in out
 
 
@@ -38,4 +38,4 @@ def test_context_missing_scope_statement(tmp_path, capsys):
     registry.add_plugin(home, Plugin(name="bare-kb", repo="r", path=str(tmp_path / "nope")))
     code, out, _ = run(capsys, "--home", str(home), "context")
     assert code == 0
-    assert "- bare-kb [internal/pr]: (no scope statement)" in out
+    assert "- bare-kb [internal]: (no scope statement)" in out

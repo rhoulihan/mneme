@@ -41,7 +41,7 @@ def test_status_populated(tmp_path, capsys):
     code, out, _ = run(capsys, "--home", str(home), "status")
     assert code == 0
     assert "plugins: 1 registered" in out
-    assert "- acme-knowledge [internal/pr]" in out
+    assert "- acme-knowledge [internal]" in out
     assert "flags: 1 pending" in out
     assert "0 staged" in out and "1 declined" in out
     assert "submissions: 1 recorded" in out

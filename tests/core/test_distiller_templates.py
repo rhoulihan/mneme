@@ -11,7 +11,7 @@ def test_noticing_brief_contents():
 def test_distiller_prompt_renders_and_carries_contract():
     text = templates.render(
         templates.DISTILLER_PROMPT,
-        scopes="- acme-knowledge [internal/pr]: Widget platform operations.",
+        scopes="- acme-knowledge [internal]: Widget platform operations.",
         flags='{"kind": "golden-path", "text": "solved the deploy race"}',
         transcript_path="/tmp/session.jsonl",
     )

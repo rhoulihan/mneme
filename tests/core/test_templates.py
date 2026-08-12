@@ -8,7 +8,6 @@ SUBS = dict(
     description="Institutional knowledge for the Acme widget platform",
     owner="acme-maintainers",
     sensitivity="internal",
-    mode="pr",
 )
 
 
@@ -32,6 +31,9 @@ def test_mneme_md_carries_scope_and_sensitivity():
     assert "internal" in text
     assert SUBS["description"] in text
     assert "## What does NOT belong here" in text
+    # PR-only doctrine: no contribution mode is declared anywhere in the scope doc.
+    assert "Contribution mode" not in text
+    assert "$mode" not in text
 
 
 def test_codeowners_has_owner():

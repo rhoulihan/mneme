@@ -65,11 +65,13 @@ def test_index_skills(conn, tmp_path):
 
 def test_plugins_row_upserted(conn, tmp_path):
     tree = make_tree(tmp_path / "tree")
-    build.index_tree(conn, "acme-knowledge", tree, repo="git@x:y.git", mode="pr", sensitivity="internal")
+    build.index_tree(conn, "acme-knowledge", tree, repo="git@x:y.git", sensitivity="internal")
     p = conn.execute("SELECT * FROM plugins WHERE name = 'acme-knowledge'").fetchone()
     assert p["repo"] == "git@x:y.git"
-    assert p["mode"] == "pr"
+    assert p["sensitivity"] == "internal"
     assert p["built_at"].endswith("+00:00")
+    # PR-only doctrine: the plugins row has no contribution-mode column.
+    assert "mode" not in p.keys()
 
 
 def test_skipped_entries(conn, tmp_path):

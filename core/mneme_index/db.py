@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS plugins (
   name TEXT PRIMARY KEY,
   root TEXT NOT NULL,
   repo TEXT NOT NULL DEFAULT '',
-  mode TEXT NOT NULL DEFAULT '',
   sensitivity TEXT NOT NULL DEFAULT '',
   built_at TEXT NOT NULL DEFAULT ''
 );

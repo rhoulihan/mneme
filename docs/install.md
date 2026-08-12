@@ -47,10 +47,15 @@ which interviews you for the scope statement before scaffolding the repo — or 
 The CLI equivalents, if you prefer driving it directly:
 
 ```bash
-mneme new acme-knowledge --owner your-team --sensitivity internal --mode pr
+mneme new acme-knowledge --owner your-team --sensitivity internal
 mneme registry add acme-knowledge --repo git@github.com:acme/knowledge.git --clone
-mneme registry add personal-kb --repo git@github.com:you/kb.git --path ~/src/kb --mode commit
+mneme registry add personal-kb --repo git@github.com:you/kb.git --path ~/src/kb
 ```
+
+There is no per-repo contribution setting to choose. Approved knowledge always lands on a
+`mneme/harvest-*` branch: with a remote, mneme pushes it and opens a PR; without one, the
+branch stays local for you to merge or push. Mneme never commits to a registered repo's
+`main` — personal repos included.
 
 Make registered knowledge searchable (optional, recommended):
 
@@ -81,7 +86,7 @@ The distill trigger. It exits immediately — doing nothing, touching no state �
 Otherwise it detaches `bin/mneme-distill-pipeline` with `nohup` and returns immediately. The session never waits on distillation.
 
 **The pipeline** (`bin/mneme-distill-pipeline`)
-`mneme distill prepare --transcript <path>` builds the prompt → a headless `claude -p` run produces proposals as JSON → `mneme distill ingest - --clear-flags --flags-snapshot <bundle>` puts them through the machine gate (schema validation, secret scan, dedup, routing, sensitivity boundaries) and into `~/.mneme/staging/`. Nothing is ever written to a knowledge repo here — that only happens at the human gate, `/mneme:share`.
+`mneme distill prepare --transcript <path>` builds the prompt → a headless `claude -p` run produces proposals as JSON → `mneme distill ingest - --clear-flags --flags-snapshot <bundle>` puts them through the machine gate (schema validation, secret scan, dedup, routing, sensitivity boundaries) and into `~/.mneme/staging/`. Nothing is ever written to a knowledge repo here — that only happens at the human gate, `/mneme:share`, and even then only on a `mneme/harvest-*` branch, never on `main`.
 
 Flags are consumed carefully, because the run takes minutes and the session keeps working: ingest clears only the flags `prepare` snapshotted (anything you capture mid-run stays pending for the next distill), and clears nothing at all when every proposal failed validation — a distiller that misses the schema does not get to eat the flags.
 

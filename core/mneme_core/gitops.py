@@ -82,12 +82,6 @@ def push_branch(repo: Path, branch: str) -> None:
     git(repo, "push", "-u", "origin", branch)
 
 
-def push_main(repo: Path) -> None:
-    if not has_remote(repo):
-        raise MnemeError("no 'origin' remote to push to")
-    git(repo, "push", "origin", "main")
-
-
 def open_pr(repo: Path, branch: str, title: str, body: str) -> str:
     fallback = (
         f"manual: branch '{branch}' is pushed — open the pull request yourself"

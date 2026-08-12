@@ -42,7 +42,6 @@ MARKETPLACE_JSON = """{
 MNEME_MD = """# $name — knowledge scope
 
 **Sensitivity:** $sensitivity
-**Contribution mode:** $mode
 **Maintainers:** $owner
 
 ## Scope statement

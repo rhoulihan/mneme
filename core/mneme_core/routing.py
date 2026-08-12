@@ -11,7 +11,6 @@ from . import registry
 class Scope:
     name: str
     sensitivity: str
-    mode: str
     path: str
     statement: str
 
@@ -43,7 +42,6 @@ def scopes(home: Path) -> list[Scope]:
             Scope(
                 name=p.name,
                 sensitivity=p.sensitivity,
-                mode=p.mode,
                 path=p.path,
                 statement=statement,
             )

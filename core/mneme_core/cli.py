@@ -49,7 +49,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("name")
     p_add.add_argument("--repo", required=True)
     p_add.add_argument("--path", default=None)
-    p_add.add_argument("--mode", default="pr", choices=sorted(registry.MODES))
     p_add.add_argument(
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
@@ -106,7 +105,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_new.add_argument("--description", default="")
     p_new.add_argument("--owner", default="maintainers")
     p_new.add_argument("--repo", default="")
-    p_new.add_argument("--mode", default="pr", choices=sorted(registry.MODES))
     p_new.add_argument(
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
@@ -169,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                     first = (
                         s.statement.splitlines()[0] if s.statement else "(no scope statement)"
                     )
-                    print(f"- {s.name} [{s.sensitivity}/{s.mode}]: {first}")
+                    print(f"- {s.name} [{s.sensitivity}]: {first}")
             if args.cwd is not None:
                 nudge = _registration_nudge(home, args.cwd)
                 if nudge:
@@ -226,7 +224,6 @@ def main(argv: list[str] | None = None) -> int:
                 description=args.description,
                 owner=args.owner,
                 repo_url=args.repo,
-                mode=args.mode,
                 sensitivity=args.sensitivity,
             )
             print(f"created {target}")
@@ -286,7 +283,7 @@ def _status_cmd(home: Path) -> int:
     plugins = registry_mod.load_registry(home)
     print(f"plugins: {len(plugins)} registered")
     for p in plugins:
-        print(f"- {p.name} [{p.sensitivity}/{p.mode}]")
+        print(f"- {p.name} [{p.sensitivity}]")
     flag_records, bad_flags = flags_mod._read_flag_lines(home)
     unreadable += bad_flags
     print(f"flags: {len(flag_records)} pending")
@@ -376,7 +373,6 @@ def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
                 name=args.name,
                 repo=args.repo,
                 path=plugin_path,
-                mode=args.mode,
                 sensitivity=args.sensitivity,
                 exclusions=args.exclude,
             ),
@@ -385,7 +381,7 @@ def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
         return 0
     if args.registry_command == "list":
         for p in registry.load_registry(home):
-            print(f"{p.name}  {p.mode}  {p.sensitivity}  {p.repo}")
+            print(f"{p.name}  {p.sensitivity}  {p.repo}")
         return 0
     if args.registry_command == "remove":
         registry.remove_plugin(home, args.name)
@@ -741,7 +737,7 @@ def _distill_cmd(home: Path, args: argparse.Namespace) -> int:
         scope_list = routing.scopes(home)
         if scope_list:
             scope_lines = "\n".join(
-                f"- {s.name} [{s.sensitivity}/{s.mode}]:"
+                f"- {s.name} [{s.sensitivity}]:"
                 f" {' '.join(s.statement.split()) or '(no scope statement)'}"
                 for s in scope_list
             )

@@ -35,19 +35,20 @@ def stage_fact(home, target="acme-knowledge"):
     return cand
 
 
-def test_apply_batch_pr_mode_with_remote(tmp_path):
+def test_apply_batch_with_remote_pushes_the_harvest_branch(tmp_path):
     home = tmp_path / "home"
     target = scaffold.create(home, "acme-knowledge", owner="demo")
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
     gitops.git(target, "remote", "add", "origin", str(remote))
     gitops.git(target, "push", "-u", "origin", "main")
+    main_before = gitops.git(target, "rev-parse", "main")
     skill = stage_skill(home)
     fact = stage_fact(home)
 
     result = harvest.apply_batch(home, "acme-knowledge", [skill, fact])
-    assert result.mode == "pr"
     assert result.branch.startswith("mneme/harvest-")
+    assert gitops.git(target, "rev-parse", "main") == main_before  # main never advances
     assert len(result.units) == 2
     assert result.pr.startswith("manual:")  # no real gh in test PATH... shim not installed
     # branch pushed to the bare remote
@@ -68,17 +69,24 @@ def test_apply_batch_pr_mode_with_remote(tmp_path):
     assert len(ledger[0]["units"]) == 2
 
 
-def test_apply_batch_commit_mode_no_remote(tmp_path):
+def test_apply_batch_no_remote_leaves_the_branch_local(tmp_path):
     home = tmp_path / "home"
-    target = scaffold.create(home, "personal-kb", owner="demo", mode="commit")
+    target = scaffold.create(home, "personal-kb", owner="demo")
+    main_before = gitops.git(target, "rev-parse", "main")
     skill = stage_skill(home, target="personal-kb")
     result = harvest.apply_batch(home, "personal-kb", [skill])
-    assert result.mode == "commit"
-    assert result.branch == "main"
+    assert result.branch.startswith("mneme/harvest-")
     assert "no remote" in result.pr
-    log = gitops.git(target, "log", "-1", "--format=%s")
+    # The knowledge is on the branch and nowhere else: main is byte-identical and the
+    # working tree — back on main — does not carry the new skill.
+    assert gitops.git(target, "rev-parse", "main") == main_before
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)
+    assert not (target / "skills" / "deploy-widget" / "SKILL.md").exists()
+    log = gitops.git(target, "log", result.branch, "-1", "--format=%s")
     assert log.startswith("knowledge: harvest")
-    assert (target / "skills" / "deploy-widget" / "SKILL.md").exists()
+    tree = gitops.git(target, "ls-tree", "-r", "--name-only", result.branch)
+    assert "skills/deploy-widget/SKILL.md" in tree
 
 
 def test_apply_batch_refuses_quarantined(tmp_path):

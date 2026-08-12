@@ -9,7 +9,6 @@ from . import paths
 from .errors import MnemeError
 from .units import KEBAB_RE
 
-MODES = frozenset({"pr", "commit"})
 SENSITIVITIES = frozenset({"public", "internal", "restricted"})
 
 
@@ -18,7 +17,6 @@ class Plugin:
     name: str
     repo: str
     path: str
-    mode: str = "pr"
     sensitivity: str = "internal"
     exclusions: list[str] = field(default_factory=list)
 
@@ -27,8 +25,6 @@ class Plugin:
             raise MnemeError(f"plugin name must be kebab-case: {self.name!r}")
         if not self.repo:
             raise MnemeError("plugin repo must not be empty")
-        if self.mode not in MODES:
-            raise MnemeError(f"mode must be one of {sorted(MODES)}: {self.mode!r}")
         if self.sensitivity not in SENSITIVITIES:
             raise MnemeError(
                 f"sensitivity must be one of {sorted(SENSITIVITIES)}: {self.sensitivity!r}"
@@ -40,7 +36,11 @@ def load_registry(home: Path) -> list[Plugin]:
     if not p.exists():
         return []
     data = json.loads(p.read_text(encoding="utf-8"))
-    return [Plugin(**entry) for entry in data.get("plugins", [])]
+    known = {f.name for f in Plugin.__dataclass_fields__.values()}
+    return [
+        Plugin(**{k: v for k, v in entry.items() if k in known})
+        for entry in data.get("plugins", [])
+    ]
 
 
 def save_registry(home: Path, plugins: list[Plugin]) -> None:
