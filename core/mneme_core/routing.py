@@ -78,3 +78,19 @@ def plugin_for_path(home: Path, cwd: Path) -> Scope | None:
             if depth > best_depth:
                 best, best_depth = s, depth
     return best
+
+
+def find_knowledge_repo(cwd: Path, max_depth: int = 20) -> Path | None:
+    try:
+        current = cwd.resolve()
+        if not current.exists():
+            return None
+        for _ in range(max_depth):
+            if (current / "MNEME.md").is_file():
+                return current
+            if current.parent == current:
+                return None
+            current = current.parent
+    except OSError:
+        return None
+    return None
