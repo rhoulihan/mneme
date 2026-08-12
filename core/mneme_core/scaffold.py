@@ -1,6 +1,7 @@
 """Scaffold factory — generates governed knowledge-plugin repos (spec §5.1, §8)."""
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -45,8 +46,10 @@ def create(
     )
 
     files = {
-        ".claude-plugin/plugin.json": templates.render(templates.PLUGIN_JSON, **subs),
-        ".claude-plugin/marketplace.json": templates.render(templates.MARKETPLACE_JSON, **subs),
+        ".claude-plugin/plugin.json": templates.render_json(templates.PLUGIN_JSON, **subs),
+        ".claude-plugin/marketplace.json": templates.render_json(
+            templates.MARKETPLACE_JSON, **subs
+        ),
         "MNEME.md": templates.render(templates.MNEME_MD, **subs),
         "AGENTS.md": templates.render(templates.AGENTS_MD, **subs),
         "README.md": templates.render(templates.README_MD, **subs),
@@ -57,6 +60,14 @@ def create(
         ".gitignore": templates.GITIGNORE,
         "skills/knowledge-index/SKILL.md": templates.render(templates.INDEX_SKILL_MD, **subs),
     }
+    # Manifests are the one machine-parsed artifact lint_repo never sees; verify them
+    # here so a broken manifest can never reach disk, the first commit, or the registry.
+    for rel in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+        try:
+            json.loads(files[rel])
+        except json.JSONDecodeError as e:
+            raise MnemeError(f"scaffold generated invalid JSON in {rel} (bug): {e}") from e
+
     for rel, content in files.items():
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,14 +118,20 @@ def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
                 pass
             entries.append((topic, f"facts/{f.name}", count))
 
+    # The description lands on a single frontmatter line: fold any newline/tab the
+    # caller supplied so the rendered template stays parseable before we cap it.
     text = templates.render(
-        templates.INDEX_SKILL_MD, name=name, description=description,
+        templates.INDEX_SKILL_MD, name=name, description=" ".join(description.split()),
         owner="", sensitivity="", mode="",
     )
     meta, body = units.parse_frontmatter(text)
+    rendered = str(meta["description"])
     if entries:
         topic_list = ", ".join(t for t, _, _ in entries)
-        meta["description"] = (str(meta["description"]) + f" Topics: {topic_list}")[:1024]
+        rendered += f" Topics: {topic_list}"
+    # Cap on every path — the template boilerplate alone can push a lint-clean caller
+    # description over the limit, topics or not.
+    meta["description"] = rendered[: lint.MAX_DESCRIPTION]
     rows = "".join(f"| {t} | {p} | {c} |\n" for t, p, c in entries)
     out = units.serialize_frontmatter(meta, body + rows)
     path = target / "skills" / "knowledge-index" / "SKILL.md"

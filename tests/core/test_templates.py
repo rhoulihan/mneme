@@ -61,3 +61,27 @@ def test_render_rejects_missing_substitution():
 
     with pytest.raises(KeyError):
         templates.render(templates.PLUGIN_JSON, name="only-name")
+
+
+HOSTILE = dict(
+    SUBS,
+    description='He said "hello" to the DB\\prod\nthen left\ttabs',
+    owner='ops "team" \\ ops',
+)
+
+
+def test_render_json_escapes_quotes_backslashes_and_newlines():
+    data = json.loads(templates.render_json(templates.PLUGIN_JSON, **HOSTILE))
+    assert data["description"] == HOSTILE["description"]
+
+
+def test_render_json_marketplace_survives_hostile_owner_and_description():
+    data = json.loads(templates.render_json(templates.MARKETPLACE_JSON, **HOSTILE))
+    assert data["owner"]["name"] == HOSTILE["owner"]
+    assert data["plugins"][0]["description"] == HOSTILE["description"]
+
+
+def test_render_json_round_trips_benign_values_unchanged():
+    assert templates.render_json(templates.PLUGIN_JSON, **SUBS) == templates.render(
+        templates.PLUGIN_JSON, **SUBS
+    )

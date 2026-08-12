@@ -83,3 +83,57 @@ def test_custom_directory(tmp_path):
     target = scaffold.create(home, "custom-knowledge", directory=custom)
     assert target == custom
     assert (custom / "MNEME.md").exists()
+
+
+def test_quote_bearing_description_yields_valid_manifests(tmp_path):
+    home = tmp_path / "home"
+    hostile = 'He said "hello" to the DB\\prod\nthen left'
+    target = scaffold.create(home, "quote-knowledge", description=hostile)
+    plugin = json.loads(
+        (target / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    market = json.loads(
+        (target / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    assert plugin["description"] == hostile
+    assert market["plugins"][0]["description"] == hostile
+
+
+def test_quote_bearing_owner_yields_valid_manifest(tmp_path):
+    home = tmp_path / "home"
+    owner = 'ops "team" \\ ops'
+    target = scaffold.create(home, "owner-knowledge", owner=owner)
+    market = json.loads(
+        (target / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    assert market["owner"]["name"] == owner
+
+
+def test_hostile_description_repo_lints_and_commits_clean(tmp_path):
+    home = tmp_path / "home"
+    target = scaffold.create(
+        home, "hostile-knowledge", description='quote " backslash \\ newline\n'
+    )
+    assert not lint.has_errors(lint.lint_repo(target))
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert status.strip() == ""
+    assert registry.get_plugin(home, "hostile-knowledge") is not None
+
+
+def test_long_description_does_not_abort_create(tmp_path):
+    home = tmp_path / "home"
+    long_description = "x" * 950
+    target = scaffold.create(home, "long-desc-knowledge", description=long_description)
+    assert not lint.has_errors(lint.lint_repo(target))
+    assert json.loads(
+        (target / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )["description"] == long_description
+
+
+def test_newline_description_does_not_abort_create(tmp_path):
+    home = tmp_path / "home"
+    target = scaffold.create(home, "newline-knowledge", description="first\nsecond")
+    assert not lint.has_errors(lint.lint_repo(target))

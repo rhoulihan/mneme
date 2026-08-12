@@ -1,11 +1,24 @@
 """Knowledge-plugin scaffold templates (spec §5.1, §8). Pure data — no logic."""
 from __future__ import annotations
 
+import json
 from string import Template
 
 
 def render(template: str, **subs: str) -> str:
     return Template(template).substitute(**subs)
+
+
+def render_json(template: str, **subs: str) -> str:
+    """Render a JSON template, JSON-escaping every substitution value.
+
+    The JSON templates embed placeholders *inside* string literals (`"$description"`),
+    so raw user text containing a double quote, backslash, or control character would
+    break the manifest. Escaping each value as a JSON string body (quotes stripped)
+    keeps the rendered document `json.loads`-clean for any input.
+    """
+    escaped = {k: json.dumps(str(v), ensure_ascii=False)[1:-1] for k, v in subs.items()}
+    return render(template, **escaped)
 
 
 PLUGIN_JSON = """{

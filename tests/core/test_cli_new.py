@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from mneme_core import registry
 from mneme_core.cli import main
 
@@ -33,6 +36,27 @@ def test_new_duplicate_errors(tmp_path, capsys):
     code, _, err = run(capsys, "--home", str(home), "new", "dup-knowledge")
     assert code == 1
     assert "mneme:" in err
+
+
+def test_new_with_quoted_description_writes_valid_manifest(tmp_path, capsys):
+    home = tmp_path / "home"
+    hostile = 'He said "hello" to the DB'
+    code, _, _ = run(
+        capsys, "--home", str(home), "new", "quote-knowledge", "--description", hostile
+    )
+    assert code == 0
+    p = registry.get_plugin(home, "quote-knowledge")
+    manifest = Path(p.path) / ".claude-plugin" / "plugin.json"
+    assert json.loads(manifest.read_text(encoding="utf-8"))["description"] == hostile
+
+
+def test_new_with_long_description_succeeds(tmp_path, capsys):
+    home = tmp_path / "home"
+    code, _, err = run(
+        capsys, "--home", str(home), "new", "long-knowledge", "--description", "x" * 950
+    )
+    assert code == 0, err
+    assert registry.get_plugin(home, "long-knowledge") is not None
 
 
 def test_new_custom_dir(tmp_path, capsys):
