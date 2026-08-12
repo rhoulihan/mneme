@@ -74,6 +74,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_decline.add_argument("id")
     p_decline.add_argument("--reason", required=True)
 
+    p_verify = sub.add_parser("verify")
+    p_verify.add_argument("plugin")
+    p_verify.add_argument("--days", type=int, default=90)
+
     p_scan = sub.add_parser("scan")
     p_scan.add_argument("path")
 
@@ -178,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
             staging_mod.decline(home, cand, args.reason)
             print(f"declined {args.id}")
             return 0
+        if args.command == "verify":
+            return _verify_cmd(home, args)
         if args.command == "scan":
             return _scan_cmd(args.path)
         if args.command == "lint":
@@ -364,6 +370,81 @@ def _share_diff(home: Path, args: argparse.Namespace) -> int:
     ):
         print(line)
     return 0
+
+
+def _verify_cmd(home: Path, args: argparse.Namespace) -> int:
+    from datetime import date, datetime, timezone
+
+    from . import registry as registry_mod
+    from . import units as units_mod
+
+    plugin = registry_mod.get_plugin(home, args.plugin)
+    if plugin is None:
+        raise MnemeError(f"plugin not registered: {args.plugin}")
+    repo = Path(plugin.path)
+    today = datetime.now(timezone.utc).date()
+
+    def age(date_str: str) -> int | None:
+        try:
+            return (today - date.fromisoformat(date_str)).days
+        except ValueError:
+            return None
+
+    total = 0
+    stale: list[tuple[str, str, str]] = []
+
+    skills_dir = repo / "skills"
+    if skills_dir.is_dir():
+        for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+            # knowledge-index is regenerated mechanically from the fact files it lists,
+            # so it carries no verification stamp and is never a human-verifiable unit —
+            # sweeping it would report every scaffolded repo as permanently stale.
+            if d.name == "knowledge-index":
+                continue
+            skill_md = d / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            total += 1
+            try:
+                meta, _ = units_mod.parse_frontmatter(skill_md.read_text(encoding="utf-8-sig"))
+            except MnemeError:
+                stale.append((units_mod.skill_unit_id(d.name), "none", "unknown"))
+                continue
+            md = meta.get("metadata", {})
+            verified = str(md.get("mneme-last-verified", "")) if isinstance(md, dict) else ""
+            a = age(verified) if verified else None
+            if a is None or a > args.days:
+                stale.append(
+                    (units_mod.skill_unit_id(d.name), verified or "none",
+                     str(a) if a is not None else "unknown")
+                )
+
+    facts_dir = repo / "facts"
+    if facts_dir.is_dir():
+        for f in sorted(facts_dir.glob("*.md")):
+            try:
+                _meta, body = units_mod.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+            except MnemeError:
+                continue
+            for n, line in enumerate(body.splitlines(), start=1):
+                if not line.startswith("- ["):
+                    continue
+                try:
+                    b = units_mod.parse_bullet_line(line, n)
+                except MnemeError:
+                    continue
+                total += 1
+                a = age(b.verified) if b.verified else None
+                if a is None or a > args.days:
+                    stale.append(
+                        (units_mod.fact_unit_id(f.stem, b.text), b.verified or "none",
+                         str(a) if a is not None else "unknown")
+                    )
+
+    for unit_id, verified, age_days in stale:
+        print(f"{unit_id}  last-verified={verified}  age-days={age_days}")
+    print(f"stale {len(stale)} of {total} units")
+    return 2 if stale else 0
 
 
 def _read_text(path: Path) -> str:
