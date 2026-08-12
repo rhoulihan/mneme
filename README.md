@@ -31,7 +31,7 @@ Nobody ships **capture → local staging → user-curated review → PR into an 
   <img src="assets/the-loop.svg" alt="The mneme loop: work session → background distiller → machine gate → staging → human gate (/mneme:share) → pull request → merge → consumers inherit → back to the next work session" width="960">
 </p>
 
-Nothing leaves your machine without passing a deterministic machine gate **and** your explicit approval. Nothing enters a shared repo without a human merge. There is no auto-push mode — by design, not by configuration.
+Nothing leaves your machine without passing a deterministic machine gate **and** your explicit approval. Nothing enters a shared repo without a human merge: every approved harvest lands on a `mneme/harvest-*` branch — pushed as a pull request when the repo has a remote, left local for you otherwise — and mneme never commits to a knowledge repo's `main`. There is no auto-push and no direct-commit setting to get wrong: contributions are PR-only, by design, not by configuration.
 
 ## What a knowledge plugin looks like
 
@@ -98,10 +98,10 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 | Command | What it does |
 |---|---|
 | `/mneme:new <name>` | Interview for scope, then scaffold a governed knowledge plugin — repo, manifests, CI, routing scope statement |
-| `/mneme:register <name> <url>` | Register an existing repo you have access to (clones it for you); offers governance retrofit |
+| `/mneme:register <name> <url>` | Register an existing repo you have access to (clones it for you); asks only for sensitivity — contributions are PR-only — and offers governance retrofit |
 | `/mneme:adopt <name>` | Retrofit mneme governance onto an existing repo — adds only what's missing, never overwrites |
 | `/mneme:capture <note>` | Flag hard-won knowledge the moment it happens — one line, distilled in the background later |
-| `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then commit/PR |
+| `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then harvest onto a `mneme/harvest-*` branch and open the PR |
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |
 | `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
 

@@ -28,7 +28,7 @@ Three research findings drive the architecture:
 | Decision | Choice |
 |---|---|
 | Knowledge unit | Two-tier: procedural → skills (SKILL.md), declarative → fact files |
-| Contribution flow | Curated harvest: local staging, explicit `/mneme:share` human gate, then PR. No auto-push in any mode |
+| Contribution flow | Curated harvest: local staging, explicit `/mneme:share` human gate, then PR. No auto-push, ever. **Revised 2026-08-12: PR-only; the `pr` \| `commit` mode split removed by user direction — mneme never writes a registered repo's `main`** |
 | Engine/content separation | Mneme's repo is pure tooling; knowledge lives in separate repos that are themselves installable plugins |
 | Registry + routing | User registers any number of knowledge plugins; mneme creates, maintains, and routes captured units to each |
 | Capture architecture | Distiller: in-session flagging + background distillation at Stop and PreCompact |
@@ -70,9 +70,9 @@ Three research findings drive the architecture:
 
 ### 4.2 Registry
 
-`registry.json` entries: `name`, `repo` (git URL), `path` (local clone), `scope` (pointer to the repo's MNEME.md), `mode` (`pr` | `commit`), `sensitivity` (`public` | `internal` | `restricted`), optional capture exclusions. The registry is a flat file so it works with the DB layer off, stays human-auditable, and survives DB rebuilds. When the DB layer is enabled the registry mirrors into it for joins; derivation is strictly one-way (files → DB).
+`registry.json` entries: `name`, `repo` (git URL), `path` (local clone), `scope` (pointer to the repo's MNEME.md), `sensitivity` (`public` | `internal` | `restricted`), optional capture exclusions. The registry is a flat file so it works with the DB layer off, stays human-auditable, and survives DB rebuilds. When the DB layer is enabled the registry mirrors into it for joins; derivation is strictly one-way (files → DB). Entries written before 2026-08-12 may carry a `mode` key (and any other unknown key): loading ignores it, and the next save drops it.
 
-**Contribution modes:** `pr` for shared/org repos (branch → push → PR); `commit` for personal repos where PR ceremony against oneself adds nothing — git history still gives full provenance.
+**Contributions are PR-only** (revised 2026-08-12 by user direction; the earlier `mode` field selected `pr` or `commit` per repo and is gone). There is no per-repo contribution setting: every harvest lands on a `mneme/harvest-*` branch, pushed with a PR when the repo has a remote and left local for the human to merge or push when it does not. Personal repos are not an exception — the branch costs nothing and keeps the same reviewable artifact and provenance trail that shared repos get.
 
 ### 4.3 Routing
 
@@ -185,7 +185,9 @@ Output: candidate markdown in `~/.mneme/staging/` with id, type (`skill` | `fact
 
 ### 7.3 Harvest (`/mneme:share` — the human gate)
 
-A review queue grouped by target plugin: new units shown whole; updates shown as diffs against the existing unit. Per candidate: approve, edit, reject, or re-route. Rejections land in the **declined ledger** so the distiller never re-proposes them. For each target with approvals, `bin/mneme` executes: pull main, fresh branch (`mneme/harvest-<date>-<slug>`), apply delta edits, regenerate router/index skills, run the repo's own lint + scan locally (fail before the PR, not in it), commit with provenance trailers, push, open the PR via `gh` — or commit directly to main for `mode: commit` repos.
+A review queue grouped by target plugin: new units shown whole; updates shown as diffs against the existing unit. Per candidate: approve, edit, reject, or re-route. Rejections land in the **declined ledger** so the distiller never re-proposes them. For each target with approvals, `bin/mneme` executes one pipeline, with no per-repo variant: sync main (read-only — the last time main is touched), fresh branch (`mneme/harvest-<utc-timestamp>`), apply delta edits, regenerate router/index skills, run the repo's own lint + scan locally (fail before the PR, not in it), commit with provenance trailers **on the branch**, then push the branch and open the PR via `gh` when the repo has a remote — otherwise leave the branch local and report `no remote — branch left local; merge it or add a remote and push`. Either way the clone is returned to an unchanged `main` with the branch preserved: mneme hands the contribution over and never merges it. A failure anywhere after the branch is created rolls the clone back to the pre-harvest `main` and leaves the candidates staged (§9).
+
+**Invariant (revised 2026-08-12):** no mneme code path checks out `main` to write knowledge, commits knowledge on `main`, or pushes `main`. The direct-to-main path that `mode: commit` repos used is removed, and a test asserts both local and remote `main` are byte-identical before and after a harvest.
 
 ### 7.4 Review and merge (repo side)
 
@@ -202,7 +204,7 @@ When installed knowledge proves wrong or stale mid-session, the noticing skill f
 ## 8. Security and governance
 
 - **No vendor SaaS**: local machine + the org's own git remote (GitHub, GitHub Enterprise Server; GitLab/Bitbucket via the PR-provider interface later). Works fully air-gapped against self-hosted git.
-- **Gates**: machine gate (scan, lint, dedup, promotion rule) → human harvest gate → human PR review. No auto-push exists in any mode.
+- **Gates**: machine gate (scan, lint, dedup, promotion rule) → human harvest gate → human PR review. No auto-push exists, and no path writes a knowledge repo's `main` — contributions are PR-only (§7.3).
 - **Quarantine**: secret/PII hits are staged in `staging/quarantine/` and appear at harvest only after redaction; overrides are logged.
 - **Sensitivity boundaries**: per-repo labels (`public` | `internal` | `restricted`); routing toward less-restricted targets requires explicit user override at harvest.
 - **Provenance**: capture metadata in unit frontmatter + git authorship + PR review trail; commit trailers identify mneme-mediated contributions. Tamper-evidence via ordinary branch protection.
