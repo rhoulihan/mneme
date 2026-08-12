@@ -123,6 +123,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ing.add_argument("--source", default="unknown")
     p_ing.add_argument("--source-plugin", default="")
     p_ing.add_argument("--clear-flags", action="store_true")
+    p_ing.add_argument("--flags-snapshot", default="")
 
     p_db = sub.add_parser("db")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
@@ -731,7 +732,17 @@ def _distill_cmd(home: Path, args: argparse.Namespace) -> int:
             flags=flag_lines,
             transcript_path=args.transcript,
         )
-        print(json_mod.dumps({"prompt": prompt, "flag_count": len(flag_records)}))
+        # `flags` is the snapshot ingest clears from: the pipeline hands this bundle
+        # back as --flags-snapshot so flags captured while the distiller runs survive.
+        print(
+            json_mod.dumps(
+                {
+                    "prompt": prompt,
+                    "flag_count": len(flag_records),
+                    "flags": flag_records,
+                }
+            )
+        )
         return 0
     if args.distill_command == "ingest":
         return _distill_ingest(home, args)
@@ -743,7 +754,6 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     from datetime import datetime, timezone
 
     from . import compose, proposals as proposals_mod, scan as scan_mod, staging as staging_mod
-    from . import flags as flags_mod
     from . import routing
 
     if args.path == "-":
@@ -841,5 +851,55 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     for r in rejected:
         print(f"rejected: {r}")
     if args.clear_flags:
-        flags_mod.clear_flags(home)
+        _clear_ingested_flags(
+            home,
+            args,
+            handled=staged + quarantined + skipped_declined + skipped_duplicate,
+            rejected=len(rejected),
+        )
     return 0
+
+
+def _clear_ingested_flags(
+    home: Path, args: argparse.Namespace, handled: int, rejected: int
+) -> None:
+    """Consume the flags this run distilled — and only those.
+
+    Two ways this must not destroy knowledge. A run where every proposal failed
+    validation captured nothing, so the flags have to survive for the next
+    distiller — same as malformed JSON or a dead `claude`, which raise here.
+    And a run that did stage something may only clear the flags it was given:
+    the session keeps flagging while the distiller thinks.
+    """
+    from . import flags as flags_mod
+
+    if rejected and not handled:
+        raise MnemeError(
+            f"no proposal survived validation ({rejected} rejected);"
+            " flags kept for the next distill"
+        )
+    snapshot = _flags_snapshot(args.flags_snapshot)
+    if snapshot is None:
+        flags_mod.clear_flags(home)
+    else:
+        flags_mod.consume_flags(home, snapshot)
+
+
+def _flags_snapshot(path: str) -> list[dict] | None:
+    """The flag records `distill prepare` bundled, or None to clear everything."""
+    import json as json_mod
+
+    if not path:
+        return None
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        raise MnemeError(f"cannot read flags snapshot: {e}")
+    try:
+        data = json_mod.loads(raw)
+    except ValueError as e:
+        raise MnemeError(f"flags snapshot is not valid JSON: {e}") from None
+    records = data.get("flags") if isinstance(data, dict) else data
+    if not isinstance(records, list):
+        raise MnemeError(f"flags snapshot has no flag list: {path}")
+    return [r for r in records if isinstance(r, dict)]

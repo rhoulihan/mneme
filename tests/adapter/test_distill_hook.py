@@ -4,7 +4,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-from mneme_core import flags, staging
+from mneme_core import flags, paths, staging
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "hooks" / "scripts" / "distill-hook.sh"
@@ -96,3 +96,17 @@ def test_garbage_payload_is_silent(tmp_path):
         ["bash", str(SCRIPT)], input="not json", capture_output=True, text=True, env=env
     )
     assert result.returncode == 0
+
+
+def test_corrupt_flag_line_does_not_disable_distillation(tmp_path):
+    # `distill pending` is the hook's only gate. One truncated line in flags.jsonl
+    # used to make it exit 1 with a traceback, which the hook reads as "nothing
+    # pending" — no distill ever ran again while the bad line sat there.
+    home = tmp_path / "home"
+    flags.add_flag(home, "worth keeping")
+    with paths.flags_path(home).open("a", encoding="utf-8") as f:
+        f.write("this line is corrupt {\n")
+    result = run_hook(tmp_path, home, {"transcript_path": "/tmp/t.jsonl"})
+    assert result.returncode == 0
+    assert len(staging.load_candidates(home)) == 1
+    assert flags.read_flags(home) == []  # the good flag was consumed

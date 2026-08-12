@@ -2,7 +2,7 @@
 name: new
 description: Create a new governed knowledge plugin — interview for its scope, scaffold the repo, and refine the scope statement that routes future knowledge to it.
 disable-model-invocation: true
-argument-hint: [plugin-name]
+argument-hint: "[plugin-name]"
 ---
 
 Create a knowledge plugin the router can actually use. The scope statement is the routing prompt — invest in it.

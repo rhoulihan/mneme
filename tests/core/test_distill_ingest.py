@@ -181,3 +181,64 @@ def test_ingest_bad_document_exits_1(tmp_path, capsys):
     code, _, err = run(capsys, "--home", str(tmp_path / "h"), "distill", "ingest", str(bad))
     assert code == 1
     assert "mneme:" in err
+
+
+def test_ingest_keeps_flags_when_every_proposal_is_rejected(tmp_path, capsys):
+    # Same trust boundary as malformed JSON or a dead `claude`, which both raise and
+    # keep the flags: a distiller that misses the schema captured nothing, so the
+    # flags must still be there for the next run instead of being consumed silently.
+    home = tmp_path / "home"
+    flags.add_flag(home, "hard-won fix worth keeping")
+    path = write_proposals(tmp_path, [fact_entry(category="not-a-category")])
+    code, out, err = run(capsys, "--home", str(home), "distill", "ingest", path, "--clear-flags")
+    assert code == 1
+    assert "staged 0" in out and "rejected 1" in out
+    assert "flags kept" in err
+    assert len(flags.read_flags(home)) == 1
+
+
+def test_ingest_clears_flags_when_the_distiller_proposes_nothing(tmp_path, capsys):
+    # An honest empty harvest is not a failure — keeping the flags there would make
+    # every later session re-distill them forever.
+    home = tmp_path / "home"
+    flags.add_flag(home, "nothing worth keeping happened")
+    path = write_proposals(tmp_path, [])
+    code, _, _ = run(capsys, "--home", str(home), "distill", "ingest", path, "--clear-flags")
+    assert code == 0
+    assert flags.read_flags(home) == []
+
+
+def snapshot_file(tmp_path, records, name="bundle.json"):
+    p = tmp_path / name
+    p.write_text(json.dumps({"prompt": "...", "flags": records}), encoding="utf-8")
+    return str(p)
+
+
+def test_ingest_clears_only_the_snapshotted_flags(tmp_path, capsys):
+    home = tmp_path / "home"
+    flags.add_flag(home, "flagged before the distiller started")
+    bundle = snapshot_file(tmp_path, flags.read_flags(home))
+    mid_run = flags.add_flag(home, "flagged while the distiller was running")
+
+    path = write_proposals(tmp_path, [fact_entry()])
+    code, _, _ = run(
+        capsys, "--home", str(home), "distill", "ingest", path,
+        "--clear-flags", "--flags-snapshot", bundle,
+    )
+    assert code == 0
+    assert flags.read_flags(home) == [mid_run]
+
+
+def test_ingest_rejects_an_unreadable_flags_snapshot(tmp_path, capsys):
+    home = tmp_path / "home"
+    flags.add_flag(home, "keep me")
+    bad = tmp_path / "bundle.json"
+    bad.write_text("not json", encoding="utf-8")
+    path = write_proposals(tmp_path, [fact_entry()])
+    code, _, err = run(
+        capsys, "--home", str(home), "distill", "ingest", path,
+        "--clear-flags", "--flags-snapshot", str(bad),
+    )
+    assert code == 1
+    assert "flags snapshot" in err
+    assert len(flags.read_flags(home)) == 1  # never guess which flags to destroy

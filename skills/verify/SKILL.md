@@ -2,7 +2,7 @@
 name: verify
 description: Run the staleness sweep over a registered knowledge plugin and help re-verify what it finds.
 disable-model-invocation: true
-argument-hint: [plugin-name] [--days N]
+argument-hint: "[plugin-name] [--days N]"
 ---
 
 1. Run `mneme verify $ARGUMENTS` (binary at `"$CLAUDE_PLUGIN_ROOT/bin/mneme"` when installed, else `bin/mneme`). Exit 2 means stale units were found — that is a report, not an error.

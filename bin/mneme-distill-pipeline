@@ -6,8 +6,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TRANSCRIPT="${1:-}"
 export MNEME_DISTILLING=1
 
-PROMPT="$("$ROOT/bin/mneme" distill prepare --transcript "$TRANSCRIPT" \
-  | python3 -c 'import json, sys; print(json.load(sys.stdin)["prompt"])')"
+# The prepare bundle is kept on disk and handed back to ingest as the snapshot of
+# flags this run distilled: the session goes on flagging while the agent thinks
+# (minutes, and PreCompact fires mid-session), and only these records may be
+# cleared — anything appended after this point has never reached a distiller.
+BUNDLE="$(mktemp "${TMPDIR:-/tmp}/mneme-distill.XXXXXX")"
+trap 'rm -f "$BUNDLE"' EXIT
+
+"$ROOT/bin/mneme" distill prepare --transcript "$TRANSCRIPT" >"$BUNDLE"
+PROMPT="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["prompt"])' "$BUNDLE")"
 
 "${MNEME_CLAUDE_BIN:-claude}" -p "$PROMPT" \
   --output-format json \
@@ -15,4 +22,5 @@ PROMPT="$("$ROOT/bin/mneme" distill prepare --transcript "$TRANSCRIPT" \
   --model "${MNEME_DISTILL_MODEL:-sonnet}" \
   --allowedTools "Read,Grep,Glob" \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"])' \
-  | "$ROOT/bin/mneme" distill ingest - --clear-flags --source "session:$(basename "$TRANSCRIPT" 2>/dev/null || echo unknown)"
+  | "$ROOT/bin/mneme" distill ingest - --clear-flags --flags-snapshot "$BUNDLE" \
+      --source "session:$(basename "$TRANSCRIPT" 2>/dev/null || echo unknown)"

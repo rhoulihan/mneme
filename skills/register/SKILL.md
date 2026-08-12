@@ -2,7 +2,7 @@
 name: register
 description: Register an existing knowledge repo with mneme — from a git URL you have access to (mneme clones it for you) or a local checkout — so its knowledge becomes searchable and it can receive harvested candidates.
 disable-model-invocation: true
-argument-hint: [plugin-name] [git-url-or-path]
+argument-hint: "[plugin-name] [git-url-or-path]"
 ---
 
 Register an existing repo as a knowledge plugin. The binary is `"$CLAUDE_PLUGIN_ROOT/bin/mneme"` when installed, else `bin/mneme`.

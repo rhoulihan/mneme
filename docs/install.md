@@ -81,7 +81,9 @@ The distill trigger. It exits immediately — doing nothing, touching no state �
 Otherwise it detaches `bin/mneme-distill-pipeline` with `nohup` and returns immediately. The session never waits on distillation.
 
 **The pipeline** (`bin/mneme-distill-pipeline`)
-`mneme distill prepare --transcript <path>` builds the prompt → a headless `claude -p` run produces proposals as JSON → `mneme distill ingest - --clear-flags` puts them through the machine gate (schema validation, secret scan, dedup, routing, sensitivity boundaries) and into `~/.mneme/staging/`. Nothing is ever written to a knowledge repo here — that only happens at the human gate, `/mneme:share`.
+`mneme distill prepare --transcript <path>` builds the prompt → a headless `claude -p` run produces proposals as JSON → `mneme distill ingest - --clear-flags --flags-snapshot <bundle>` puts them through the machine gate (schema validation, secret scan, dedup, routing, sensitivity boundaries) and into `~/.mneme/staging/`. Nothing is ever written to a knowledge repo here — that only happens at the human gate, `/mneme:share`.
+
+Flags are consumed carefully, because the run takes minutes and the session keeps working: ingest clears only the flags `prepare` snapshotted (anything you capture mid-run stays pending for the next distill), and clears nothing at all when every proposal failed validation — a distiller that misses the schema does not get to eat the flags.
 
 Its stdout and stderr go to `$MNEME_HOME/logs/distill.log`. That file is where you look when candidates do not show up.
 

@@ -2,7 +2,7 @@
 name: capture
 description: Explicitly flag knowledge worth keeping — a hard-won fix, a non-obvious constraint, a correction to installed knowledge. The background distiller turns flags into staged candidates later.
 disable-model-invocation: true
-argument-hint: [what you learned and why it was non-obvious]
+argument-hint: "[what you learned and why it was non-obvious]"
 ---
 
 Flag this moment for the mneme distiller.
