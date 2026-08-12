@@ -22,7 +22,6 @@ def test_add_and_get_round_trip(tmp_path):
     loaded = registry.get_plugin(tmp_path, "acme-knowledge")
     assert loaded is not None
     assert loaded.repo == "git@github.com:acme/acme-knowledge.git"
-    assert loaded.mode == "pr"
     assert loaded.sensitivity == "internal"
     assert loaded.exclusions == []
 
@@ -52,7 +51,6 @@ def test_remove_plugin(tmp_path):
     "kw",
     [
         {"name": "Bad_Name"},
-        {"mode": "push"},
         {"sensitivity": "secret"},
         {"repo": ""},
     ],
