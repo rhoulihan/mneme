@@ -15,6 +15,13 @@ plugins scaffolded by `mneme new` do carry their own independent versions.
   `mneme/harvest-*` branch (pushed with a PR when a remote exists, left local
   otherwise), enforced by an invariant test that main never advances. Legacy
   registries carrying the old `mode` key load cleanly and shed it on save.
+- **Harvest writes stay inside the target repo** — skill names and fact topics
+  come from candidate frontmatter (model-generated text) and were joined straight
+  into the write path, so a name of `../../kb-b/skills/injected` wrote into a
+  *sibling* registered repo's working tree and `../../../loose` wrote outside
+  every repo, where the harvest's own rollback could not reach it. Both are now
+  refused: the name must be kebab-case and the resolved path must stay under
+  `<repo>/skills` or `<repo>/facts`.
 
 ## 0.3.0 — 2026-08-12
 

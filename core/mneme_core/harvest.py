@@ -22,9 +22,35 @@ def _skill_name(cand: Candidate) -> str:
     return name
 
 
+def _unit_path(repo: Path, kind: str, name: str, what: str, *tail: str, suffix: str = "") -> Path:
+    """A path under `repo/<kind>/` built from a candidate-supplied unit name.
+
+    Skill names and fact topics arrive as candidate frontmatter — model-generated or
+    hand-placed text, i.e. untrusted input to a filesystem write. Unchecked, a name of
+    `../../other-kb/skills/injected` writes into a *sibling* registered repo's working
+    tree, and `../../../loose` writes outside every repo. Both escape the harvest's own
+    safety net: `_abort` only restores the target repo, and lint (MN002) never sees a
+    file that never landed in the target repo.
+
+    Kebab-case is the unit-name contract everywhere else (lint MN002, scaffold,
+    proposals, registry), and it is what makes a name exactly one literal path segment.
+    The containment assert behind it is belt-and-braces: the write is what is dangerous,
+    so it is proven in terms of the resolved path, not only the spelling of the name.
+    """
+    if not units.KEBAB_RE.fullmatch(name):
+        raise MnemeError(f"{what} must be kebab-case: {name!r}")
+    root = repo / kind
+    path = root.joinpath(name + suffix, *tail)
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise MnemeError(f"{what} escapes {kind}/: {name!r}")
+    return path
+
+
 def apply_skill(repo: Path, cand: Candidate) -> str:
     name = _skill_name(cand)
-    skill_md = repo / "skills" / name / "SKILL.md"
+    skill_md = _unit_path(
+        repo, "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
+    )
     if cand.edit == "new":
         if skill_md.exists():
             raise MnemeError(
@@ -113,7 +139,9 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
     bullet = units.parse_bullet_line(line, 1)
 
     if cand.edit == "new":
-        path = repo / "facts" / f"{cand.topic}.md"
+        path = _unit_path(
+            repo, "facts", cand.topic, f"candidate {cand.id}: fact topic", suffix=".md"
+        )
         text, bom = _read_raw(path) if path.exists() else ("", "")
         if not text.strip():
             # Only a genuinely new (or empty) topic file is written whole.
@@ -166,7 +194,9 @@ def apply_fact(repo: Path, cand: Candidate) -> str:
     if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
         raise MnemeError(f"candidate {cand.id}: malformed fact target_unit {cand.target_unit!r}")
     file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
-    path = repo / "facts" / f"{file_part}.md"
+    path = _unit_path(
+        repo, "facts", file_part, f"candidate {cand.id}: fact topic in target_unit", suffix=".md"
+    )
     if not path.exists():
         raise MnemeError(f"candidate {cand.id}: update target file {path.name} not found")
     text, bom = _read_raw(path)
