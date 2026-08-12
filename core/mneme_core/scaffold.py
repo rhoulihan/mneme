@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from . import lint, paths, registry, templates
+from . import lint, paths, registry, templates, units
 from .errors import MnemeError
 from .units import KEBAB_RE
 
@@ -62,6 +62,7 @@ def create(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     (target / "facts").mkdir(exist_ok=True)
+    regenerate_index_skill(target, name, description)
 
     issues = lint.lint_repo(target)
     if lint.has_errors(issues):
@@ -83,3 +84,39 @@ def create(
         ),
     )
     return target
+
+
+def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
+    facts_dir = target / "facts"
+    entries: list[tuple[str, str, int]] = []
+    if facts_dir.is_dir():
+        for f in sorted(facts_dir.glob("*.md")):
+            topic = f.stem
+            count = 0
+            try:
+                meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+                topic = str(meta.get("topic", f.stem))
+                for n, line in enumerate(body.splitlines(), start=1):
+                    if line.startswith("- ["):
+                        try:
+                            units.parse_bullet_line(line, n)
+                            count += 1
+                        except MnemeError:
+                            continue
+            except MnemeError:
+                pass
+            entries.append((topic, f"facts/{f.name}", count))
+
+    text = templates.render(
+        templates.INDEX_SKILL_MD, name=name, description=description,
+        owner="", sensitivity="", mode="",
+    )
+    meta, body = units.parse_frontmatter(text)
+    if entries:
+        topic_list = ", ".join(t for t, _, _ in entries)
+        meta["description"] = (str(meta["description"]) + f" Topics: {topic_list}")[:1024]
+    rows = "".join(f"| {t} | {p} | {c} |\n" for t, p, c in entries)
+    out = units.serialize_frontmatter(meta, body + rows)
+    path = target / "skills" / "knowledge-index" / "SKILL.md"
+    path.write_text(out, encoding="utf-8")
+    return path
