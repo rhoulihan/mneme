@@ -50,6 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
     p_add.add_argument("--exclude", action="append", default=[])
+    p_add.add_argument("--clone", action="store_true")
     reg_sub.add_parser("list")
     p_rm = reg_sub.add_parser("remove")
     p_rm.add_argument("name")
@@ -233,6 +234,23 @@ def main(argv: list[str] | None = None) -> int:
 def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
     if args.registry_command == "add":
         plugin_path = args.path or str(paths.repos_dir(home) / args.name)
+        if args.clone:
+            target = Path(plugin_path)
+            if target.exists():
+                print(f"clone skipped: {target} already exists")
+            else:
+                import subprocess as subprocess_mod
+
+                paths.ensure_layout(home)
+                result = subprocess_mod.run(
+                    ["git", "clone", args.repo, str(target)],
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    raise MnemeError(
+                        f"git clone failed: {result.stderr.strip()[:300]}"
+                    )
+                print(f"cloned {args.repo} -> {target}")
         registry.add_plugin(
             home,
             registry.Plugin(
