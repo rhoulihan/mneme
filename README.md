@@ -1,5 +1,9 @@
 # mneme
 
+<p align="center">
+  <img src="assets/mneme.png" alt="mneme — knowledge retention engine" width="640">
+</p>
+
 **The plugin is the memory. Memories are skills.**
 
 Mneme (after the Greek muse of memory) is a knowledge-mining engine for AI coding agents. As you work, it notices hard-won knowledge — the fix that landed after three dead ends, the constraint nobody wrote down, the procedure that actually works — and decomposes it into **skills** and **facts**. Those units flow through a machine gate and a human gate into **knowledge plugins**: git repositories that are simultaneously installable agent plugins and governed knowledge commons. Anyone you grant access installs the plugin and inherits everything merged; every future merge arrives through a normal plugin update.
