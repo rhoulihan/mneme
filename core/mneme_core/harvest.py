@@ -334,8 +334,10 @@ def apply_batch(
             gitops.push_branch(repo, result.branch)
             title = f"knowledge: harvest ({len(result.units)} units)"
             result.pr = gitops.open_pr(repo, result.branch, title, "\n".join(result.units))
-        else:
+        elif not gitops.has_remote(repo):
             result.pr = "no remote — branch left local; merge it or add a remote and push"
+        else:
+            result.pr = "push skipped (--no-push) — branch left local"
         # Back to main with the branch preserved: mneme hands the contribution over, it
         # never merges it.
         gitops.git(repo, "checkout", "main")
