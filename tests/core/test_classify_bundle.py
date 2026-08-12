@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -32,6 +33,21 @@ def make_kb(tmp_path, legacy=False):
     gitops.git(target, "add", "-A")
     gitops.git(target, "commit", "-m", "fixtures")
     return home, target
+
+
+FAKE_TOKEN = "ghp_" + "a" * 36
+
+
+def new_skill(target, body):
+    """A skill directory that does not exist on main — untracked as a whole."""
+    d = target / "skills" / "new-skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\nname: new-skill\ndescription: Use when the librarian groups related facts\n---\n"
+        + body,
+        encoding="utf-8",
+    )
+    return d
 
 
 def integrate(target):
@@ -157,6 +173,52 @@ def test_changed_paths_are_reported_byte_for_byte(tmp_path):
     assert "- skills/deploy-widget/SKILL.md" in body
     assert "- skills/knowledge-index/facts/deploys.md" in body
     assert "- kills/" not in body
+
+
+def test_scan_gate_reaches_inside_a_new_directory(tmp_path):
+    """Creating a skill is the mainline classify outcome — its files are still scanned.
+
+    `git status --porcelain` collapses a wholly-untracked directory into one `dir/`
+    record. Read naively that is not a file, so the gate would skip it while `git add -A`
+    committed every secret beneath it.
+    """
+    home, target = make_kb(tmp_path)
+    classify.begin(home, target)
+    integrate(target)
+    new_skill(target, f"\n## Notes\n\nDeploy with token: {FAKE_TOKEN}\n")
+    with pytest.raises(MnemeError, match="secret scan"):
+        classify.finalize(home, target, push=False)
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)
+    assert not (target / "skills" / "new-skill").exists()
+
+
+def test_scan_gate_reads_non_utf8_text(tmp_path):
+    """A token in a UTF-16 note is exactly as leaked as one in Markdown."""
+    home, target = make_kb(tmp_path)
+    classify.begin(home, target)
+    integrate(target)
+    note = target / "skills" / "deploy-widget" / "reference.md"
+    note.write_text(f"# Reference\n\ntoken: {FAKE_TOKEN}\n", encoding="utf-16")
+    with pytest.raises(MnemeError, match="secret scan"):
+        classify.finalize(home, target, push=False)
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)
+
+
+def test_commit_body_lists_files_not_directories(tmp_path):
+    """The body names every changed file — a new directory is expanded, never summarized."""
+    home, target = make_kb(tmp_path)
+    classify.begin(home, target)
+    integrate(target)
+    new_skill(target, "\n## Notes\n\nThe LB caches dead targets (verified: 2026-08-12).\n")
+    (target / units.FACTS_CANONICAL / "deploys.md").unlink()
+    result = classify.finalize(home, target, push=False)
+    lines = gitops.git(target, "log", result.branch, "-1", "--format=%b").splitlines()
+    assert "- skills/new-skill/SKILL.md" in lines
+    assert "- skills/new-skill/" not in lines
+    subject = gitops.git(target, "log", result.branch, "-1", "--format=%s")
+    assert subject == f"knowledge: classify {datetime.now(timezone.utc):%Y-%m-%d}"
 
 
 def test_cli_finalize_reports_branch_and_records_ledger(tmp_path, capsys):

@@ -207,6 +207,12 @@ def _changed_files(repo: Path) -> list[str]:
     Both queries run in `-z` form and read through `git_raw`: NUL-separated paths are
     never quoted or line-split, so a filename containing a space, a quote, or a newline
     reaches the secret-scan gate intact instead of being silently skipped.
+
+    `--untracked-files=all` is load-bearing, not tidiness: by default git collapses a
+    wholly-untracked directory into a single `dir/` record, and a *directory* is not a
+    file the scan gate can read — yet `git add -A` commits every file beneath it. A brand
+    new skill is the mainline classify outcome, so that default would let the one case the
+    librarian is most likely to produce walk past the secret scan.
     """
     changed: set[str] = set()
     for path in gitops.git_raw(repo, "diff", "-z", "--name-only", "main...HEAD").split("\0"):
@@ -214,7 +220,13 @@ def _changed_files(repo: Path) -> list[str]:
             changed.add(path)
     # A rename record spans two fields — `XY <path>\0<original>\0` — and the original is
     # gone from the working tree, so it is consumed and dropped.
-    entries = [e for e in gitops.git_raw(repo, "status", "--porcelain", "-z").split("\0") if e]
+    entries = [
+        e
+        for e in gitops.git_raw(
+            repo, "status", "--porcelain", "-z", "--untracked-files=all"
+        ).split("\0")
+        if e
+    ]
     i = 0
     while i < len(entries):
         entry = entries[i]
@@ -228,15 +240,39 @@ def _changed_files(repo: Path) -> list[str]:
     return sorted(changed)
 
 
+# UTF-8 is what mneme writes, but the gate has to hold over whatever the librarian's
+# editor produced. UTF-32 is tried before UTF-16 because a UTF-32 file also decodes
+# (into interleaved NULs) under UTF-16, while the reverse practically never happens.
+_SCAN_CODECS = ("utf-8-sig", "utf-32", "utf-16")
+
+
+def _scannable_text(path: Path) -> str | None:
+    """Best-effort text for the secret scan — an odd encoding is never a free pass.
+
+    The last resort is a lossy UTF-8 decode: undecodable bytes become replacement
+    characters and any ASCII credential sitting among them still reaches the rules.
+    Only a file that cannot be read at all yields None.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    for codec in _SCAN_CODECS:
+        try:
+            return raw.decode(codec)
+        except (UnicodeDecodeError, ValueError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def _scan_gate(repo: Path, changed: list[str]) -> None:
     for rel in changed:
         path = repo / rel
         if not path.is_file():
             continue  # deleted or renamed away — nothing left to leak
-        try:
-            text = path.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeDecodeError):
-            continue  # binary or unreadable: lint owns shape, the scan owns text
+        text = _scannable_text(path)
+        if text is None:
+            continue  # unreadable: lint owns shape, the scan owns text
         findings = scan.scan_text(text)
         if scan.has_blockers(findings):
             rules = ", ".join(sorted({f.rule for f in findings if f.severity == scan.BLOCK}))
@@ -248,7 +284,7 @@ def _commit(repo: Path, plugin: str, unit_lines: list[str]) -> str:
     if gitops.git(repo, "status", "--porcelain") == "":
         raise MnemeError("nothing to commit for this classify pass")
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    subject = f"knowledge: classify {date} ({len(unit_lines)} changes)"
+    subject = f"knowledge: classify {date}"
     body = "\n".join(f"- {line}" for line in unit_lines)
     message = f"{subject}\n\n{body}\n\nMneme-Classify: {plugin}\n"
     gitops.git(repo, "commit", "-m", message)
