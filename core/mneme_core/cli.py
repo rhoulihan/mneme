@@ -79,6 +79,8 @@ def _build_parser() -> argparse.ArgumentParser:
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
     p_query = db_sub.add_parser("query")
     p_query.add_argument("sql")
+    db_sub.add_parser("enable")
+    db_sub.add_parser("disable")
 
     return parser
 
@@ -257,6 +259,29 @@ def _readonly_authorizer(action, arg1, arg2, dbname, source):
 
 
 def _db_cmd(home: Path, args: argparse.Namespace) -> int:
+    if args.db_command == "enable":
+        from mneme_index import db as index_db
+
+        from . import indexing, registry as registry_mod
+
+        paths.ensure_layout(home)
+        if registry_mod.load_registry(home):
+            for s in indexing.rebuild(home):
+                print(
+                    f"indexed {s.plugin}: {s.skills} skills,"
+                    f" {s.facts} facts, {len(s.skipped)} skipped"
+                )
+        else:
+            index_db.open_db(paths.db_path(home)).close()
+        print(f"index enabled at {paths.db_path(home)}")
+        return 0
+    if args.db_command == "disable":
+        db_file = paths.db_path(home)
+        if db_file.exists():
+            db_file.unlink()
+        print("index disabled")
+        return 0
+
     import sqlite3
 
     if not args.sql.lstrip().lower().startswith("select"):
