@@ -2,6 +2,7 @@ from pathlib import Path
 
 from mneme_core import registry, routing
 from mneme_core.registry import Plugin
+from mneme_core.routing import Scope
 
 MNEME_MD = """# acme-knowledge — knowledge scope
 
@@ -46,7 +47,8 @@ def test_scopes_lists_registered_plugins_sorted(tmp_path):
     assert [s.name for s in result] == ["a-plugin", "b-plugin"]
     assert result[0].statement.startswith("Widget platform operations")
     assert result[1].sensitivity == "restricted"
-    assert result[0].mode == "pr"
+    # PR-only doctrine: a scope carries no contribution mode at all.
+    assert "mode" not in {f.name for f in Scope.__dataclass_fields__.values()}
 
 
 def test_scopes_tolerates_missing_clone(tmp_path):

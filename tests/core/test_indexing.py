@@ -25,7 +25,6 @@ def test_rebuild_indexes_registered_plugins(tmp_path):
             name="acme-knowledge",
             repo="git@github.com:acme/k.git",
             path=str(tree),
-            mode="pr",
             sensitivity="internal",
         ),
     )
@@ -35,8 +34,9 @@ def test_rebuild_indexes_registered_plugins(tmp_path):
     conn = index_db.open_db_readonly(paths.db_path(home))
     row = conn.execute("SELECT * FROM plugins WHERE name = 'acme-knowledge'").fetchone()
     assert row["repo"] == "git@github.com:acme/k.git"
-    assert row["mode"] == "pr"
     assert row["sensitivity"] == "internal"
+    # PR-only doctrine: the index carries no contribution mode column.
+    assert "mode" not in row.keys()
     conn.close()
 
 

@@ -6,7 +6,7 @@ from mneme_core.routing import Scope
 
 
 def scope(name="t", sensitivity="internal", path="/x"):
-    return Scope(name=name, sensitivity=sensitivity, mode="pr", path=path, statement="")
+    return Scope(name=name, sensitivity=sensitivity, path=path, statement="")
 
 
 def test_less_restricted_target_warns():

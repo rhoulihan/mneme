@@ -9,7 +9,6 @@ SUBS = dict(
     description="Institutional knowledge for the Acme widget platform",
     owner="acme-maintainers",
     sensitivity="internal",
-    mode="pr",
 )
 
 

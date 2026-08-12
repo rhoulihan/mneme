@@ -46,12 +46,14 @@ def test_flag_roundtrip(tmp_path, capsys):
 def test_registry_add_list_remove(tmp_path, capsys):
     code, _, _ = run(
         capsys, "--home", str(tmp_path), "registry", "add", "acme-knowledge",
-        "--repo", "git@github.com:acme/k.git", "--mode", "commit",
+        "--repo", "git@github.com:acme/k.git", "--sensitivity", "restricted",
     )
     assert code == 0
     code, out, _ = run(capsys, "--home", str(tmp_path), "registry", "list")
     assert code == 0
-    assert "acme-knowledge" in out and "commit" in out
+    assert "acme-knowledge" in out
+    assert "restricted" in out
+    assert "git@github.com:acme/k.git" in out
     code, _, _ = run(capsys, "--home", str(tmp_path), "registry", "remove", "acme-knowledge")
     assert code == 0
     code, out, _ = run(capsys, "--home", str(tmp_path), "registry", "list")
@@ -132,7 +134,10 @@ def test_unreadable_file_does_not_traceback(tmp_path):
         ("registry",),
         ("stage",),
         ("--no-such-flag",),
-        ("registry", "add", "a-b", "--mode", "bogus", "--repo", "r"),
+        # PR-only doctrine: --mode is gone from both surfaces, so even a formerly
+        # valid value is now an unrecognised argument — and still exit 1, not 2.
+        ("registry", "add", "a-b", "--mode", "pr", "--repo", "r"),
+        ("new", "a-b", "--mode", "pr"),
     ],
 )
 def test_usage_errors_exit_1_not_2(capsys, argv):

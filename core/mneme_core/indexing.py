@@ -37,7 +37,6 @@ def rebuild(home: Path) -> list[index_build.IndexStats]:
                         p.name,
                         root,
                         repo=p.repo,
-                        mode=p.mode,
                         sensitivity=p.sensitivity,
                     )
                 )

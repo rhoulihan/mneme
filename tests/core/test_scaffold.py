@@ -56,13 +56,14 @@ def test_git_initialized_with_one_commit(tmp_path):
 
 def test_registered_in_registry(tmp_path):
     home = tmp_path / "home"
-    target = scaffold.create(home, "reg-knowledge", sensitivity="restricted", mode="commit")
+    target = scaffold.create(home, "reg-knowledge", sensitivity="restricted")
     p = registry.get_plugin(home, "reg-knowledge")
     assert p is not None
     assert p.path == str(target)
     assert p.sensitivity == "restricted"
-    assert p.mode == "commit"
     assert p.repo == f"local:{target}"
+    # PR-only doctrine: the scaffolded scope doc declares no contribution mode.
+    assert "Contribution mode" not in (target / "MNEME.md").read_text(encoding="utf-8")
 
 
 def test_existing_target_rejected(tmp_path):

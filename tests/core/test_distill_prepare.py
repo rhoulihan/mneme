@@ -27,7 +27,7 @@ def test_prepare_bundles_scopes_and_flags(tmp_path, capsys):
     bundle = json.loads(out)
     assert bundle["flag_count"] == 1
     prompt = bundle["prompt"]
-    assert "- acme-knowledge [internal/pr]: Widget ops. Second line." in prompt
+    assert "- acme-knowledge [internal]: Widget ops. Second line." in prompt
     assert "solved the deploy race" in prompt
     assert "/tmp/t.jsonl" in prompt
     assert '"proposals"' in prompt
