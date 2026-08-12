@@ -228,9 +228,10 @@ Rules:
    is never a skill.
 4. A fact with no good home STAYS in the facts directory, untouched.
 5. NEVER delete knowledge. Every fact either lands in a skill's content (verbatim or
-   merged, with its meaning and verified date intact) or remains a fact. When a fact
-   merely restates what a skill already says, leave the skill as it is, remove the
-   now-redundant bullet, and record it in your report as retired into that skill.
+   merged, with its meaning and verified date intact) or remains a fact. Retiring a fact
+   that merely restates what a skill already says still means carrying its sentence into
+   that skill as a quoted fact-derived note, then recording it in your report as retired
+   into that skill: finalize refuses any pass where a fact's sentence survives nowhere.
 6. Propose the COMPLETE mapping to the user first — fact by fact: destination skill and
    section, facts staying put, facts retired as duplicates, any new skill worth creating —
    and WAIT for their approval before editing a single file.

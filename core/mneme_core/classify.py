@@ -315,6 +315,106 @@ def _scan_gate(repo: Path, changed: list[str], kind: str) -> None:
             raise MnemeError(f"{kind} fails the secret scan: {rel} ({rules})")
 
 
+def _normalized(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _main_fact_bullets(repo: Path) -> list[tuple[str, str]]:
+    """`(file, text)` for every fact bullet committed on `main`.
+
+    Read from the ref rather than the working tree, because the working tree IS the thing
+    under suspicion — the pass may already have deleted the file whose loss we are
+    checking for. Path selection mirrors `units.fact_files`: the `*.md` directly inside
+    either facts layout, canonical first. A bullet `main` already carries malformed is
+    skipped; the branch cannot be blamed for damage it did not do.
+    """
+    prefixes = (f"{units.FACTS_CANONICAL}/", "facts/")
+    bullets: list[tuple[str, str]] = []
+    listing = gitops.git_raw(repo, "ls-tree", "-r", "-z", "--name-only", "main")
+    for rel in listing.split("\0"):
+        if not rel.endswith(".md"):
+            continue
+        if not any(rel.startswith(p) and "/" not in rel[len(p) :] for p in prefixes):
+            continue
+        try:
+            _meta, body = units.parse_frontmatter(gitops.git_raw(repo, "show", f"main:{rel}"))
+        except (MnemeError, UnicodeDecodeError):
+            # A fact file mneme cannot read was already invisible to lint, the index, and
+            # search; making it a wall every finalize hits would not preserve it.
+            continue
+        for n, line in enumerate(body.splitlines(), start=1):
+            if not line.startswith("- ["):
+                continue
+            try:
+                bullets.append((rel, units.parse_bullet_line(line, n).text))
+            except MnemeError:
+                continue
+    return bullets
+
+
+def _branch_fact_texts(repo: Path) -> set[str]:
+    """Normalized text of every fact bullet the branch's working tree still carries."""
+    texts: set[str] = set()
+    for f in units.fact_files(repo):
+        try:
+            _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        except (MnemeError, OSError, UnicodeDecodeError):
+            continue
+        for n, line in enumerate(body.splitlines(), start=1):
+            if not line.startswith("- ["):
+                continue
+            try:
+                texts.add(_normalized(units.parse_bullet_line(line, n).text))
+            except MnemeError:
+                continue
+    return texts
+
+
+def _integration_text(repo: Path, changed: list[str]) -> str:
+    """One normalized blob of every skill file this pass touched — where facts go to live.
+
+    Only files the pass CHANGED count: an integration is something this branch wrote, and
+    scanning the whole repo would let a fact be "accounted for" by a coincidence of
+    wording somewhere nobody edited.
+    """
+    parts: list[str] = []
+    for rel in changed:
+        if not rel.startswith("skills/"):
+            continue
+        path = repo / rel
+        if not path.is_file():
+            continue  # deleted on the branch — nothing preserved there
+        text = _scannable_text(path)
+        if text is not None:
+            parts.append(_normalized(text))
+    return "\n".join(parts)
+
+
+def _preservation_gate(repo: Path, changed: list[str], kind: str) -> None:
+    """Knowledge on `main` may be moved or integrated by this pass — never dropped.
+
+    A fact is accounted for when its sentence is still a bullet in some fact file, or
+    appears verbatim inside a skill file the pass changed. That is deliberately a floor
+    and not a judgement of the integration's quality: mneme cannot tell a faithful summary
+    from a lossy one, but it can tell that the original sentence still exists somewhere in
+    the repo — which is also the better provenance, and what the instructions ask for.
+    """
+    on_branch = _branch_fact_texts(repo)
+    integrated = _integration_text(repo, changed)
+    lost = [
+        f"{rel}: {text[:80]}"
+        for rel, text in _main_fact_bullets(repo)
+        if _normalized(text) not in on_branch and _normalized(text) not in integrated
+    ]
+    if lost:
+        raise MnemeError(
+            f"{kind} would lose knowledge that is committed on main — "
+            + "; ".join(lost)
+            + "; facts may move, but never vanish — integrate the content or leave the"
+            " fact in place"
+        )
+
+
 def _commit(
     repo: Path, plugin: str, kind: str, unit_lines: list[str], base_sha: str
 ) -> str:
@@ -375,6 +475,7 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
             raise MnemeError(f"{kind} fails repo lint: {details}")
         changed = _changed_files(repo)
         _scan_gate(repo, changed, kind)
+        _preservation_gate(repo, changed, kind)
     except MnemeError:
         harvest._abort(repo, branch, base_sha)
         raise
