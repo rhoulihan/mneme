@@ -28,6 +28,9 @@ class Candidate:
     confidence: float = 0.5
     rationale: str = ""
     target_unit: str = ""
+    topic: str = ""
+    similar_to: str = ""
+    boundary_warning: str = ""
     provenance: dict = field(default_factory=dict)
     status: str = "staged"
 
@@ -58,6 +61,9 @@ def _to_text(cand: Candidate) -> str:
         "confidence": str(cand.confidence),
         "rationale": cand.rationale,
         "target-unit": cand.target_unit,
+        "topic": cand.topic,
+        "similar-to": cand.similar_to,
+        "boundary-warning": cand.boundary_warning,
         "status": cand.status,
         "provenance": {k: str(v) for k, v in cand.provenance.items()},
     }
@@ -75,6 +81,9 @@ def _from_text(text: str) -> Candidate:
         confidence=float(meta.get("confidence", "0.5")),
         rationale=str(meta.get("rationale", "")),
         target_unit=str(meta.get("target-unit", "")),
+        topic=str(meta.get("topic", "")),
+        similar_to=str(meta.get("similar-to", "")),
+        boundary_warning=str(meta.get("boundary-warning", "")),
         provenance=dict(meta.get("provenance", {})),
         status=str(meta.get("status", "staged")),
     )
