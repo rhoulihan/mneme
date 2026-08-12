@@ -8,6 +8,15 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.3.0 — 2026-08-12
+
+- **Session-start knowledge-repo detection** — opening a session inside an
+  unregistered repo that carries a `MNEME.md` makes the injected brief ask the
+  user whether to register it with the local mneme (origin URL pre-filled,
+  `/mneme:adopt` offered when governance files are missing, declines
+  respected). Detection is deterministic (`routing.find_knowledge_repo`) and
+  can never break session start.
+
 ## 0.2.1 — 2026-08-12
 
 - **Fixed scaffolded secret-scan workflow** — `validate.yml` shipped with

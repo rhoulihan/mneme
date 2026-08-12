@@ -1,6 +1,6 @@
 [project]
 name = "mneme"
-version = "0.2.1"
+version = "0.3.0"
 description = "Knowledge-mining engine for AI coding agents"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
