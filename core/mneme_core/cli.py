@@ -87,6 +87,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
 
+    p_distill = sub.add_parser("distill")
+    distill_sub = p_distill.add_subparsers(dest="distill_command", required=True)
+    p_prep = distill_sub.add_parser("prepare")
+    p_prep.add_argument("--transcript", default="(not provided)")
+
     p_db = sub.add_parser("db")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
     p_query = db_sub.add_parser("query")
@@ -146,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
             return _index_cmd(home, args)
         if args.command == "search":
             return _search_cmd(home, args)
+        if args.command == "distill":
+            return _distill_cmd(home, args)
         if args.command == "db":
             return _db_cmd(home, args)
         if args.command == "new":
@@ -339,3 +346,36 @@ def _db_cmd(home: Path, args: argparse.Namespace) -> int:
     finally:
         conn.close()
     return 0
+
+
+def _distill_cmd(home: Path, args: argparse.Namespace) -> int:
+    if args.distill_command == "prepare":
+        import json as json_mod
+
+        from . import flags as flags_mod
+        from . import routing, templates
+
+        scope_list = routing.scopes(home)
+        if scope_list:
+            scope_lines = "\n".join(
+                f"- {s.name} [{s.sensitivity}/{s.mode}]:"
+                f" {' '.join(s.statement.split()) or '(no scope statement)'}"
+                for s in scope_list
+            )
+        else:
+            scope_lines = "- (none registered)"
+        flag_records = flags_mod.read_flags(home)
+        flag_lines = (
+            "\n".join(json_mod.dumps(f) for f in flag_records)
+            if flag_records
+            else "(no flags this session)"
+        )
+        prompt = templates.render(
+            templates.DISTILLER_PROMPT,
+            scopes=scope_lines,
+            flags=flag_lines,
+            transcript_path=args.transcript,
+        )
+        print(json_mod.dumps({"prompt": prompt, "flag_count": len(flag_records)}))
+        return 0
+    return 1
