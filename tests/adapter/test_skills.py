@@ -7,7 +7,7 @@ from mneme_core import lint, units
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILLS_DIR = REPO_ROOT / "skills"
 
-IMPERATIVE = ["capture", "status", "verify", "adopt", "register", "classify"]
+IMPERATIVE = ["capture", "status", "verify", "adopt", "register", "classify", "review"]
 
 
 def test_imperative_skills_exist_and_lint_clean():
@@ -90,6 +90,43 @@ def test_classify_takes_no_argument():
     # advertise a plugin-name parameter that does not exist anywhere in the surface.
     meta, body = units.parse_frontmatter(
         (SKILLS_DIR / "classify" / "SKILL.md").read_text(encoding="utf-8")
+    )
+    assert "argument-hint" not in meta
+    assert "$ARGUMENTS" not in body
+
+
+def test_review_drives_the_triage_loop():
+    body = (SKILLS_DIR / "review" / "SKILL.md").read_text(encoding="utf-8")
+    for token in (
+        "review triage",
+        "review begin",
+        "review finalize",
+        "review abort",
+        "classify",
+    ):
+        assert token in body, token
+    # The three lanes are the whole surface, and two of them mutate someone else's PR.
+    for token in ("gh pr merge", "gh pr close"):
+        assert token in body, token
+
+
+def test_review_never_acts_without_per_pr_approval():
+    # The rails cannot enforce this one — merging and closing are the agent's own gh
+    # calls — so the prose IS the control. It has to be explicit, and it has to be
+    # per-PR: a skill that only said "get approval" would permit one blanket yes.
+    body = (SKILLS_DIR / "review" / "SKILL.md").read_text(encoding="utf-8")
+    assert "explicit" in body
+    assert "approval" in body
+    assert "PR" in body
+    # Failures the user must hear verbatim rather than as a paraphrase.
+    assert "gh" in body
+    assert "/mneme:register" in body
+
+
+def test_review_takes_no_argument():
+    # Same rule as classify (spec §7.7): the current directory IS the argument.
+    meta, body = units.parse_frontmatter(
+        (SKILLS_DIR / "review" / "SKILL.md").read_text(encoding="utf-8")
     )
     assert "argument-hint" not in meta
     assert "$ARGUMENTS" not in body
