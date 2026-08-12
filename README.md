@@ -86,33 +86,52 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 01 — Foundation | State layout, registry, flag capture, unit formats, staging + quarantine + declined ledger, secret scan, schema lint, `mneme` CLI | ✅ merged |
 | 02 — Retrieval | `mneme-index`: standalone SQLite FTS5 hybrid search over any skill/fact tree; `mneme search` / `mneme db query` | ✅ merged |
 | 03 — Factory | `mneme new` scaffold factory + security hardening (SELECT-only queries, schema v2 with summaries, `db enable/disable`) | ✅ merged |
-| 04 — Distiller | Routing scopes, sensitivity boundaries, `mneme context`, two-phase `distill prepare` / `distill ingest` machine gate | 🔨 in progress |
-| 05 — Harvest | `mneme share` (list/diff/apply), git/PR plumbing with provenance trailers, `mneme verify` staleness sweep | 📝 planned |
-| 06 — Adapter | Claude Code plugin wiring: hooks, commands, behavioral skills, background distiller | 📝 planned |
+| 04 — Distiller | Routing scopes, sensitivity boundaries, session noticing brief, two-phase distill machine gate | ✅ merged |
+| 05 — Harvest | `/mneme:share` review flow, git/PR plumbing with provenance trailers, staleness sweep, register/adopt for existing repos | 🔨 in progress |
+| 06 — Adapter | Claude Code plugin wiring: hooks, `/mneme:*` commands, behavioral skills, background distiller | 📝 planned |
 | 07 — Dogfood | End-to-end harness + mneme's own development-knowledge plugin, captured by mneme | 📝 planned |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 
-## Quickstart (today)
+## Installing
 
-Requires Python ≥ 3.10 and git. No runtime dependencies — the core is standard library only.
+Mneme installs like any Claude Code plugin — its repo is its own marketplace:
+
+```
+/plugin marketplace add rhoulihan/mneme
+/plugin install mneme@mneme
+```
+
+Requires Python ≥ 3.10 and git on the machine; the engine is standard-library-only. (The plugin surface ships with Phase 06, in progress now — until it merges, the contributor CLI below is the interim interface.)
+
+## Using mneme
+
+Everything is a slash command. Behind each one, a deterministic, fully-tested CLI does the mechanical work — that separation is the design: the agent converses, the machine gates.
+
+| Command | What it does |
+|---|---|
+| `/mneme:new <name>` | Interview for scope, then scaffold a governed knowledge plugin — repo, manifests, CI, routing scope statement |
+| `/mneme:register <name> <url>` | Register an existing repo you have access to (clones it for you); offers governance retrofit |
+| `/mneme:adopt <name>` | Retrofit mneme governance onto an existing repo — adds only what's missing, never overwrites |
+| `/mneme:capture <note>` | Flag hard-won knowledge the moment it happens — one line, distilled in the background later |
+| `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then commit/PR |
+| `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |
+| `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
+
+And mneme rides the session without being asked: a SessionStart hook injects the noticing brief so the agent flags golden paths as they happen, Stop/PreCompact hooks run the background distiller over what was flagged, and a retrieval skill has the agent search installed knowledge by vague notion before reinventing something the organization already knows.
+
+### Under the hood (contributors, CI, scripting)
+
+Every command drives `bin/mneme`, a zero-install stdlib-only CLI you can use directly:
 
 ```bash
-git clone https://github.com/rhoulihan/mneme
-cd mneme
-
-bin/mneme init                                        # create ~/.mneme (override with MNEME_HOME)
-bin/mneme new acme-knowledge --owner your-team        # scaffold + git init + register a knowledge plugin
-bin/mneme registry list
-
-bin/mneme flag "v2 API truncates batches over 500 — found after two dead ends"
-
-bin/mneme db enable                                   # optional local index (SQLite FTS5, derived, rebuildable)
-bin/mneme search "batch truncation"                   # vague-notion retrieval across all registered plugins
-bin/mneme db query "SELECT category, COUNT(*) FROM units GROUP BY category"
-
-bin/mneme lint  path/to/any/knowledge/repo            # machines settle format
-printf 'key = AKIA...' | bin/mneme scan -             # deterministic secret scan (exit 2 on blockers)
+git clone https://github.com/rhoulihan/mneme && cd mneme
+bin/mneme new acme-knowledge --owner your-team        # what /mneme:new runs
+bin/mneme registry add team-kb --repo git@github.com:acme/kb.git --clone
+bin/mneme search "batch truncation"                   # FTS across registered plugins
+bin/mneme lint path/to/any/knowledge/repo             # machines settle format (CI runs this)
+printf 'key = AKIA...' | bin/mneme scan -             # secret scan, exit 2 on blockers
+python3 -m pytest                                     # test suite (dev-only dependency: pytest)
 ```
 
 The `mneme-index` component also works standalone against any directory of `SKILL.md`/fact files — that's deliberate: it's the piece other harnesses can adopt directly:
@@ -121,8 +140,6 @@ The `mneme-index` component also works standalone against any directory of `SKIL
 bin/mneme-index --db /tmp/i.db build path/to/skill-tree
 bin/mneme-index --db /tmp/i.db search "vague notion of what I need"
 ```
-
-Run the test suite: `python3 -m pytest` (dev-only dependency: `pytest`).
 
 ## Design principles
 
