@@ -33,6 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init")
     sub.add_parser("home")
     sub.add_parser("context")
+    sub.add_parser("status")
 
     p_flag = sub.add_parser("flag")
     p_flag.add_argument("text")
@@ -163,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
                 first = s.statement.splitlines()[0] if s.statement else "(no scope statement)"
                 print(f"- {s.name} [{s.sensitivity}/{s.mode}]: {first}")
             return 0
+        if args.command == "status":
+            return _status_cmd(home)
         if args.command == "flag":
             flags.add_flag(home, args.text, kind=args.kind, session=args.session)
             print("flagged")
@@ -256,6 +259,69 @@ def main(argv: list[str] | None = None) -> int:
         # the exit-code contract rather than surfacing as a traceback.
         print("mneme: input is nested too deeply to process", file=sys.stderr)
         return 1
+
+
+def _status_cmd(home: Path) -> int:
+    import json as json_mod
+
+    from . import flags as flags_mod
+    from . import registry as registry_mod
+    from . import staging as staging_mod
+
+    plugins = registry_mod.load_registry(home)
+    print(f"plugins: {len(plugins)} registered")
+    for p in plugins:
+        print(f"- {p.name} [{p.sensitivity}/{p.mode}]")
+    print(f"flags: {len(flags_mod.read_flags(home))} pending")
+
+    cands = staging_mod.load_candidates(home, include_quarantined=True)
+    staged = sum(1 for c in cands if c.status == "staged")
+    quarantined = sum(1 for c in cands if c.status == "quarantined")
+    declined_file = paths.declined_path(home)
+    declined = (
+        len([l for l in declined_file.read_text(encoding="utf-8").splitlines() if l.strip()])
+        if declined_file.exists()
+        else 0
+    )
+    print(f"staging: {staged} staged, {quarantined} quarantined, {declined} declined (ledger)")
+
+    submitted_file = paths.submitted_path(home)
+    records = []
+    if submitted_file.exists():
+        records = [
+            json_mod.loads(l)
+            for l in submitted_file.read_text(encoding="utf-8").splitlines()
+            if l.strip()
+        ]
+    if records:
+        last = records[-1]
+        print(
+            f"submissions: {len(records)} recorded,"
+            f" last -> {last.get('target', '?')} ({last.get('branch', '?')})"
+        )
+    else:
+        print("submissions: 0 recorded")
+
+    db_file = paths.db_path(home)
+    if not db_file.exists():
+        print("index: not built")
+    else:
+        built = ""
+        try:
+            from mneme_index import db as index_db
+
+            conn = index_db.open_db_readonly(db_file)
+            try:
+                row = conn.execute(
+                    "SELECT MAX(built_at) AS b FROM plugins"
+                ).fetchone()
+                built = row["b"] or ""
+            finally:
+                conn.close()
+        except MnemeError:
+            built = "unreadable"
+        print(f"index: enabled (built {built or 'never'})")
+    return 0
 
 
 def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
