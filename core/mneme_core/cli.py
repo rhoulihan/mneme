@@ -50,6 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
     p_add.add_argument("--exclude", action="append", default=[])
+    p_add.add_argument("--clone", action="store_true")
     reg_sub.add_parser("list")
     p_rm = reg_sub.add_parser("remove")
     p_rm.add_argument("name")
@@ -58,6 +59,25 @@ def _build_parser() -> argparse.ArgumentParser:
     stage_sub = p_stage.add_subparsers(dest="stage_command", required=True)
     p_slist = stage_sub.add_parser("list")
     p_slist.add_argument("--all", action="store_true")
+
+    p_share = sub.add_parser("share")
+    share_sub = p_share.add_subparsers(dest="share_command", required=True)
+    p_slist2 = share_sub.add_parser("list")
+    p_slist2.add_argument("--all", action="store_true")
+    p_sdiff = share_sub.add_parser("diff")
+    p_sdiff.add_argument("id")
+    p_sapply = share_sub.add_parser("apply")
+    p_sapply.add_argument("--ids", required=True)
+    p_sapply.add_argument("--no-push", action="store_true")
+    p_sapply.add_argument("--dry-run", action="store_true")
+
+    p_decline = sub.add_parser("decline")
+    p_decline.add_argument("id")
+    p_decline.add_argument("--reason", required=True)
+
+    p_verify = sub.add_parser("verify")
+    p_verify.add_argument("plugin")
+    p_verify.add_argument("--days", type=int, default=90)
 
     p_scan = sub.add_parser("scan")
     p_scan.add_argument("path")
@@ -86,6 +106,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_new.add_argument(
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
+
+    p_adopt = sub.add_parser("adopt")
+    p_adopt.add_argument("name")
+    p_adopt.add_argument("--description", default="")
+    p_adopt.add_argument("--owner", default="maintainers")
 
     p_distill = sub.add_parser("distill")
     distill_sub = p_distill.add_subparsers(dest="distill_command", required=True)
@@ -148,6 +173,23 @@ def main(argv: list[str] | None = None) -> int:
             for cand in staging.load_candidates(home, include_quarantined=args.all):
                 print(f"{cand.id}  {cand.type}/{cand.edit}  {cand.target}  {cand.status}")
             return 0
+        if args.command == "share":
+            return _share_cmd(home, args)
+        if args.command == "decline":
+            from . import staging as staging_mod
+
+            cands = {
+                c.id: c
+                for c in staging_mod.load_candidates(home, include_quarantined=True)
+            }
+            cand = cands.get(args.id)
+            if cand is None:
+                raise MnemeError(f"no staged candidate with id: {args.id}")
+            staging_mod.decline(home, cand, args.reason)
+            print(f"declined {args.id}")
+            return 0
+        if args.command == "verify":
+            return _verify_cmd(home, args)
         if args.command == "scan":
             return _scan_cmd(args.path)
         if args.command == "lint":
@@ -176,6 +218,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"created {target}")
             print(f"registered {args.name}")
             return 0
+        if args.command == "adopt":
+            from . import lint as lint_mod
+            from . import registry as registry_mod
+            from . import scaffold as scaffold_mod
+
+            added = scaffold_mod.adopt(
+                home, args.name, description=args.description, owner=args.owner
+            )
+            for rel in added:
+                print(f"added: {rel}")
+            if not added:
+                print("nothing to add")
+            plugin = registry_mod.get_plugin(home, args.name)
+            issues = lint_mod.lint_repo(Path(plugin.path))
+            errors = [i for i in issues if i.severity == "error"]
+            if errors:
+                print(
+                    f"warning: existing content has {len(errors)} lint error(s)"
+                    f" — run: mneme lint {plugin.path}"
+                )
+            print("review and commit these files through your repo's normal process")
+            return 0
         parser.print_help()
         return 1
     except MnemeError as e:
@@ -197,6 +261,23 @@ def main(argv: list[str] | None = None) -> int:
 def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
     if args.registry_command == "add":
         plugin_path = args.path or str(paths.repos_dir(home) / args.name)
+        if args.clone:
+            target = Path(plugin_path)
+            if target.exists():
+                print(f"clone skipped: {target} already exists")
+            else:
+                import subprocess as subprocess_mod
+
+                paths.ensure_layout(home)
+                result = subprocess_mod.run(
+                    ["git", "clone", args.repo, str(target)],
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    raise MnemeError(
+                        f"git clone failed: {result.stderr.strip()[:300]}"
+                    )
+                print(f"cloned {args.repo} -> {target}")
         registry.add_plugin(
             home,
             registry.Plugin(
@@ -219,6 +300,196 @@ def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
         print(f"removed {args.name}")
         return 0
     return 1
+
+
+def _share_cmd(home: Path, args: argparse.Namespace) -> int:
+    from . import staging as staging_mod
+
+    if args.share_command == "list":
+        cands = staging_mod.load_candidates(home, include_quarantined=args.all)
+        if not cands:
+            print("nothing staged")
+            return 0
+        by_target: dict[str, list] = {}
+        for c in cands:
+            by_target.setdefault(c.target, []).append(c)
+        for target in sorted(by_target):
+            print(f"{target}:")
+            for c in by_target[target]:
+                suffix = ""
+                if c.status == "quarantined":
+                    suffix += " [QUARANTINED]"
+                if c.boundary_warning:
+                    suffix += " [boundary]"
+                if c.similar_to:
+                    suffix += f" [similar: {c.similar_to}]"
+                print(f"  {c.id}  {c.type}/{c.edit}  conf={c.confidence}{suffix}")
+        return 0
+
+    if args.share_command == "diff":
+        return _share_diff(home, args)
+    if args.share_command == "apply":
+        return _share_apply(home, args)
+    return 1
+
+
+def _share_apply(home: Path, args: argparse.Namespace) -> int:
+    from . import harvest as harvest_mod
+    from . import staging as staging_mod
+
+    wanted = [i.strip() for i in args.ids.split(",") if i.strip()]
+    all_cands = {c.id: c for c in staging_mod.load_candidates(home)}
+    missing = [i for i in wanted if i not in all_cands]
+    if missing:
+        raise MnemeError(f"unknown or quarantined candidate ids: {', '.join(missing)}")
+    selected = [all_cands[i] for i in wanted]
+    by_target: dict[str, list] = {}
+    for c in selected:
+        by_target.setdefault(c.target, []).append(c)
+
+    if args.dry_run:
+        for target in sorted(by_target):
+            for c in by_target[target]:
+                print(f"would apply {c.id} -> {target} ({c.type}/{c.edit})")
+        return 0
+
+    for target in sorted(by_target):
+        result = harvest_mod.apply_batch(
+            home, target, by_target[target], push=not args.no_push
+        )
+        print(f"harvested {target}: {len(result.units)} units on {result.branch}")
+        print(f"pr: {result.pr}")
+    return 0
+
+
+def _share_diff(home: Path, args: argparse.Namespace) -> int:
+    import difflib
+
+    from . import registry as registry_mod
+    from . import staging as staging_mod
+    from . import units as units_mod
+
+    cands = {c.id: c for c in staging_mod.load_candidates(home, include_quarantined=True)}
+    cand = cands.get(args.id)
+    if cand is None:
+        raise MnemeError(f"no staged candidate with id: {args.id}")
+    if cand.edit == "new":
+        print(cand.body)
+        return 0
+    plugin = registry_mod.get_plugin(home, cand.target)
+    if plugin is None:
+        raise MnemeError(f"candidate targets unknown plugin: {cand.target}")
+    repo = Path(plugin.path)
+    if cand.type == "skill":
+        name = cand.target_unit.removeprefix("skills/")
+        existing_path = repo / "skills" / name / "SKILL.md"
+        if not existing_path.exists():
+            raise MnemeError(f"update target {cand.target_unit} not found in {repo}")
+        existing = existing_path.read_text(encoding="utf-8")
+    else:
+        # Guard the unpack: target_unit reaches here straight from distiller output, which
+        # is only checked for being non-empty — a missing '#' must be a MnemeError, not a
+        # ValueError traceback out of main().
+        if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
+            raise MnemeError(f"malformed fact target_unit: {cand.target_unit!r}")
+        file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
+        path = repo / "facts" / f"{file_part}.md"
+        if not path.exists():
+            raise MnemeError(f"update target file {path} not found")
+        _meta, body = units_mod.parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+        existing = ""
+        for n, line in enumerate(body.splitlines(), start=1):
+            if line.startswith("- ["):
+                try:
+                    if units_mod.parse_bullet_line(line, n).topic_key == key:
+                        existing = line + "\n"
+                        break
+                except MnemeError:
+                    continue
+        if not existing:
+            raise MnemeError(f"no bullet with topic key '{key}' in {path.name}")
+    new = cand.body if cand.body.endswith("\n") else cand.body + "\n"
+    for line in difflib.unified_diff(
+        existing.splitlines(), new.splitlines(),
+        fromfile=f"current/{cand.target_unit}", tofile=f"candidate/{cand.id}", lineterm="",
+    ):
+        print(line)
+    return 0
+
+
+def _verify_cmd(home: Path, args: argparse.Namespace) -> int:
+    from datetime import date, datetime, timezone
+
+    from . import registry as registry_mod
+    from . import units as units_mod
+
+    plugin = registry_mod.get_plugin(home, args.plugin)
+    if plugin is None:
+        raise MnemeError(f"plugin not registered: {args.plugin}")
+    repo = Path(plugin.path)
+    today = datetime.now(timezone.utc).date()
+
+    def age(date_str: str) -> int | None:
+        try:
+            return (today - date.fromisoformat(date_str)).days
+        except ValueError:
+            return None
+
+    total = 0
+    stale: list[tuple[str, str, str]] = []
+
+    skills_dir = repo / "skills"
+    if skills_dir.is_dir():
+        for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+            # knowledge-index is regenerated mechanically from the fact files it lists,
+            # so it carries no verification stamp and is never a human-verifiable unit —
+            # sweeping it would report every scaffolded repo as permanently stale.
+            if d.name == "knowledge-index":
+                continue
+            skill_md = d / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            total += 1
+            try:
+                meta, _ = units_mod.parse_frontmatter(skill_md.read_text(encoding="utf-8-sig"))
+            except MnemeError:
+                stale.append((units_mod.skill_unit_id(d.name), "none", "unknown"))
+                continue
+            md = meta.get("metadata", {})
+            verified = str(md.get("mneme-last-verified", "")) if isinstance(md, dict) else ""
+            a = age(verified) if verified else None
+            if a is None or a > args.days:
+                stale.append(
+                    (units_mod.skill_unit_id(d.name), verified or "none",
+                     str(a) if a is not None else "unknown")
+                )
+
+    facts_dir = repo / "facts"
+    if facts_dir.is_dir():
+        for f in sorted(facts_dir.glob("*.md")):
+            try:
+                _meta, body = units_mod.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+            except MnemeError:
+                continue
+            for n, line in enumerate(body.splitlines(), start=1):
+                if not line.startswith("- ["):
+                    continue
+                try:
+                    b = units_mod.parse_bullet_line(line, n)
+                except MnemeError:
+                    continue
+                total += 1
+                a = age(b.verified) if b.verified else None
+                if a is None or a > args.days:
+                    stale.append(
+                        (units_mod.fact_unit_id(f.stem, b.text), b.verified or "none",
+                         str(a) if a is not None else "unknown")
+                    )
+
+    for unit_id, verified, age_days in stale:
+        print(f"{unit_id}  last-verified={verified}  age-days={age_days}")
+    print(f"stale {len(stale)} of {total} units")
+    return 2 if stale else 0
 
 
 def _read_text(path: Path) -> str:

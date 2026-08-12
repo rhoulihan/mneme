@@ -99,6 +99,47 @@ def create(
     return target
 
 
+def adopt(
+    home: Path, name: str, *, description: str = "", owner: str = "maintainers"
+) -> list[str]:
+    plugin = registry.get_plugin(home, name)
+    if plugin is None:
+        raise MnemeError(f"plugin not registered: {name}")
+    target = Path(plugin.path)
+    if not target.is_dir():
+        raise MnemeError(f"local clone missing: {target}")
+    if not description:
+        description = f"Institutional knowledge maintained with mneme: {name}."
+    subs = dict(
+        name=name, description=description, owner=owner,
+        sensitivity=plugin.sensitivity, mode=plugin.mode,
+    )
+    candidates = {
+        "MNEME.md": templates.render(templates.MNEME_MD, **subs),
+        "CONTRIBUTING.md": templates.render(templates.CONTRIBUTING_MD, **subs),
+        "CODEOWNERS": templates.render(templates.CODEOWNERS, **subs),
+        ".github/workflows/validate.yml": templates.VALIDATE_YML,
+        ".github/workflows/release.yml": templates.RELEASE_YML,
+        ".claude-plugin/plugin.json": templates.render_json(templates.PLUGIN_JSON, **subs),
+        ".claude-plugin/marketplace.json": templates.render_json(
+            templates.MARKETPLACE_JSON, **subs
+        ),
+        "skills/knowledge-index/SKILL.md": templates.render(templates.INDEX_SKILL_MD, **subs),
+        "facts/.gitkeep": "",
+    }
+    added: list[str] = []
+    for rel, content in candidates.items():
+        path = target / rel
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        added.append(rel)
+    if "skills/knowledge-index/SKILL.md" in added:
+        regenerate_index_skill(target, name, description)
+    return added
+
+
 def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
     facts_dir = target / "facts"
     entries: list[tuple[str, str, int]] = []
