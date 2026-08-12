@@ -87,6 +87,14 @@ Flags are consumed carefully, because the run takes minutes and the session keep
 
 Its stdout and stderr go to `$MNEME_HOME/logs/distill.log`. That file is where you look when candidates do not show up.
 
+### First open in a knowledge repo
+
+Opening a session inside a repo that carries a `MNEME.md` but is not yet
+registered makes the session-start brief ask whether you want to register it —
+one confirmation wires up `mneme registry add` (using the repo's origin URL
+when it has one) and offers `/mneme:adopt` if governance files are missing.
+Declining is respected for the session.
+
 ## 4. Configuration
 
 All configuration is environment variables — there is no config file to manage.
