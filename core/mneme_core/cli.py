@@ -59,6 +59,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_slist = stage_sub.add_parser("list")
     p_slist.add_argument("--all", action="store_true")
 
+    p_share = sub.add_parser("share")
+    share_sub = p_share.add_subparsers(dest="share_command", required=True)
+    p_slist2 = share_sub.add_parser("list")
+    p_slist2.add_argument("--all", action="store_true")
+    p_sdiff = share_sub.add_parser("diff")
+    p_sdiff.add_argument("id")
+
     p_scan = sub.add_parser("scan")
     p_scan.add_argument("path")
 
@@ -148,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
             for cand in staging.load_candidates(home, include_quarantined=args.all):
                 print(f"{cand.id}  {cand.type}/{cand.edit}  {cand.target}  {cand.status}")
             return 0
+        if args.command == "share":
+            return _share_cmd(home, args)
         if args.command == "scan":
             return _scan_cmd(args.path)
         if args.command == "lint":
@@ -219,6 +228,90 @@ def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
         print(f"removed {args.name}")
         return 0
     return 1
+
+
+def _share_cmd(home: Path, args: argparse.Namespace) -> int:
+    from . import staging as staging_mod
+
+    if args.share_command == "list":
+        cands = staging_mod.load_candidates(home, include_quarantined=args.all)
+        if not cands:
+            print("nothing staged")
+            return 0
+        by_target: dict[str, list] = {}
+        for c in cands:
+            by_target.setdefault(c.target, []).append(c)
+        for target in sorted(by_target):
+            print(f"{target}:")
+            for c in by_target[target]:
+                suffix = ""
+                if c.status == "quarantined":
+                    suffix += " [QUARANTINED]"
+                if c.boundary_warning:
+                    suffix += " [boundary]"
+                if c.similar_to:
+                    suffix += f" [similar: {c.similar_to}]"
+                print(f"  {c.id}  {c.type}/{c.edit}  conf={c.confidence}{suffix}")
+        return 0
+
+    if args.share_command == "diff":
+        return _share_diff(home, args)
+    return 1
+
+
+def _share_diff(home: Path, args: argparse.Namespace) -> int:
+    import difflib
+
+    from . import registry as registry_mod
+    from . import staging as staging_mod
+    from . import units as units_mod
+
+    cands = {c.id: c for c in staging_mod.load_candidates(home, include_quarantined=True)}
+    cand = cands.get(args.id)
+    if cand is None:
+        raise MnemeError(f"no staged candidate with id: {args.id}")
+    if cand.edit == "new":
+        print(cand.body)
+        return 0
+    plugin = registry_mod.get_plugin(home, cand.target)
+    if plugin is None:
+        raise MnemeError(f"candidate targets unknown plugin: {cand.target}")
+    repo = Path(plugin.path)
+    if cand.type == "skill":
+        name = cand.target_unit.removeprefix("skills/")
+        existing_path = repo / "skills" / name / "SKILL.md"
+        if not existing_path.exists():
+            raise MnemeError(f"update target {cand.target_unit} not found in {repo}")
+        existing = existing_path.read_text(encoding="utf-8")
+    else:
+        # Guard the unpack: target_unit reaches here straight from distiller output, which
+        # is only checked for being non-empty — a missing '#' must be a MnemeError, not a
+        # ValueError traceback out of main().
+        if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
+            raise MnemeError(f"malformed fact target_unit: {cand.target_unit!r}")
+        file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
+        path = repo / "facts" / f"{file_part}.md"
+        if not path.exists():
+            raise MnemeError(f"update target file {path} not found")
+        _meta, body = units_mod.parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+        existing = ""
+        for n, line in enumerate(body.splitlines(), start=1):
+            if line.startswith("- ["):
+                try:
+                    if units_mod.parse_bullet_line(line, n).topic_key == key:
+                        existing = line + "\n"
+                        break
+                except MnemeError:
+                    continue
+        if not existing:
+            raise MnemeError(f"no bullet with topic key '{key}' in {path.name}")
+    new = cand.body if cand.body.endswith("\n") else cand.body + "\n"
+    for line in difflib.unified_diff(
+        existing.splitlines(), new.splitlines(),
+        fromfile=f"current/{cand.target_unit}", tofile=f"candidate/{cand.id}", lineterm="",
+    ):
+        print(line)
+    return 0
 
 
 def _read_text(path: Path) -> str:
