@@ -36,3 +36,57 @@ def apply_skill(repo: Path, cand: Candidate) -> str:
         raise MnemeError(f"candidate {cand.id}: update target {cand.target_unit} not found")
     skill_md.write_text(cand.body, encoding="utf-8")
     return f"skills/{name} (updated skill)"
+
+
+def apply_fact(repo: Path, cand: Candidate) -> str:
+    if cand.edit == "new" and not cand.topic:
+        raise MnemeError(f"candidate {cand.id}: fact candidate has no topic")
+    line = cand.body.strip()
+    bullet = units.parse_bullet_line(line, 1)
+
+    if cand.edit == "new":
+        path = repo / "facts" / f"{cand.topic}.md"
+        if path.exists():
+            meta, body = units.parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+        else:
+            meta, body = {"topic": cand.topic}, ""
+        for n, existing in enumerate(body.splitlines(), start=1):
+            if existing.startswith("- ["):
+                if units.parse_bullet_line(existing, n).topic_key == bullet.topic_key:
+                    raise MnemeError(
+                        f"candidate {cand.id}: topic key '{bullet.topic_key}' already exists"
+                        f" in facts/{cand.topic}.md — expected an update edit"
+                    )
+        new_body = body.rstrip("\n")
+        new_body = (new_body + "\n" if new_body else "") + line + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(units.serialize_frontmatter(meta, new_body), encoding="utf-8")
+        return f"facts/{cand.topic}#{bullet.topic_key} (new fact)"
+
+    if "#" not in cand.target_unit or not cand.target_unit.startswith("facts/"):
+        raise MnemeError(f"candidate {cand.id}: malformed fact target_unit {cand.target_unit!r}")
+    file_part, key = cand.target_unit.removeprefix("facts/").split("#", 1)
+    path = repo / "facts" / f"{file_part}.md"
+    if not path.exists():
+        raise MnemeError(f"candidate {cand.id}: update target file {path.name} not found")
+    meta, body = units.parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+    out_lines: list[str] = []
+    replaced = False
+    for n, existing in enumerate(body.splitlines(), start=1):
+        if not replaced and existing.startswith("- ["):
+            try:
+                if units.parse_bullet_line(existing, n).topic_key == key:
+                    out_lines.append(line)
+                    replaced = True
+                    continue
+            except MnemeError:
+                pass
+        out_lines.append(existing)
+    if not replaced:
+        raise MnemeError(
+            f"candidate {cand.id}: no bullet with topic key '{key}' in facts/{file_part}.md"
+        )
+    path.write_text(
+        units.serialize_frontmatter(meta, "\n".join(out_lines) + "\n"), encoding="utf-8"
+    )
+    return f"facts/{file_part}#{key} (updated fact)"
