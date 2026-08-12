@@ -14,7 +14,7 @@ Mneme ships as a Claude Code plugin, and its repository is its own marketplace �
 That registers the marketplace defined by `.claude-plugin/marketplace.json` at the repo root and installs the `mneme` plugin it points at. The plugin contributes:
 
 - **hooks** — a SessionStart context injector and a Stop/PreCompact background distiller trigger (`hooks/hooks.json`).
-- **skills** — the `/mneme:*` commands (`capture`, `share`, `new`, `register`, `adopt`, `status`, `verify`) plus a model-invocable `retrieval` skill.
+- **skills** — the `/mneme:*` commands (`capture`, `share`, `new`, `register`, `adopt`, `status`, `verify`, `classify`) plus a model-invocable `retrieval` skill.
 - **`bin/`** — `mneme` and `mneme-index`, which Claude Code puts on the Bash `PATH` while the plugin is enabled.
 
 To install from a local checkout instead (development, air-gapped machines):
@@ -66,6 +66,18 @@ mneme index rebuild    # build/refresh it across all registered plugins
 
 Check the whole pipeline at any time with `/mneme:status` (or `mneme status`).
 
+Once a repo has taken on a few merged PRs' worth of facts, run the librarian pass from
+inside it: `cd` into the knowledge repo and run `/mneme:classify`. The current directory is
+the argument — there is no plugin name to pass, and the command says so plainly if the
+directory is not a registered knowledge plugin. It reads every accumulated fact, proposes a
+complete mapping of fact → the skill whose work it belongs to, and **waits for your
+approval** before editing anything; then it migrates any legacy top-level `facts/` into
+`skills/knowledge-index/facts/` (the canonical location since 0.5.0 — repos still using the
+old one are read exactly as before, and nothing moves until you run this), regenerates the
+knowledge-index, and delivers the whole reorganization as its own `mneme/classify-*` branch
+and PR. No fact is ever deleted: each one either lands in a skill or stays a fact. Change
+your mind at any point and `mneme classify abort` puts the repo back as it was.
+
 ## 3. What the hooks do
 
 Once installed, mneme rides your sessions without being asked.
@@ -98,7 +110,8 @@ Opening a session inside a repo that carries a `MNEME.md` but is not yet
 registered makes the session-start brief ask whether you want to register it —
 one confirmation wires up `mneme registry add` (using the repo's origin URL
 when it has one) and offers `/mneme:adopt` if governance files are missing.
-Declining is respected for the session.
+Declining is persisted (`mneme detection decline`, listed by `mneme detection list`), so
+that repo is never nudged again — across sessions and compactions.
 
 ## 4. Configuration
 

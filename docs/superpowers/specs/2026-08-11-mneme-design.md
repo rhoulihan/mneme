@@ -47,7 +47,7 @@ Three research findings drive the architecture:
   - `mneme-index/` — standalone indexer module (§6.3).
   - Prompts and skills as markdown (portable).
 - `skills/` — behavioral skills: *noticing* (flag golden paths as they happen), *harvesting* (drives the share/review flow), *scaffolding* (creates knowledge plugins), *retrieval* (teaches the agent to use `mneme search` for vague-notion lookup when the DB layer is enabled).
-- `commands/` — `/mneme:capture`, `/mneme:share`, `/mneme:new`, `/mneme:register`, `/mneme:status`, `/mneme:verify`.
+- `commands/` — `/mneme:capture`, `/mneme:share`, `/mneme:new`, `/mneme:register`, `/mneme:adopt`, `/mneme:status`, `/mneme:verify`, `/mneme:classify` (§7.7).
 - `agents/` — the distiller subagent definition (separate role from the working agent: generate ≠ reflect ≠ curate).
 - Harness adapters:
   - **Claude Code adapter (v1):** `.claude-plugin/plugin.json`, `hooks/hooks.json` (SessionStart, Stop, PreCompact), command and skill wiring.
@@ -95,8 +95,8 @@ Each knowledge repo carries `MNEME.md` at its root: a scope statement ("what bel
 │   │   ├── SKILL.md           # agentskills.io-valid procedural unit
 │   │   └── references/        # supporting files (router-tree targets)
 │   └── knowledge-index/       # generated router skill exposing the facts tier
-├── facts/
-│   └── <topic>.md             # declarative units, one topic per file
+│       └── facts/
+│           └── <topic>.md     # declarative units, one topic per file
 ├── CODEOWNERS                 # reviewer routing per knowledge area
 ├── CONTRIBUTING.md            # rubric for humans + agents; anti-slop policy
 ├── .github/workflows/
@@ -106,6 +106,8 @@ Each knowledge repo carries `MNEME.md` at its root: a scope statement ("what bel
 ```
 
 The scaffold output must pass `claude plugin validate` and its own generated CI on day one.
+
+**Facts location (revised 2026-08-12 by user direction).** Facts live *inside* the router skill at `skills/knowledge-index/facts/`; the generated index and the files it routes to are one self-contained directory that travels together. Repos scaffolded before this revision keep a top-level `facts/` and are read exactly as before — one resolution rule (`units.facts_dir`: canonical when it exists, else legacy when *that* exists, else canonical for creation) is the single place every consumer asks, so no repo is migrated behind its owner's back. `/mneme:classify` (§7.7) performs the migration deliberately, as a reviewable PR.
 
 ### 5.2 Procedural units — skills
 
@@ -133,14 +135,14 @@ Within-plugin retrieval is the **SKILL.md router tree**: brief SKILL.md files ro
 
 ### 5.3 Declarative units — facts
 
-`facts/<topic>.md`: YAML frontmatter (`topic`, `modified`), body of typed observation bullets:
+`skills/knowledge-index/facts/<topic>.md` (revised 2026-08-12 — canonical location, see §5.1; legacy top-level `facts/<topic>.md` is read unchanged): YAML frontmatter (`topic`, `modified`), body of typed observation bullets:
 
 ```markdown
 - [constraint] Staging DB resets nightly at 04:00 UTC #staging (verified: 2026-08-11)
 - [gotcha] v2 API silently truncates batch writes over 500 items #api (verified: 2026-08-11)
 ```
 
-Categories: `decision | constraint | gotcha | runbook-note | reference`. Each bullet is individually addressable — its unit id derives from file path + normalized topic key, with a content hash for change detection (the same id scheme the index and dedup gate use). **Delta edits only** — agents never regenerate a file (context-collapse guard). Topic-keying makes every update a reviewable diff against an existing bullet rather than a near-duplicate.
+Categories: `decision | constraint | gotcha | runbook-note | reference`. Each bullet is individually addressable — its unit id is `facts/<stem>#<normalized-topic-key>` **regardless of the physical location**, with a content hash for change detection (the same id scheme the index and dedup gate use). Holding ids stable across the 2026-08-12 move is what lets dedup, the declined ledger, and `similar-to` continuity survive it: the same bullet has the same id in either layout. **Delta edits only** — agents never regenerate a file (context-collapse guard). Topic-keying makes every update a reviewable diff against an existing bullet rather than a near-duplicate.
 
 Facts reach consumers through the generated `knowledge-index` router skill (progressive disclosure: trigger metadata always loaded, topic list on activation, fact files on demand). The index skill is regenerated mechanically by `bin/mneme`, never by an LLM.
 
@@ -200,6 +202,23 @@ Consumers add the marketplace once; native plugin updates deliver everything mer
 ### 7.6 Correction loop
 
 When installed knowledge proves wrong or stale mid-session, the noticing skill flags it as a knowledge issue; the distiller emits a **correction candidate** routed to the owning plugin. Corrections travel the same gated pipeline as new knowledge. Numeric helpful/harmful telemetry is deferred (§12).
+
+### 7.7 Classify (`/mneme:classify` — the librarian pass, added 2026-08-12)
+
+Harvest optimizes for the moment of capture: a fact lands as a fact because that is the honest shape of what was learned. Over many accepted PRs a repo therefore accumulates a facts tier that has outgrown itself — bullets that belong *inside* the skill whose work they constrain. Classify is the periodic librarian pass that files them.
+
+**The current directory is the argument.** There is no plugin-name parameter anywhere in the surface: classify resolves the repo from the working directory via `routing.plugin_for_path` (any subdirectory works) and fails with a single clear instruction when that directory is not inside a registered knowledge plugin.
+
+Classification is LLM judgment over repo structures that vary, so it is prompt-driven **by design**, wrapped in deterministic rails:
+
+1. **`mneme classify begin`** — preconditions (registered plugin, git repo, clean tree, no classify branch already active), read-only `main` sync, then a fresh `mneme/classify-<utc-timestamp>` branch. Every edit happens there.
+2. **`mneme classify prepare`** — a JSON bundle: every fact (file, line, category, text, tags, verified date, unit id), every candidate destination skill (name, description, directory, file listing, `knowledge-index` excluded), whether a legacy layout is still in use, and the librarian contract itself.
+3. **The human gate** — the in-session agent proposes the *complete* mapping to the user (fact → destination skill and section, facts staying put, facts merely restating what a skill already says, any new skill several related facts justify) and **waits for approval** before editing anything. Automatic classification without that approval is explicitly out of scope.
+4. **Apply** — ordinary delta edits in the working tree, preserving each fact's meaning, tags, and verified date and keeping each skill's existing structure.
+5. **`mneme classify finalize`** — `git mv` of any remaining legacy facts into `skills/knowledge-index/facts/`, mechanical knowledge-index regeneration, then the same gates a harvest passes: `mneme lint` error-free and a secret scan blocker-free over every file changed on the branch. Commits with provenance on the branch, pushes and opens the PR when a remote exists, and returns the clone to an unchanged `main`.
+6. **`mneme classify abort`** — restores the tree, returns to `main`, deletes the branch. Any failure inside finalize performs the same rollback automatically (§9); nothing to classify is likewise a clean rollback, not a wedged branch.
+
+**Never delete knowledge.** Every fact either lands in a skill's content or remains a fact — the instructions template states it, the agent reports what moved, what stayed, and what was retired into an existing skill, and the finalize commit body lists the moves. The §7.3 invariant holds unchanged: classify writes only its own branch, never `main`, and the reorganization reaches the repo the same way every other contribution does — as a pull request a human merges.
 
 ## 8. Security and governance
 

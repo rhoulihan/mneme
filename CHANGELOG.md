@@ -8,6 +8,40 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.5.0 — 2026-08-12
+
+- **Facts live under the router skill** — the canonical fact location is
+  `skills/knowledge-index/facts/`, so the generated index skill and the files it
+  routes to travel as one self-contained directory. Every consumer (scaffold,
+  adopt, regenerate, lint, index build, harvest, verify) resolves the location
+  through one rule, `units.facts_dir`: canonical when present, legacy top-level
+  `facts/` when that is what a repo has, canonical when creating. **Legacy repos
+  keep working unchanged** — nothing is migrated behind your back — and unit ids
+  stay `facts/<stem>#<topic-key>` in both layouts, so dedup, the declined
+  ledger, and `similar-to` continuity survive the move.
+- **`/mneme:classify` — the librarian pass** — a prompt-driven triage of the
+  facts a repo has accumulated from accepted PRs, run on the repo you are
+  standing in (the current directory is the argument; it must resolve to a
+  registered knowledge plugin or the command says exactly that). Deterministic
+  rails wrap the judgment: `mneme classify begin` (clean-tree preconditions plus
+  a `mneme/classify-*` branch), `mneme classify prepare` (a JSON bundle of every
+  fact, every candidate destination skill, and the librarian contract), the
+  agent proposes the complete mapping and **waits for your approval** before
+  editing anything, then `mneme classify finalize` migrates any legacy facts
+  with `git mv`, regenerates the knowledge-index, gates on lint and a secret
+  scan over changed files, commits with provenance, and opens the pull request.
+  `mneme classify abort` restores the tree and deletes the branch; any failure
+  inside finalize rolls back the same way.
+- **Knowledge is never deleted by a classify pass** — every fact either lands in
+  a skill's content (with its meaning, tags, and verified date preserved) or
+  stays a fact. The reorganization is delivered as a PR like every other
+  contribution: classify commits only on its own branch, never on `main`.
+- **Persisted detection declines** — declining to register a detected knowledge
+  repo is now recorded in `detection-declined.jsonl` (`mneme detection decline`,
+  `mneme detection list`), so the session-start nudge never asks about that repo
+  again — across sessions and compactions. Previously the decline was
+  instruction-only and did not survive the session.
+
 ## 0.4.0 — 2026-08-12
 
 - **PR-only contributions** — the `pr | commit` registry mode is gone; mneme

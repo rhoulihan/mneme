@@ -76,8 +76,8 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 06 — Adapter | Claude Code plugin wiring: hooks, `/mneme:*` commands, behavioral skills, background distiller | ✅ merged |
 | 07 — Dogfood | End-to-end harness + mneme's own development-knowledge plugin, captured by mneme | ✅ merged |
 | 08 — Detection | Session-start detection of unregistered knowledge repos — the injected brief asks to register (hardened against path/URL injection); persisted declines | ✅ merged (v0.3.0) |
-| 09 — PR-only | Contribution modes removed: mneme never writes a repo's `main` — every harvest is a branch + PR, enforced by an invariant test | ⏳ executing (v0.4.0) |
-| 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | 🗺 queued (v0.5.0) |
+| 09 — PR-only | Contribution modes removed: mneme never writes a repo's `main` — every harvest is a branch + PR, enforced by an invariant test | ✅ merged (v0.4.0) |
+| 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | ✅ merged (v0.5.0) |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 
