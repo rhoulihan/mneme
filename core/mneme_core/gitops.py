@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .errors import MnemeError
@@ -50,3 +51,28 @@ def create_branch(repo: Path, name: str) -> None:
 def restore(repo: Path) -> None:
     git(repo, "checkout", "--", ".")
     git(repo, "clean", "-fd")
+
+
+def commit_harvest(repo: Path, unit_lines: list[str], sources: list[str]) -> str:
+    git(repo, "add", "-A")
+    if git(repo, "status", "--porcelain") == "":
+        raise MnemeError("nothing to commit for this harvest")
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    subject = f"knowledge: harvest {date} ({len(unit_lines)} units)"
+    body_lines = [f"- {line}" for line in unit_lines]
+    trailers = [f"Mneme-Source: {s}" for s in sorted(set(sources))]
+    message = subject + "\n\n" + "\n".join(body_lines) + "\n\n" + "\n".join(trailers) + "\n"
+    git(repo, "commit", "-m", message)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def push_branch(repo: Path, branch: str) -> None:
+    if not has_remote(repo):
+        raise MnemeError("no 'origin' remote to push to")
+    git(repo, "push", "-u", "origin", branch)
+
+
+def push_main(repo: Path) -> None:
+    if not has_remote(repo):
+        raise MnemeError("no 'origin' remote to push to")
+    git(repo, "push", "origin", "main")
