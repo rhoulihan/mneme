@@ -1,0 +1,11 @@
+{
+  "name": "mneme",
+  "owner": { "name": "rhoulihan" },
+  "plugins": [
+    {
+      "name": "mneme",
+      "source": "./",
+      "description": "Knowledge-mining engine — the plugin is the memory."
+    }
+  ]
+}

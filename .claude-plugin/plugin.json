@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "mneme",
+  "version": "0.1.0",
+  "description": "Knowledge-mining engine: captures hard-won knowledge as you work, gates it through machine and human review, and shares it as installable knowledge plugins.",
+  "author": { "name": "Rick Houlihan" },
+  "homepage": "https://github.com/rhoulihan/mneme",
+  "repository": "https://github.com/rhoulihan/mneme",
+  "license": "Apache-2.0",
+  "keywords": ["knowledge", "memory", "skills", "team", "governance"]
+}
