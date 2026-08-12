@@ -115,6 +115,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_distill = sub.add_parser("distill")
     distill_sub = p_distill.add_subparsers(dest="distill_command", required=True)
+    distill_sub.add_parser("pending")
     p_prep = distill_sub.add_parser("prepare")
     p_prep.add_argument("--transcript", default="(not provided)")
     p_ing = distill_sub.add_parser("ingest")
@@ -697,6 +698,12 @@ def _db_cmd(home: Path, args: argparse.Namespace) -> int:
 
 
 def _distill_cmd(home: Path, args: argparse.Namespace) -> int:
+    if args.distill_command == "pending":
+        from . import flags as flags_mod
+
+        count = len(flags_mod.read_flags(home))
+        print(count)
+        return 0 if count else 1
     if args.distill_command == "prepare":
         import json as json_mod
 
