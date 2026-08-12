@@ -146,9 +146,9 @@ jobs:
           set -e
           rc=0
           while IFS= read -r -d '' f; do
-            /tmp/mneme/bin/mneme scan "$$f" || rc=$$?
+            /tmp/mneme/bin/mneme scan "$f" || rc=$?
           done < <(find skills facts -name '*.md' -print0 2>/dev/null)
-          exit $$rc
+          exit $rc
 """
 
 RELEASE_YML = """name: release

@@ -8,6 +8,16 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.2.1 — 2026-08-12
+
+- **Fixed scaffolded secret-scan workflow** — `validate.yml` shipped with
+  literal `$$f`/`$$rc` (string.Template escapes in a constant that is written
+  raw, never rendered), which bash expanded as the shell PID: every scan
+  received a garbage filename and the step crashed on `exit $rc`. First
+  observed as a CI failure on the mneme-dev-knowledge repo. Scaffold templates
+  written without rendering now carry plain `$`, with a regression test
+  asserting no written scaffold file contains `$$`.
+
 ## 0.2.0 — 2026-08-12
 
 The first version that closes the loop end to end: notice → flag → distill →
