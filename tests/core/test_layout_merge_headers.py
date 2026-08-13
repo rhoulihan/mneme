@@ -1,23 +1,49 @@
 """A merge may never make a canonical fact file less readable than it was.
 
-The `new_block` branch of `layout._merge` creates a frontmatter block on a canonical file
-that had none, out of the legacy file's header. `_carry_meta` — the branch used when the
-canonical file already has a header — routes lines the frontmatter grammar cannot key
-into the body precisely so a stray legacy line can never make the canonical header
-unparseable. `new_block` skipped that step, so a malformed legacy header was grafted in
-whole: bytes and history survived, but `units.parse_frontmatter` then raised on the
-merged file and every reader that walks it (lint, the index build, search, the classify
-bundle) lost bullets that had been retrievable a moment earlier.
+`layout._merge` folds a legacy fact file into a canonical one and then deletes the legacy
+file, so every line it does not carry is gone, and every line it carries into the wrong
+place can break the file for the reader. The failure that matters is not an exception —
+it is a file whose bytes are all present and which `units.parse_frontmatter` then rejects,
+because every consumer that walks facts (lint, the index build, search, the classify
+bundle) reads through that parser. A bullet that was retrievable before the migration and
+is not after it has been lost, whatever the bytes say.
 
-Retrievability is the property the repo exists for, so these tests assert it directly:
-the merged file parses, and the index still yields a row for the bullet that had one.
+Two rounds of fixes here failed by re-deriving the reader's grammar instead of asking it:
+`_meta_blocks` recognises a key only at the start of a line and attaches every other line
+to the PRECEDING key, so "unkeyable" lines were caught only in first position, and a stray
+line one row lower still entered the header. These tests therefore assert the PROPERTY
+over a table of header shapes rather than pinning the two strings that were reported:
+
+  1. the merged file parses,
+  2. every legacy line survives somewhere in it,
+  3. the index yields no fewer fact rows than before the merge.
 """
 import subprocess
+
+import pytest
 
 from mneme_core import layout, units
 from mneme_index import build, db
 
 CANON = units.FACTS_CANONICAL
+
+CANONICAL_BULLET = "- [gotcha] Canonical bullet that was already retrievable #x (verified: 2026-08-12)\n"
+LEGACY_BULLET = "- [constraint] Legacy bullet arriving in the merge #y (verified: 2026-08-12)\n"
+
+# Every header shape the reviewer demonstrated, in both orders where order mattered.
+MALFORMED_HEADERS = {
+    "stray-line-first": "not a key line\ntopic: t\n",
+    "stray-line-after-a-key": "topic: t\nnot a key line\n",
+    "indented-line-first": "  indented: yes\ntopic: t\n",
+    "indented-line-after-a-key": "topic: t\n  indented: yes\n",
+    "flush-left-list": "tags:\n- a\n- b\n",
+    "prose-tail": "topic: deploys\nowner: platform\nOwned by the platform team since 2024\n",
+    "bad-nested-block": "owner:\n  not a nested key\n",
+    "tab-continuation": "topic: t\n\tsub: v\n",
+    "nothing-keyable-at-all": "not a key line\nalso not one\n",
+}
+
+WELL_FORMED_HEADER = "topic: t\nowner: platform\n"
 
 
 def git(repo, *args):
@@ -43,80 +69,109 @@ def write(path, text):
     return path
 
 
-def indexed_fact_rows(tmp_path, repo, name):
+def fact_rows(tmp_path, repo, name):
+    """How many fact bullets the index can actually retrieve from `repo` right now."""
     conn = db.open_db(tmp_path / f"{name}.db")
     try:
         build.index_tree(conn, name, repo)
-        return conn.execute("SELECT COUNT(*) AS n FROM units WHERE kind = 'fact'").fetchone()["n"]
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM units WHERE kind = 'fact'"
+        ).fetchone()["n"]
     finally:
         conn.close()
 
 
-CANONICAL_BULLET = "- [gotcha] Canonical bullet that was already retrievable #x (verified: 2026-08-12)\n"
-LEGACY_BULLET = "- [constraint] Legacy bullet arriving in the merge #y (verified: 2026-08-12)\n"
+def assert_merge_preserved(tmp_path, repo, legacy_header, canonical_path):
+    """The three properties, checked around a real migration."""
+    before = fact_rows(tmp_path, repo, "before")
+    legacy_lines = [l for l in legacy_header.splitlines() if l.strip()]
+
+    layout.migrate_legacy_facts(repo)
+
+    merged = canonical_path.read_text(encoding="utf-8")
+    units.parse_frontmatter(merged)  # 1. the reader accepts what the merge produced
+    for line in legacy_lines:  # 2. nothing the legacy file carried was dropped
+        assert line.strip() in merged, f"legacy header line vanished: {line!r}"
+    assert "Legacy bullet arriving in the merge" in merged
+    after = fact_rows(tmp_path, repo, "after")
+    assert after >= before, f"retrievable facts fell from {before} to {after}"
+    assert after >= 1
+    return merged
 
 
-def _seed(tmp_path, legacy_header, before):
-    """Canonical file with no header (one indexed bullet) + legacy file with `legacy_header`.
-
-    `before` is the row count the index yields BEFORE migrating: 1 when the legacy header
-    is malformed (that file was already unreadable — which is exactly why grafting its
-    header into the canonical file was so damaging), 2 when it is well formed.
-    """
+@pytest.mark.parametrize("shape", sorted(MALFORMED_HEADERS))
+def test_a_malformed_legacy_header_never_breaks_a_canonical_file_without_one(tmp_path, shape):
+    """The `new_block` branch: the canonical file has no header, so one is created."""
     repo = make_repo(tmp_path)
-    write(repo / CANON / "t.md", CANONICAL_BULLET)
-    write(repo / "facts" / "t.md", legacy_header + LEGACY_BULLET)
+    canonical = write(repo / CANON / "t.md", CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", f"---\n{MALFORMED_HEADERS[shape]}---\n" + LEGACY_BULLET)
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "fixtures")
-    assert indexed_fact_rows(tmp_path, repo, "before") == before
-    return repo
+
+    assert_merge_preserved(tmp_path, repo, MALFORMED_HEADERS[shape], canonical)
 
 
-def test_an_unkeyable_legacy_header_line_never_breaks_the_canonical_header(tmp_path):
-    repo = _seed(tmp_path, "---\nnot a key line\ntopic: t\n---\n", before=1)
+@pytest.mark.parametrize("shape", sorted(MALFORMED_HEADERS))
+def test_a_malformed_legacy_header_never_breaks_a_canonical_file_with_one(tmp_path, shape):
+    """The `_carry_meta` branch: the canonical file already has a header to carry keys into."""
+    repo = make_repo(tmp_path)
+    canonical = write(repo / CANON / "t.md", "---\nsummary: canonical\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", f"---\n{MALFORMED_HEADERS[shape]}---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
 
-    layout.migrate_legacy_facts(repo)
-
-    merged = (repo / CANON / "t.md").read_text(encoding="utf-8")
-    meta, body = units.parse_frontmatter(merged)  # must not raise
-    assert meta.get("topic") == "t"
-    assert "not a key line" in merged  # carried, never deleted
-    assert "not a key line" in body    # in the body, not the header
-    assert indexed_fact_rows(tmp_path, repo, "after") == 2
-
-
-def test_an_indented_legacy_header_line_never_breaks_the_canonical_header(tmp_path):
-    repo = _seed(tmp_path, "---\n  indented: yes\ntopic: t\n---\n", before=1)
-
-    layout.migrate_legacy_facts(repo)
-
-    merged = (repo / CANON / "t.md").read_text(encoding="utf-8")
-    meta, body = units.parse_frontmatter(merged)  # must not raise
-    assert meta.get("topic") == "t"
-    assert "indented: yes" in merged
-    assert indexed_fact_rows(tmp_path, repo, "after") == 2
-
-
-def test_a_legacy_header_with_no_keyable_line_travels_with_the_body(tmp_path):
-    repo = _seed(tmp_path, "---\nnot a key line\nalso not one\n---\n", before=1)
-
-    layout.migrate_legacy_facts(repo)
-
-    merged = (repo / CANON / "t.md").read_text(encoding="utf-8")
-    units.parse_frontmatter(merged)  # must not raise
-    assert "not a key line" in merged and "also not one" in merged
-    assert indexed_fact_rows(tmp_path, repo, "after") == 2
+    merged = assert_merge_preserved(tmp_path, repo, MALFORMED_HEADERS[shape], canonical)
+    meta, _body = units.parse_frontmatter(merged)
+    assert meta.get("summary") == "canonical"  # the canonical header still reads
 
 
 def test_a_well_formed_legacy_header_still_becomes_the_block(tmp_path):
-    repo = _seed(tmp_path, "---\ntopic: t\nowner: platform\n---\n", before=2)
+    repo = make_repo(tmp_path)
+    canonical = write(repo / CANON / "t.md", CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", f"---\n{WELL_FORMED_HEADER}---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    merged = assert_merge_preserved(tmp_path, repo, WELL_FORMED_HEADER, canonical)
+    meta, _body = units.parse_frontmatter(merged)
+    assert meta.get("topic") == "t"
+    assert meta.get("owner") == "platform"  # carried as metadata, not demoted to prose
+
+
+def test_a_well_formed_legacy_key_still_reaches_an_existing_canonical_header(tmp_path):
+    repo = make_repo(tmp_path)
+    canonical = write(repo / CANON / "t.md", "---\ntopic: t\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\ntopic: t\nowner: platform\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
 
     layout.migrate_legacy_facts(repo)
 
-    meta, _body = units.parse_frontmatter((repo / CANON / "t.md").read_text(encoding="utf-8"))
-    assert meta.get("topic") == "t"
+    meta, _body = units.parse_frontmatter(canonical.read_text(encoding="utf-8"))
     assert meta.get("owner") == "platform"
-    assert indexed_fact_rows(tmp_path, repo, "after") == 2
+
+
+def test_carried_body_is_never_read_as_a_frontmatter_block(tmp_path):
+    """A legacy body opening with `---` must not become a header when it lands first.
+
+    The legacy file's own leading blank line is what kept those lines out of its header;
+    dropping it while carrying them into an empty canonical file turned prose into an
+    unterminated block, and the delimiter-deduping dropped the closing `---` besides.
+    """
+    repo = make_repo(tmp_path)
+    canonical = write(repo / CANON / "t.md", "")
+    write(repo / "facts" / "t.md", "\n---\ntopic: x\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+    before = fact_rows(tmp_path, repo, "before")
+
+    layout.migrate_legacy_facts(repo)
+
+    merged = canonical.read_text(encoding="utf-8")
+    units.parse_frontmatter(merged)  # must not raise
+    assert merged.count("---") >= 2, "a delimiter the legacy file carried was deleted"
+    assert "Legacy bullet arriving in the merge" in merged
+    assert fact_rows(tmp_path, repo, "after") >= max(before, 1)
 
 
 def test_a_dropped_frontmatter_value_is_named_in_the_note(tmp_path):
@@ -133,3 +188,22 @@ def test_a_dropped_frontmatter_value_is_named_in_the_note(tmp_path):
     assert "owner" in notes
     assert "sre-oncall-team" in notes  # the discarded value is recoverable from the report
     assert "platform" in notes
+
+
+def test_the_report_says_when_a_header_was_demoted(tmp_path):
+    """A migration that could not keep a header as metadata must say so, not report success.
+
+    lint will flag nothing here — the merged file parses — but the reviewer of the pull
+    request should know the legacy header became prose rather than keys.
+    """
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\ntopic: t\nnot a key line\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    notes = " ".join(result.merged)
+    assert "header" in notes.lower()
+    assert "body" in notes.lower()

@@ -352,6 +352,30 @@ def _sections(text: str) -> tuple[list[str] | None, list[str]]:
 _META_KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):")
 
 
+def _reader_accepts(meta_lines: list[str]) -> bool:
+    """Would `units.parse_frontmatter` accept a block built from exactly these lines?
+
+    The one invariant this module owes the repository is that a merge never hands mneme's
+    own reader a file the reader rejects — a fact file that does not parse is invisible to
+    lint, the index, search and the classify bundle, so knowledge that was retrievable
+    before the migration is not after it, however intact the bytes are.
+
+    Asking the parser is the only way to hold that invariant. Two earlier attempts derived
+    a second, looser grammar here instead (`_META_KEY_RE` plus `_meta_blocks`' rule that an
+    unrecognised line belongs to the PRECEDING key) and both leaked: a stray line was
+    treated as unkeyable in first position and keyed in every other, so `topic: t` followed
+    by prose, a flush-left list under `tags:`, a tab-indented continuation and a malformed
+    nested block all still entered the header. "Keyed" was never the same predicate as
+    "parseable", and only the parser knows the difference.
+    """
+    text = "---\n" + "".join(line + "\n" for line in meta_lines) + "---\n"
+    try:
+        units.parse_frontmatter(text)
+    except MnemeError:
+        return False
+    return True
+
+
 def _meta_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
     """Frontmatter lines grouped under the key each belongs to, `""` for lines under none.
 
@@ -406,8 +430,24 @@ def _carry_meta(
             continue
         carried.extend(block)
         keys.append(key)
+    # The same all-or-nothing guard the `new_block` branch applies, for the same reason:
+    # `_meta_blocks` will happily hand back a "key" whose block contains a line the parser
+    # rejects, and inserting that into the canonical header breaks a file that read fine a
+    # moment ago. The keys are only carried if the reader accepts the header they produce.
+    demoted = False
+    if carried and not _reader_accepts(canonical + carried):
+        body.extend(carried)
+        carried, keys = [], []
+        demoted = True
+
     notes: list[str] = []
-    if keys:
+    if demoted:
+        notes.append(
+            f"{rel_src}: its header is not readable as frontmatter alongside {rel_dest}'s,"
+            " so those lines travelled into the body — nothing was dropped; promote them"
+            " in review if they were meant as metadata"
+        )
+    elif keys:
         notes.append(f"{rel_src}: frontmatter key(s) carried over: {', '.join(keys)}")
     if differing:
         notes.append(
@@ -466,27 +506,23 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         # structurally worse than the well-formed one this merge just consumed. The block
         # is CREATED instead: still an insert, not one existing line rewritten.
         #
-        # Only the lines the frontmatter grammar can KEY may enter it, on exactly the terms
-        # `_carry_meta` applies to the other branch. Copying the legacy header verbatim
-        # instead grafts any stray line into the new block, and a header the parser then
-        # rejects makes every bullet in the file unreadable to lint, the index, and search
-        # — a file that was retrievable a moment ago is not, which is the one outcome this
-        # module exists to prevent. Unkeyable lines travel with the body, where a line no
-        # parser can key costs nothing.
-        keyed: list[str] = []
-        unkeyable: list[str] = []
-        for key, block in _meta_blocks(legacy_meta):
-            (keyed if key else unkeyable).extend(block)
-        legacy_body = unkeyable + legacy_body
-        if keyed:
-            new_block = keyed
+        # The header may only be promoted if the reader accepts it whole (`_reader_accepts`).
+        # A block the parser rejects makes every bullet in the merged file unreadable, so a
+        # header that cannot be metadata travels into the body instead: all of its lines
+        # survive, as prose, and the file still parses. It is all-or-nothing deliberately —
+        # splitting a header into the parts that "look" keyable is the approximation that
+        # let stray lines through twice.
+        if _reader_accepts(legacy_meta):
+            new_block = legacy_meta
             meta_notes.append(
                 f"{rel_src}: {rel_dest} had no frontmatter — the legacy header became its block"
             )
-        if unkeyable:
+        else:
+            legacy_body = legacy_meta + legacy_body
             meta_notes.append(
-                f"{rel_src}: {len(unkeyable)} legacy header line(s) the frontmatter grammar"
-                f" cannot key travelled into the body of {rel_dest}"
+                f"{rel_src}: its header is not readable as frontmatter, so those lines"
+                f" travelled into the body of {rel_dest} instead of becoming a block —"
+                " nothing was dropped; promote them in review if they were meant as metadata"
             )
     elif canonical_meta is None:
         # An UNTERMINATED block (or a legacy file with no keys to carry). Nothing below the
@@ -525,9 +561,13 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         # No parser can key this line — an unparseable bullet, or prose someone wrote
         # between the bullets. It travels verbatim: the legacy file is about to be deleted,
         # and a line mneme cannot read is still a line a human meant to keep.
-        if _normalized(line) in seen:
+        norm = _normalized(line)
+        # `---` is structure, not prose: two of them are not a duplicate pair, and dropping
+        # the second one leaves the block it closed unterminated — a deletion this module
+        # forbids itself, arriving disguised as deduplication.
+        if norm != "---" and norm in seen:
             continue
-        seen.add(_normalized(line))
+        seen.add(norm)
         carried.append(line)
         verbatim += 1
     if carried or carried_meta or new_block:
@@ -567,6 +607,13 @@ def _apply_merge(
         if contents[i].startswith("- ["):
             at = i + 1
     if body:
+        if at == 0 and body[0].strip() == "---":
+            # Carried body landing at the top of an empty canonical file: a leading `---`
+            # would be read as the start of a frontmatter block the rest of the body never
+            # closes. In the legacy file these lines were body because a blank line came
+            # first; one blank line restores that, and costs a byte no reader looks at.
+            lines.insert(0, eol)
+            at = 1
         if at == len(lines) and lines:
             # Appending past the end: a file that stopped mid-line is terminated first, so
             # the carried line starts on one of its own. Every interior line already ends
