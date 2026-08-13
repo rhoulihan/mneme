@@ -2,8 +2,9 @@
 
 The migration is the one operation that touches every fact a pre-0.5 repo owns at once,
 so these tests are written around the two ways it could go wrong: losing knowledge (a
-bullet dropped in a merge, a file deleted rather than moved, a subdirectory left behind)
-and losing containment (a legacy filename is repo content — a hostile PR can commit one).
+bullet dropped in a merge, a frontmatter key dropped, a file deleted rather than moved, a
+subdirectory left behind) and losing containment (a legacy filename — or a symlink at
+either end of the move — is repo content, which a contributor or a merged PR can commit).
 """
 import subprocess
 
@@ -256,6 +257,185 @@ def test_a_canonical_entry_symlinked_out_of_the_repo_is_refused(tmp_path):
     assert "facts/deploys.md" in str(exc.value)
     assert outside.read_text(encoding="utf-8") == "untouched\n"
     assert (repo / "facts" / "deploys.md").is_file()
+
+
+def symlink(link, target):
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("filesystem does not support symlinks")
+
+
+def test_a_legacy_directory_that_is_a_symlink_is_refused(tmp_path):
+    """The back-compat shim: `facts` -> the canonical dir, which reads correctly today.
+
+    Followed, `iterdir` yields the CANONICAL files through the link, every one of them
+    "merges" into itself (0 bullets carried), and `git ls-files` — which does not traverse
+    a symlinked directory — reports each as untracked, so the removal falls through to
+    `unlink` and deletes the real fact. Refused before the first read instead.
+    """
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "deploys.md", fact("deploys", bullet("the lb keeps stale targets")))
+    write(repo / CANON / "queues.md", fact("queues", bullet("depth caps at 10k", tag="limits")))
+    commit(repo, "canonical facts")
+    symlink(repo / "facts", repo / CANON)
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "symlink" in str(exc.value)
+    assert sorted(p.name for p in (repo / CANON).iterdir()) == ["deploys.md", "queues.md"]
+    assert "the lb keeps stale targets" in (repo / CANON / "deploys.md").read_text(
+        encoding="utf-8"
+    )
+    # The symlink itself is the only thing git sees: the migration wrote nothing.
+    assert gitops.git(repo, "status", "--porcelain").split() == ["??", "facts"]
+
+
+def test_a_legacy_directory_symlinked_outside_the_repo_is_refused(tmp_path):
+    """The unrecoverable one: the files are not in the repo, so no rollback can restore
+    them once this migration has renamed or unlinked them."""
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    write(outside / "deploys.md", fact("deploys", bullet("a fact that lives outside")))
+    symlink(repo / "facts", outside)
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "symlink" in str(exc.value)
+    assert (outside / "deploys.md").is_file()
+    assert not (repo / CANON).exists()
+    assert gitops.git(repo, "status", "--porcelain").split() == ["??", "facts"]
+
+
+def test_a_legacy_entry_symlinked_out_of_the_repo_is_refused(tmp_path):
+    """Same hazard one level down: `_remove` would unlink the file at the far end."""
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text(fact("deploys", bullet("a fact that lives outside")), encoding="utf-8")
+    write(repo / CANON / "deploys.md", fact("deploys", bullet("the lb keeps stale targets")))
+    (repo / "facts").mkdir()
+    symlink(repo / "facts" / "deploys.md", outside)
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "facts/deploys.md" in str(exc.value) and "symlink" in str(exc.value)
+    assert outside.read_text(encoding="utf-8") == fact(
+        "deploys", bullet("a fact that lives outside")
+    )
+    assert (repo / CANON / "deploys.md").read_text(encoding="utf-8") == fact(
+        "deploys", bullet("the lb keeps stale targets")
+    )
+
+
+def test_a_regular_file_where_the_canonical_dir_belongs_is_a_mneme_error(tmp_path):
+    """A repo-shape problem, not a bug: it must abort the caller's flow through the
+    guarded path with a message naming the file, not as a raw FileExistsError."""
+    repo = make_repo(tmp_path)
+    (repo / CANON).parent.mkdir(parents=True)
+    (repo / CANON).write_text("not a directory\n", encoding="utf-8")
+    write(repo / "facts" / "deploys.md", fact("deploys", bullet("the lb keeps stale targets")))
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "facts/deploys.md" in str(exc.value) and CANON in str(exc.value)
+    assert (repo / "facts" / "deploys.md").is_file()  # nothing lost
+
+
+def test_a_carried_line_with_an_exotic_separator_is_not_split_in_two(tmp_path):
+    """`str.splitlines` breaks on \\u2028 and friends; inside a bullet those are data.
+
+    Split there, the canonical file gains a truncated bullet plus a stray fragment, and the
+    separator byte is deleted — a silent edit to a line the merge promised to move verbatim.
+    """
+    repo = make_repo(tmp_path)
+    exotic = bullet("alpha\u2028beta gamma delta", tag="drain")
+    write(repo / CANON / "deploys.md", fact("deploys", bullet("the lb keeps stale targets")))
+    write(repo / "facts" / "deploys.md", fact("deploys", exotic))
+
+    result = layout.migrate_legacy_facts(repo)
+
+    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    assert text.split("\n")[-2] == exotic  # one line, separator intact
+    assert result.merged == [f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"]
+
+
+def test_legacy_frontmatter_keys_the_canonical_file_lacks_are_carried_over(tmp_path):
+    """The legacy file is deleted at the end of the merge: a key only it carries has to
+    land in the canonical header, or it is knowledge the migration threw away."""
+    repo = make_repo(tmp_path)
+    shared = bullet("the lb keeps stale targets")
+    write(repo / CANON / "deploys.md", fact("deploys", shared))
+    write(
+        repo / "facts" / "deploys.md",
+        "---\ntopic: deploys\nowner: platform-team\nsources: incident-4412\n---\n"
+        + shared + "\n",
+    )
+
+    result = layout.migrate_legacy_facts(repo)
+
+    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    meta, body = units.parse_frontmatter(text)
+    assert meta == {"topic": "deploys", "owner": "platform-team", "sources": "incident-4412"}
+    assert body.strip() == shared  # the body is untouched: the bullet was already there
+    assert result.merged == [
+        f"facts/deploys.md merged into {CANON}/deploys.md (0 bullets)",
+        "facts/deploys.md: frontmatter key(s) carried over: owner, sources",
+    ]
+    assert not (repo / "facts").exists()
+
+
+def test_a_frontmatter_key_the_two_files_disagree_on_is_reported_not_resolved(tmp_path):
+    repo = make_repo(tmp_path)
+    shared = bullet("the lb keeps stale targets")
+    write(repo / CANON / "deploys.md", "---\ntopic: deploys\nowner: platform\n---\n" + shared + "\n")
+    write(repo / "facts" / "deploys.md", "---\ntopic: deploys\nowner: sre\n---\n" + shared + "\n")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    meta, _body = units.parse_frontmatter((repo / CANON / "deploys.md").read_text(encoding="utf-8"))
+    assert meta["owner"] == "platform"  # canonical wins, as it does for a bullet
+    assert "owner" in result.merged[1] and "differ" in result.merged[1]
+
+
+def test_an_unterminated_canonical_frontmatter_does_not_wedge_the_merge(tmp_path):
+    """`harvest._body_start` raises here, naming no file — right for one fact apply, wrong
+    for a migration wired into every branch flow. Lint (MN010) reports that file by name."""
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "deploys.md", "---\ntopic: deploys\n" + bullet("the lb keeps stale") + "\n")
+    only_legacy = bullet("blue/green needs a 90 second drain", tag="drain")
+    write(repo / "facts" / "deploys.md", fact("deploys", only_legacy))
+
+    result = layout.migrate_legacy_facts(repo)
+
+    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    assert "the lb keeps stale" in text and only_legacy in text
+    assert text.count("topic: deploys") == 1  # the legacy header deduped, not duplicated
+    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"
+    assert not (repo / "facts").exists()
+
+
+def test_a_carried_frontmatter_key_keeps_the_canonical_files_crlf_and_bom(tmp_path):
+    repo = make_repo(tmp_path)
+    original = "\ufeff---\r\ntopic: deploys\r\n---\r\n" + bullet("the lb keeps stale") + "\r\n"
+    dest = repo / CANON / "deploys.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(original.encode("utf-8"))
+    write(
+        repo / "facts" / "deploys.md",
+        "---\ntopic: deploys\nowner: platform-team\n---\n" + bullet("the lb keeps stale") + "\n",
+    )
+
+    layout.migrate_legacy_facts(repo)
+
+    assert dest.read_bytes() == (
+        "\ufeff---\r\ntopic: deploys\r\nowner: platform-team\r\n---\r\n"
+        + bullet("the lb keeps stale") + "\r\n"
+    ).encode("utf-8")
 
 
 def test_a_crlf_bom_canonical_file_survives_a_merge_byte_for_byte(tmp_path):
