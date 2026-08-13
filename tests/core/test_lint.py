@@ -120,7 +120,7 @@ def test_lint_reports_undecodable_files_instead_of_raising(tmp_path):
     issues = lint.lint_repo(tmp_path)
 
     assert codes(issues) == ["MN010"]
-    assert "not valid UTF-8" in issues[0].message
+    assert issues[0].message == "not valid UTF-8"  # not conflated with an I/O failure
     assert lint.has_errors(issues)
 
 
@@ -135,6 +135,22 @@ def test_a_byte_order_mark_does_not_hide_a_topic_from_lint(tmp_path):
     facts.mkdir()
     (facts / "t.md").write_bytes(
         "﻿---\ntopic: t\n---\n- [gotcha] a bom leads this file (verified: 2026-08-11)\n".encode()
+    )
+
+    assert codes(lint.lint_repo(tmp_path)) == []
+
+
+def test_a_byte_order_mark_does_not_hide_a_skill_from_lint(tmp_path):
+    """The SKILL.md side of the same encoding fix, which had no test of its own.
+
+    Under plain `utf-8` a BOM stayed in the text, `parse_frontmatter` did not recognise the
+    opening `---`, and lint reported MN001 "missing frontmatter" for a skill that
+    `build._skill_rows` and `classify._skill_entries` both read without trouble.
+    """
+    skill = tmp_path / "skills" / "good-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_bytes(
+        "﻿---\nname: good-skill\ndescription: fine\n---\n".encode()
     )
 
     assert codes(lint.lint_repo(tmp_path)) == []

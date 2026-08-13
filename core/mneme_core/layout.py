@@ -567,10 +567,15 @@ def _join_capped(
     used = 0
     for item in items:
         text = _elided(str(item), cap) if elide else _safe(item, cap)
-        if (limit is not None and len(shown) >= limit) or used + len(text) + len(sep) > budget:
+        # The separator is charged only when there is something to separate from, so `used`
+        # is exactly `len(sep.join(shown))`. Charging it unconditionally reserved room for a
+        # separator after the LAST item, which does not exist — every list stopped one entry
+        # short of its budget, silently and forever.
+        extra = len(text) + (len(sep) if shown else 0)
+        if (limit is not None and len(shown) >= limit) or used + extra > budget:
             break
         shown.append(text)
-        used += len(text) + len(sep)
+        used += extra
     return sep.join(shown), len(items) - len(shown)
 
 
@@ -618,7 +623,13 @@ def _frontmatter_end(lines: list[str]) -> int | None:
 
     An unterminated block is not a block: nothing below the opening delimiter can be proven
     to be metadata, and this module *deletes* the file it reads, so guessing in the lossy
-    direction is the one thing it may not do. `harvest._body_start` raises there instead,
+    direction is the one thing it may not do. It is not the only thing stopping that,
+    though, and the docstring used to imply it was: mutating this to return `len(lines)` —
+    treating a whole unterminated file as metadata — leaves the suite green, because
+    `_reader_accepts`'s all-or-nothing check then refuses to promote a block the parser
+    rejects and the lines travel into the body anyway, and `_lost` measures the result
+    regardless. Two guards behind it, and the honest reading is that this one keeps the
+    common path simple rather than being load-bearing on its own. `harvest._body_start` raises there instead,
     which is right for a single fact apply and wrong here — one malformed file would wedge
     every branch flow with an error naming no file, while lint (MN010) already reports that
     file by name.

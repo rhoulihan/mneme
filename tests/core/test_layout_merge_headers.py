@@ -805,7 +805,14 @@ def test_the_migration_never_newly_blinds_a_file_to_lint(tmp_path):
         realistic state of a pre-0.5 repo mid-migration. A repo-wide COUNT is barely
         better: the merge always deletes the legacy file, so every case comes with a
         guaranteed decrement that can mask a simultaneous increment on the surviving
-        canonical file. Keyed by file name, neither can hide the other.
+        canonical file. Keying by file name fixes that for the ASIDE, whose name is absent
+        from `before` entirely.
+
+        It does NOT separate the two `t.md` fixtures from each other — they share a
+        basename, so `Path(issue.path).name` collapses them — and claiming otherwise was
+        the same overclaim this series keeps correcting. The table still kills the defect
+        it was written for; it is simply not the airtight per-file measurement the earlier
+        wording promised.
         """
         found = {}
         for issue in lint.lint_repo(repo):
@@ -949,7 +956,16 @@ def test_the_refusal_note_warns_that_names_and_ids_move(tmp_path):
     note = " ".join(result.moved)
     assert "kept separate" in note
     assert "unit ids move" in note
-    assert "topic" in note  # the stem-derived topic moves with the name too
+    # The clause about the pin, precisely. `assert "topic" in note` was satisfied by
+    # `_describe_lost`'s own "… under topic “t”", so deleting this clause entirely left
+    # the suite green — the assertion could not fail for the property in its docstring.
+    assert "`topic: t` was written into it first" in note
+    assert "survives the rename" in note
+    # And the file really did get the key, not just the promise of it.
+    meta, _b = units.parse_frontmatter(
+        (repo / CANON / "t-legacy.md").read_text(encoding="utf-8")
+    )
+    assert meta["topic"] == "t"
 
 
 def test_the_aside_walk_gives_up_rather_than_overwrite(tmp_path):
@@ -1029,3 +1045,160 @@ def test_the_report_says_when_a_header_was_demoted(tmp_path):
     notes = " ".join(result.merged)
     assert "header" in notes.lower()
     assert "body" in notes.lower()
+
+
+def test_a_frontmatter_line_that_normalizes_equal_is_still_not_discarded(tmp_path):
+    """`_lost`'s FOURTH property, which nothing else in the suite reaches.
+
+    It is the property the whole loosening rests on: demoting a differing value into the
+    body is only harmless because the LINE is still somewhere in the result. Replacing the
+    check with `pass` left all 646 tests green while human-committed lines vanished.
+
+    The case that reaches it is a normalization collision. `_meta_blocks` joins a key's
+    block into one string, so `tags:\\n  - a\\n  - b` and `tags:\\n  - a  - b` become the
+    identical value `tags: - a - b`; `_carry_meta` then takes its equal-value branch and
+    drops the legacy block WITHOUT demoting it, because it believes the canonical file
+    already says the same thing. Only property 4 notices that two lines a human wrote are
+    now in no file at all.
+    """
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", "---\ntopic: t\ntags:\n  - a\n  - b\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\ntopic: t\ntags:\n  - a  - b\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    assert any("kept separate" in line for line in result.moved)
+    assert "frontmatter: - a - b" in " ".join(result.moved)  # named, not just counted
+    aside = (repo / CANON / "t-legacy.md").read_text(encoding="utf-8")
+    assert "- a  - b" in aside  # the line a human wrote is still in the tree
+
+
+def test_the_topic_pin_is_reverted_when_it_would_break_the_file(tmp_path):
+    """The refusal path measures its OWN write — replacing that check with `if False:`
+    left all 646 tests green, and the guard is the only thing standing between this
+    module and parking an unreadable file in the canonical directory.
+
+    A filename is repo content (`facts/` is untrusted by this module's own threat model)
+    and a newline is legal in one. The stem then IS the topic value the pin writes, so
+    `topic: a\\nb` puts a bare `b` on its own line inside the header, `parse_frontmatter`
+    rejects the whole file, and the aside lands in the canonical directory invisible to
+    the index, search, the classify bundle and lint's bullet checks.
+    """
+    repo = make_repo(tmp_path)
+    name = "a\nb.md"
+    # A differing topic forces the refusal; no legacy header means the pin runs.
+    write(repo / CANON / name, "---\ntopic: other-topic\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / name, LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+    before = fact_rows(tmp_path, repo, "before")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    aside = repo / CANON / "a\nb-legacy.md"
+    assert aside.exists()
+    units.parse_frontmatter(aside.read_text(encoding="utf-8-sig"))  # must still parse
+    assert fact_rows(tmp_path, repo, "after") >= before
+    # And the `stranded` clause, which fires exactly here and nowhere else in the suite:
+    # reverting the pin means the stem-derived topic really does move, so the note has to
+    # say so rather than relabel a reader's facts silently. Setting `stranded = set()` or
+    # deleting the clause left the whole suite green.
+    note = " ".join(result.moved)
+    assert "could not be written into its header" in note
+    assert "set `topic:` by hand" in note
+    assert "was written into it first" not in note  # nothing claims the pin succeeded
+
+
+def test_the_readable_projection_uses_the_readers_own_line_splitting(tmp_path):
+    """`_Readable`'s whole basis: it must be the readers' rows, not a re-derivation.
+
+    `str.splitlines` breaks on \\x0b, \\x0c, \\x85, \\x1c, \\x1d, \\x1e and the two
+    separator characters; this module's own `_line_contents` deliberately does not, because
+    inside a bullet those bytes are data it must move verbatim. That difference is correct
+    for deciding what to CARRY and wrong for deciding what a reader can SEE, and swapping
+    one for the other in `_readable` left the whole suite green. Asserted against
+    `build._fact_rows` directly, so the projection is compared with the reader rather than
+    with another copy of the same assumption.
+    """
+    repo = make_repo(tmp_path)
+    for i, sep in enumerate(["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ", " "]):
+        body = (
+            f"- [gotcha] alpha {i} one two three four #a (verified: 2026-08-12){sep}"
+            f"- [constraint] beta {i} five six seven eight #b (verified: 2026-08-12)\n"
+        )
+        # NO frontmatter, deliberately. `parse_frontmatter` rejoins a header'd file's body
+        # with "\n", which normalizes these separators away before `_readable` ever sees
+        # them — so a fixture WITH a header cannot tell the two splittings apart, and the
+        # first version of this test used one and passed under the very mutation it was
+        # written to kill. A file with no header gets its raw text back as the body, which
+        # is the only place the two diverge.
+        path = write(repo / CANON / f"t{i}.md", body)
+
+        rows = layout._readable(path, path.read_text(encoding="utf-8"))
+
+        reader = [r for r in build._fact_rows("p", repo, []) if r[8].endswith(f"t{i}.md")]
+        assert len(reader) == 2, f"{sep!r}: fixture did not produce two reader rows"
+        assert {r[1] for r in reader} == set(rows.rows), f"{sep!r}: projection != reader"
+
+
+def test_an_unterminated_block_is_not_a_block(tmp_path):
+    """`_frontmatter_end`'s stated rule, which no test could fail for.
+
+    Returning `len(lines)` for an unterminated block — treating everything below the
+    opening delimiter as metadata — left the suite green, and the function's own docstring
+    calls guessing in the lossy direction "the one thing it may not do": this module
+    DELETES the file it reads, so a bullet mistaken for a frontmatter line is a bullet
+    carried into a header instead of a body, where no reader will ever see it again.
+    """
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", "---\ntopic: t\n---\n" + CANONICAL_BULLET)
+    legacy = "---\nowner: sre\n" + LEGACY_BULLET  # opens a block, never closes it
+    write(repo / "facts" / "t.md", legacy)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+    before = fact_rows(tmp_path, repo, "before")
+
+    layout.migrate_legacy_facts(repo)
+
+    merged = (repo / CANON / "t.md").read_text(encoding="utf-8")
+    meta, body = units.parse_frontmatter(merged)
+    # The legacy lines travelled with the BODY, so the bullet is still a bullet...
+    assert "Legacy bullet arriving in the merge" in body
+    assert fact_rows(tmp_path, repo, "after") >= before
+    # ...and none of them were promoted into the canonical header on a guess.
+    assert "owner" not in meta
+
+
+def test_the_note_clamp_is_a_backstop_that_never_has_to_fire(tmp_path):
+    """`_note`'s clamp exists for the note a future edit forgets to budget.
+
+    Removing it left the suite green, because every note the fixtures produce is already
+    inside its own list budgets — which is the point, and also why the clamp needs its own
+    test rather than an end-to-end one. Called directly: it is the difference between a
+    bounded body and an E2BIG.
+    """
+    assert layout._note("x" * 500_000).endswith("…")
+    assert len(layout._note("x" * 500_000)) == layout._NOTE_MAX
+    assert layout._note("short note") == "short note"
+    assert layout._note("a\nb\nc") == "a b c"  # one line, always
+
+
+def test_join_capped_never_exceeds_its_budget(tmp_path):
+    """The boundary itself: `>` versus `>=` left the suite green.
+
+    Every note budget in this module is enforced here, so an off-by-one is the difference
+    between a bound and a suggestion.
+    """
+    for budget in range(0, 60):
+        joined, omitted = layout._join_capped(["abcde"] * 20, "; ", budget)
+        assert len(joined) <= budget, (budget, joined)
+        assert omitted == 20 - (len(joined.split("; ")) if joined else 0)
+        # The budget is a bound, not a target to undershoot: whatever was left out has to
+        # be something that genuinely did not fit. Without this, tightening `>` to `>=`
+        # passes — every note simply carries one item less than it could, forever.
+        if omitted:
+            assert len(joined) + len("; ") + len("abcde") > budget, (budget, joined)
+    joined, omitted = layout._join_capped([], "; ", 100)
+    assert (joined, omitted) == ("", 0)

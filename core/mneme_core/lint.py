@@ -23,9 +23,9 @@ def lint_skill(skill_dir: Path) -> list[LintIssue]:
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.exists():
         return [LintIssue(str(skill_md), 0, "MN001", "error", "SKILL.md not found")]
-    text = _text(skill_md)
-    if text is None:
-        return [LintIssue(str(skill_md), 0, "MN010", "error", "not valid UTF-8")]
+    text, unreadable = _text(skill_md)
+    if unreadable is not None:
+        return [LintIssue(str(skill_md), 0, "MN010", "error", unreadable)]
     try:
         meta, _body = units.parse_frontmatter(text)
     except MnemeError as e:
@@ -58,30 +58,38 @@ def lint_skill(skill_dir: Path) -> list[LintIssue]:
     return issues
 
 
-def _text(path: Path) -> str | None:
-    """The file's text, or None when it is not UTF-8 — never an escaping exception.
+def _text(path: Path) -> tuple[str | None, str | None]:
+    """(text, why-not) — never an escaping exception.
 
     `utf-8-sig` because every other reader of these files uses it (`build._read_unit_text`,
     `classify._fact_entries`, `layout`): under plain `utf-8` a byte-order mark stays in the
     text, `parse_frontmatter` then does not recognise the opening `---`, and lint reports
     MN009 "missing topic" for a file whose topic every other reader can read.
 
-    None rather than a raise because lint is a REPORTER: a file it cannot decode is a
-    finding, not a crash. `classify._finalize` calls `lint_repo` inside the try whose
-    `except` runs `harvest._abort`, so one undecodable byte anywhere in the repo used to
-    hard-reset the pass being recorded — and `layout` routes such a file into the
+    A finding rather than a raise because lint is a REPORTER: a file it cannot read is
+    something to report, not a crash. `classify._finalize` calls `lint_repo` inside the try
+    whose `except` runs `harvest._abort`, so one undecodable byte anywhere in the repo used
+    to hard-reset the pass being recorded — and `layout` routes such a file into the
     canonical directory precisely because it believed lint tolerated it.
+
+    The two failures are reported apart, as `build._read_unit_text` reports them: bad bytes
+    are a property of the FILE and a contributor can fix them, while a permission or I/O
+    error is a property of the machine and tells that contributor nothing. Collapsing both
+    into "not valid UTF-8" also contradicted `layout._decode`, which deliberately lets an
+    OSError raise for exactly this reason.
     """
     try:
-        return path.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeDecodeError):
-        return None
+        return path.read_text(encoding="utf-8-sig"), None
+    except UnicodeDecodeError:
+        return None, "not valid UTF-8"
+    except OSError as e:
+        return None, f"cannot read ({e.strerror or e})"
 
 
 def lint_fact_file(path: Path) -> list[LintIssue]:
-    text = _text(path)
-    if text is None:
-        return [LintIssue(str(path), 0, "MN010", "error", "not valid UTF-8")]
+    text, unreadable = _text(path)
+    if unreadable is not None:
+        return [LintIssue(str(path), 0, "MN010", "error", unreadable)]
     try:
         meta, body = units.parse_frontmatter(text)
     except MnemeError as e:
