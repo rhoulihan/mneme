@@ -145,6 +145,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rabort = review_sub.add_parser("abort")
     p_rabort.add_argument("--cwd", type=Path, default=None)
 
+    # Migration is cwd-scoped like classify and, like it, takes no plugin name. There is
+    # no begin/finalize pair: the whole rail runs inside this one command (nothing to
+    # approve between them), so there is nothing to abort either.
+    p_migrate = sub.add_parser("migrate")
+    p_migrate.add_argument("--cwd", type=Path, default=None)
+    p_migrate.add_argument("--no-push", action="store_true")
+
     # Detection declines are per-repo and permanent: the nudge asks once, and a
     # decline recorded here suppresses it for good — across sessions and compactions.
     p_detect = sub.add_parser("detection")
@@ -253,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
             return _classify_cmd(home, args)
         if args.command == "review":
             return _review_cmd(home, args)
+        if args.command == "migrate":
+            return _migrate_cmd(home, args)
         if args.command == "detection":
             return _detection_cmd(home, args)
         if args.command == "distill":
@@ -314,6 +323,29 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _legacy_layout_plugins(plugins) -> list[str]:
+    """Registered plugins whose clone still carries a top-level `facts/` directory.
+
+    The answer to "which of my knowledge repos still need this?" without an `ls` across
+    every clone — and the reason `mneme migrate` is discoverable at all, since the repos
+    that need it are by definition the ones nobody is contributing to.
+
+    Silent about a clone that is missing or unreadable: `status` is what a human runs when
+    things already look wrong, so a registry entry pointing at a directory that is not
+    there must not be the thing that breaks it.
+    """
+    from . import layout as layout_mod
+
+    names: list[str] = []
+    for p in plugins:
+        try:
+            if (Path(p.path) / layout_mod.LEGACY_DIRNAME).is_dir():
+                names.append(p.name)
+        except (OSError, ValueError):
+            continue
+    return names
+
+
 def _status_cmd(home: Path) -> int:
     import json as json_mod
 
@@ -329,6 +361,8 @@ def _status_cmd(home: Path) -> int:
     print(f"plugins: {len(plugins)} registered")
     for p in plugins:
         print(f"- {p.name} [{p.sensitivity}]")
+    for name in _legacy_layout_plugins(plugins):
+        print(f"legacy facts layout: {name} (run: mneme migrate in that repo)")
     flag_records, bad_flags = flags_mod._read_flag_lines(home)
     unreadable += bad_flags
     print(f"flags: {len(flag_records)} pending")
@@ -816,6 +850,16 @@ def _review_cmd(home: Path, args: argparse.Namespace) -> int:
         print("aborted")
         return 0
     return 1
+
+
+def _migrate_cmd(home: Path, args: argparse.Namespace) -> int:
+    from . import classify as classify_mod
+
+    cwd = args.cwd if args.cwd is not None else Path.cwd()
+    result = classify_mod.migrate(home, cwd, push=not args.no_push)
+    print(f"migrated {result.target}: {len(result.units)} changes on {result.branch}")
+    print(f"pr: {result.pr}")
+    return 0
 
 
 def _declined_detections(home: Path) -> list[str]:

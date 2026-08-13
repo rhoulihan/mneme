@@ -7,9 +7,15 @@ standing in must resolve to a registered knowledge plugin, the work happens on a
 
 Review extraction (spec §7.8) needs the identical frame — an agent editing the same
 working tree under the same gates — differing only in the branch namespace, the commit
-subject, and the ledger kind. So the rails take a `kind` ("classify" or "review") and both
-flows run the SAME code: a gate the review rail skipped would be a gate that stopped
-holding for knowledge arriving from strangers, which is the traffic that needs it most.
+subject, and the ledger kind. So the rails take a `kind` and both flows run the SAME code:
+a gate the review rail skipped would be a gate that stopped holding for knowledge arriving
+from strangers, which is the traffic that needs it most.
+
+Plan 12 adds a third kind, "migrate", for the repo that is simply old: a pre-0.5 layout
+nobody has harvested into since, which therefore never reaches the branch flows that would
+have migrated it. It is the same rail with no session in the middle — `migrate()` runs
+begin and finalize in one call, because there is nothing for an agent to decide between
+them.
 """
 from __future__ import annotations
 
@@ -22,6 +28,13 @@ from .errors import MnemeError
 
 # The kind word is the whole difference between the rails: it names the branch namespace,
 # the commit subject, the ledger record, and every message the user reads.
+#
+# `_RAIL_KINDS` is narrower than the set of kinds: it is the kinds a repo can be STANDING ON
+# between two commands — what `_active_rail` reports and `_begin` refuses. "migrate" is
+# deliberately not among them: it has no begin and no abort of its own, so a
+# `mneme/migrate-*` branch only exists inside the one call that creates it, and telling a
+# user to "finalize or abort" a branch no command can finalize or abort would be advice
+# they cannot take.
 _RAIL_KINDS = ("classify", "review")
 
 # The generated router skill, `skills/knowledge-index/` — the directory the canonical facts
@@ -35,6 +48,7 @@ def _branch_prefix(kind: str) -> str:
 
 BRANCH_PREFIX = _branch_prefix("classify")
 REVIEW_BRANCH_PREFIX = _branch_prefix("review")
+MIGRATE_BRANCH_PREFIX = _branch_prefix("migrate")
 
 
 def resolve(home: Path, cwd: Path):
@@ -238,6 +252,23 @@ def _legacy_conflict_error(kind: str, conflicts: list[str]) -> MnemeError:
     return MnemeError(
         f"both fact layouts carry {', '.join(conflicts)} — {merges}, then run"
         f" 'mneme {kind} finalize' again"
+    )
+
+
+def _nothing_to_do(kind: str) -> str:
+    """What a rail says when it reaches the gates with nothing to deliver.
+
+    Migrate does not get the generic sentence, because the generic sentence describes an
+    absence of EDITS — true of every migrate pass, which is not an editing session at all.
+    The user asked for one specific thing and the answer is about the repo: there is no
+    legacy directory here. Naming the missing directory is also the whole diagnosis, since
+    a repo that has already been migrated looks exactly like a repo that never needed it.
+    """
+    if kind == "migrate":
+        return "no legacy facts directory — nothing to migrate"
+    return (
+        f"nothing to {kind} — no edits were made and no legacy facts needed"
+        f" migrating; the {kind} branch has been discarded"
     )
 
 
@@ -506,9 +537,16 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
 
     # Raised OUTSIDE the guarded block on purpose: nothing has been changed yet, so the
     # branch — and the work on it — survives for the user to fix and finalize again.
-    conflicts = _legacy_conflicts(repo)
-    if conflicts:
-        raise _legacy_conflict_error(kind, conflicts)
+    #
+    # Only for the rails an AGENT drives. `_legacy_conflicts` refuses a collision because
+    # the pass that just manufactured it can fix it in one edit; the migrate rail has no
+    # such author to ask — the user's whole request was "migrate this repo", and the
+    # collision is committed history rather than an edit made seconds ago. So it takes the
+    # merge, exactly like the harvest, which is never lossy (Task 2's topic-key dedup).
+    if kind != "migrate":
+        conflicts = _legacy_conflicts(repo)
+        if conflicts:
+            raise _legacy_conflict_error(kind, conflicts)
 
     try:
         dirty = not gitops.is_clean(repo)
@@ -518,10 +556,7 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
         # and never-delete-knowledge merges that only the shared one is tested for.
         migration = layout.migrate_legacy_facts(repo)
         if not (dirty or ahead or migration.lines or migration.removed_dir):
-            raise MnemeError(
-                f"nothing to {kind} — no edits were made and no legacy facts needed"
-                f" migrating; the {kind} branch has been discarded"
-            )
+            raise MnemeError(_nothing_to_do(kind))
         harvest._regenerate_index(repo)
         issues = lint.lint_repo(repo)
         if lint.has_errors(issues):
@@ -588,3 +623,21 @@ def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResu
 def review_finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
     """Deliver facts extracted from inbound pull requests as mneme's own pull request."""
     return _finalize(home, cwd, "review", push=push)
+
+
+def migrate(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
+    """Deliver a legacy layout's migration as a pull request, for a repo with nothing else.
+
+    Every other flow migrates on the way past, which covers every repo that still has
+    something to contribute. This is the rail for the repo that is only OLD — nothing
+    staged, nothing to classify — where "it will be migrated on the next contribution"
+    means never.
+
+    One call, not a begin/finalize pair, because the pair exists to hold a branch open
+    while an agent reads a bundle and a human approves a mapping. Here there is nothing to
+    approve: the move is deterministic and the human's gate is the pull request, same as
+    always. That also makes it atomic — `_finalize` rolls its own branch back on every
+    failure path, so a migrate that does not finish leaves no branch and a clean `main`.
+    """
+    _begin(home, cwd, "migrate")
+    return _finalize(home, cwd, "migrate", push=push)
