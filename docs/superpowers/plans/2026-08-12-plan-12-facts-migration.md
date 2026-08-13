@@ -57,7 +57,7 @@ tests/core/test_untrusted_content_hardening.py # Task 7
 - Produces: `units.facts_write_dir(root: Path) -> Path` — ALWAYS `root / FACTS_CANONICAL`, regardless of what exists. `harvest._fact_path` changes its fallback: it still returns an existing topic file in either layout (so appending to an unmigrated topic cannot fork it into two files with one unit id), but a topic file that does not exist yet is always created under `facts_write_dir`. `units.facts_dir` keeps its current signature and behavior for READS (documented as read-resolution; its docstring's "where a NEW fact is written" line is corrected to point at `facts_write_dir`).
 - `tests/core/test_facts_location.py`: `test_falls_back_to_legacy` is retained but renamed/re-scoped to assert READ resolution (`facts_dir` still finds a legacy dir, and `fact_files` still lists its files); an added assertion pins that `facts_write_dir` is canonical in that same legacy repo. No coverage is lost.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/core/test_facts_write_dir.py`:
 
@@ -116,7 +116,7 @@ def test_reads_still_resolve_legacy(tmp_path):
     assert [f.name for f in units.fact_files(tmp_path)] == ["a.md"]
 ```
 
-- [ ] **Steps 2–5:** failing run → implement → task tests + the re-scoped `test_facts_location.py` green → full suite green → commit `feat: new fact topics always land in the canonical facts directory`.
+- [x] **Steps 2–5:** failing run → implement → task tests + the re-scoped `test_facts_location.py` green → full suite green → commit `feat: new fact topics always land in the canonical facts directory`.
 
 ---
 
@@ -135,11 +135,11 @@ def test_reads_still_resolve_legacy(tmp_path):
 - Filesystem safety: every destination path goes through the same containment proof `harvest._unit_path` applies (resolve, `is_relative_to` the canonical dir) — a legacy filename is repo content, i.e. untrusted.
 - `migrate_legacy_facts` performs NO git commit and NO branch operations: callers own the branch (PR-only).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/core/test_layout_migration.py` — cover: (a) plain move of a tracked file preserves history (`git log --follow` shows the pre-move commit); (b) untracked file moved; (c) merge case: legacy and canonical both carry `deploys.md`, legacy has one bullet the canonical lacks and one it already has → canonical gains exactly the missing bullet, no duplicates, legacy file gone; (d) unparseable legacy bullet is carried over verbatim; (e) `.gitkeep` removed and the legacy dir disappears; (f) no legacy dir → empty result, no writes; (g) a legacy filename attempting traversal (`../../escape.md`, created via raw path where the filesystem allows, else `..%2f`-style name) never writes outside the canonical dir; (h) CRLF/BOM canonical file survives a merge byte-for-byte apart from the appended line. Write the module fully (~130 lines; model the git fixtures on `tests/core/test_gitops_basic.py`).
 
-- [ ] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: legacy facts migration with history-preserving moves and merges`.
+- [x] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: legacy facts migration with history-preserving moves and merges`.
 
 ---
 
@@ -155,11 +155,11 @@ Create `tests/core/test_layout_migration.py` — cover: (a) plain move of a trac
 - Both paths keep their existing rollback: a migration that raises rolls the branch back through `_abort` exactly like an apply failure, leaving clean `main`.
 - The Plan 11 fact-preservation gate must PASS across a migration (the bullets exist on the branch, in a different file) — an explicit test asserts this, because a naive gate keyed on file paths would reject every migration.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/core/test_migrate_on_branch.py` — cover: (a) `share apply` into a legacy repo produces a branch where the facts live canonically, the legacy dir is gone, the new fact is canonical, `main` is unchanged, and the commit body carries the `Migrated:` lines; (b) the regenerated knowledge-index on that branch lists every topic and no stale path; (c) the preservation gate passes across migration in `classify`/`review` finalize; (d) a migration failure (make the canonical dir a regular file) rolls back to clean `main` with the branch deleted and staging intact. Write the module fully.
 
-- [ ] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: migrate legacy facts automatically inside every branch flow`.
+- [x] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: migrate legacy facts automatically inside every branch flow`.
 
 ---
 
@@ -174,11 +174,11 @@ Create `tests/core/test_migrate_on_branch.py` — cover: (a) `share apply` into 
 - `mneme status` gains one line per registered plugin whose clone carries a legacy `facts/` dir: `legacy facts layout: <name> (run: mneme migrate in that repo)`; absent when none. Degrades silently when a clone is missing.
 - The `/mneme:classify` and `/mneme:share` skills gain one sentence: if mneme reports a legacy layout, it will be migrated automatically as part of the next contribution — no user action required, and `mneme migrate` exists for repos with nothing else pending.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/core/test_cli_migrate.py` — cover: legacy repo migrated onto a `mneme/migrate-*` branch with `main` untouched; no-legacy repo errors clearly and leaves no branch; unregistered cwd fails with the standard message; `mneme status` reports the pending layout for a legacy plugin and stays silent for a canonical one. Write the module fully.
 
-- [ ] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: mneme migrate command and status reporting`.
+- [x] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: mneme migrate command and status reporting`.
 
 ---
 
@@ -192,7 +192,7 @@ Create `tests/core/test_cli_migrate.py` — cover: legacy repo migrated onto a `
 - Confirm (and pin with tests) that `scaffold.create` and `scaffold.adopt` create ONLY the canonical facts dir. Plan 10 added `test_adopt_keeps_an_existing_legacy_facts_dir` — that behavior is now wrong by directive: adopt must leave the legacy files in place (adopt never rewrites content) but must NOT create a second legacy dir, and its report tells the user the next contribution will migrate it. Update that test accordingly (equal strength: it still asserts adopt does not delete or move anything itself).
 - `tests/e2e/test_legacy_repo_upgrade.py` — the full user-visible story through real entry points: build a v0.2-shaped repo (top-level `facts/` with two topics, a knowledge-index SKILL.md whose table lists them, no canonical dir), register it, ingest a new fact, `share apply --no-push`, then assert on the branch: canonical dir holds all three topics, no root `facts/`, the regenerated SKILL.md lists every topic with paths under the skill directory, `git log --follow` still finds the pre-migration history of a moved file, `main` untouched, and `mneme index rebuild` + `mneme search` find both old and new facts.
 
-- [ ] **Steps 2–5:** failing run → implement → green → full suite → commit `test: legacy repo upgrade end to end`.
+- [x] **Steps 2–5:** failing run → implement → green → full suite → commit `test: legacy repo upgrade end to end`.
 
 ---
 
@@ -208,8 +208,8 @@ Create `tests/core/test_cli_migrate.py` — cover: legacy repo migrated onto a `
 3. **No silent truncation.** `gitops.list_open_prs(repo, limit=100)` returns `(prs, truncated: bool)`; triage carries `"truncated": bool` and, when true, a `note` telling the maintainer more PRs exist than were triaged.
 4. **Freshness is stated, not assumed.** Triage annotates against the local clone, which may lag `origin/main`. The bundle gains `"head": {"branch", "sha", "behind_remote": bool|None}` (computed with `git rev-list --count HEAD..origin/main` when a remote ref exists, `None` otherwise) and `REVIEW_INSTRUCTIONS` tells the agent to say so when the clone is behind, because a "new" label computed against a stale tree can be wrong.
 
-- [ ] **Step 1: Write the failing tests** — create `tests/core/test_triage_accuracy.py` covering each numbered item, including the negative cases (a fact whose sentence appears only in the generated router skill is NOT "already-integrated"; a decline recorded for plugin A does not mark plugin B; a legacy target-less decline still applies; `truncated` false when the PR count fits). Write the module fully.
-- [ ] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: triage accuracy — integration detection, scoped declines, truncation and freshness`.
+- [x] **Step 1: Write the failing tests** — create `tests/core/test_triage_accuracy.py` covering each numbered item, including the negative cases (a fact whose sentence appears only in the generated router skill is NOT "already-integrated"; a decline recorded for plugin A does not mark plugin B; a legacy target-less decline still applies; `truncated` false when the PR count fits). Write the module fully.
+- [x] **Steps 2–5:** failing run → implement → green → full suite → commit `feat: triage accuracy — integration detection, scoped declines, truncation and freshness`.
 
 ---
 
@@ -224,8 +224,8 @@ Create `tests/core/test_cli_migrate.py` — cover: legacy repo migrated onto a `
 2. **Backslash segments are traversal too.** `review._header_path` rejects `../` but accepts `..\` and `a\..\b`; on the write side these are already contained, but a fabricated path should never reach a caller as clean. Reject any header path containing a backslash segment or a NUL, alongside the existing POSIX checks, and record it in `skipped`.
 3. **Spec inventory matches reality.** §4.1 still lists six `/mneme:*` commands; the shipped set is capture, share, new, register, adopt, status, verify, classify, review (+ `mneme migrate` from Task 4). Update the inventory and add the dated note that the list is generated from `skills/`.
 
-- [ ] **Step 1: Write the failing tests** — create `tests/core/test_untrusted_content_hardening.py` (ordering assertions for all three bundles; a table of backslash/NUL header paths that must be skipped; a test asserting the spec inventory lists every directory under `skills/`, which keeps the doc honest as the surface grows). Write the module fully.
-- [ ] **Steps 2–5:** failing run → implement → green → full suite → commit `fix: standing rule precedes untrusted content; reject backslash traversal; spec inventory`.
+- [x] **Step 1: Write the failing tests** — create `tests/core/test_untrusted_content_hardening.py` (ordering assertions for all three bundles; a table of backslash/NUL header paths that must be skipped; a test asserting the spec inventory lists every directory under `skills/`, which keeps the doc honest as the surface grows). Write the module fully.
+- [x] **Steps 2–5:** failing run → implement → green → full suite → commit `fix: standing rule precedes untrusted content; reject backslash traversal; spec inventory`.
 
 ---
 
@@ -233,7 +233,7 @@ Create `tests/core/test_cli_migrate.py` — cover: legacy repo migrated onto a `
 
 **Files:** spec (§5.1/§5.3 facts location unconditional for writes + a dated revision note; §7.3/§7.7 migration step), `README.md` (knowledge-plugin tree note becomes "canonical since v0.5.0; a root `facts/` is migrated automatically on the next contribution"; phase 12 row), `docs/install.md`, `CHANGELOG.md` (`## 0.7.0`), version `0.7.0` in all four locations + test pin.
 
-- [ ] Steps: pin test first → apply → full suite + `bin/mneme lint .` + `claude plugin validate . --strict` green → commit `release: 0.7.0`.
+- [x] Steps: pin test first → apply → full suite + `bin/mneme lint .` + `claude plugin validate . --strict` green → commit `release: 0.7.0`.
 
 ---
 
