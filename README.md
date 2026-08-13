@@ -46,14 +46,24 @@ acme-knowledge/
 │   └── marketplace.json       # self-referential marketplace: one `add`, updates forever
 ├── MNEME.md                   # scope statement + sensitivity — doubles as the routing prompt
 ├── skills/
-│   ├── <skill-name>/SKILL.md  # procedural units (Agent Skills format, portable to ~40 tools)
+│   ├── <skill-name>/SKILL.md  # ← arrives with your first harvest: procedural units
+│   │                          #   (Agent Skills format, portable to ~40 tools)
 │   └── knowledge-index/       # mechanically regenerated router over the facts tier
+│       ├── SKILL.md
 │       └── facts/             # typed, tagged, dated fact bullets — delta-edited, never rewritten
-│           └── <topic>.md     #   (v0.5.0 canonical location; legacy top-level facts/ stays readable)
+│           └── <topic>.md     # ← arrives with your first harvest
 ├── CODEOWNERS                 # reviewer routing per knowledge area
 ├── CONTRIBUTING.md            # the promotion rule + anti-slop policy
+├── AGENTS.md                  # how agents should read and extend this repo
+├── README.md
+├── .gitignore
 └── .github/workflows/         # lint, secret scan, auto version bump on merge
 ```
+
+Everything above except the two `←` rows exists the moment `mneme new` returns; those two
+arrive with your first merged harvest. (Facts live at `skills/knowledge-index/facts/` as of
+v0.5.0; a legacy top-level `facts/` stays readable and is migrated on the next branch flow.)
+For a walkthrough of all of this with real output, see [docs/getting-started.md](docs/getting-started.md).
 
 **Skills** carry procedures with their failure patterns — knowledge enters only with evidence of success and the dead ends that made it non-obvious. **Facts** are single-line typed bullets (`decision | constraint | gotcha | runbook-note | reference`) with tags and verified-dates:
 
@@ -62,7 +72,7 @@ acme-knowledge/
 - [gotcha] v2 API silently truncates batch writes over 500 items #api (verified: 2026-08-11)
 ```
 
-You can register **any number** of knowledge plugins — personal, team, per-product, per-project. Each repo's `MNEME.md` scope statement teaches the router where new knowledge belongs; sensitivity labels (`public | internal | restricted`) keep candidates from drifting toward less-restricted repos without your explicit override.
+You can register **any number** of knowledge plugins — personal, team, per-product, per-project. Each repo's `MNEME.md` scope statement teaches the router where new knowledge belongs, and every candidate shows its target at the human gate before anything moves. Sensitivity labels (`public | internal | restricted`) mark how far each repo's knowledge may travel; the `[boundary]` warning that flags a candidate drifting toward a less-restricted repo is implemented but not yet wired into the background distiller, so today that judgment is yours at the `/mneme:share` gate.
 
 ## Status
 
@@ -81,6 +91,7 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 09 — PR-only | Contribution modes removed: mneme never writes a repo's `main` — every harvest is a branch + PR, enforced by an invariant test | ✅ merged (v0.4.0) |
 | 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | ✅ merged (v0.5.0) |
 | 11 — Review | `/mneme:review` inbound-PR triage: machine-annotated fact additions (duplicate / declined / possibly-integrated / new), per-PR human approval for every merge, closure, or extraction; deterministic fact-preservation gate at finalize | ✅ merged (v0.6.0) |
+| — | Fixes: Claude Code's 500-char description limit honored end to end (index description now O(1) in fact count); secret scanner no longer blocks mneme's own topic slugs. Docs: [getting-started walkthrough](docs/getting-started.md) | ✅ merged (v0.6.1) |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 
@@ -96,8 +107,13 @@ Mneme installs like any Claude Code plugin — its repo is its own marketplace:
 Requires Python ≥ 3.10 and git on the machine; the engine is standard-library-only.
 
 First run, hook behavior, configuration env vars, and troubleshooting: see [docs/install.md](docs/install.md).
+Then walk the whole loop end to end in [docs/getting-started.md](docs/getting-started.md).
 
 ## Using mneme
+
+**New here? Start with the [getting-started walkthrough](docs/getting-started.md)** — creating,
+registering or adopting a knowledge repo, then taking one thing you learned from the moment
+you learn it to a merged pull request, with real transcripts at every step.
 
 Everything is a slash command. Behind each one, a deterministic, fully-tested CLI does the mechanical work — that separation is the design: the agent converses, the machine gates.
 

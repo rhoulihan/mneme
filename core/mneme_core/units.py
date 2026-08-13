@@ -18,6 +18,13 @@ _VALID_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # treats the name as a path segment or a frontmatter scalar.
 KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*\Z")
 
+# Claude Code rejects a SKILL.md whose frontmatter `description` exceeds this, so it is a
+# platform constraint, not a house style — and it lives here, once, because three modules
+# used to carry their own copy at 1024 and every one of them was wrong. A gate more
+# permissive than the platform is the worst kind: lint passes, CI passes, the pull request
+# merges, and the plugin is broken at install time for everyone who pulls it.
+MAX_DESCRIPTION = 500
+
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
     lines = text.splitlines()

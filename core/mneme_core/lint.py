@@ -7,7 +7,7 @@ from pathlib import Path
 from . import units
 from .errors import MnemeError
 
-MAX_DESCRIPTION = 1024
+MAX_DESCRIPTION = units.MAX_DESCRIPTION
 
 
 @dataclass

@@ -140,6 +140,46 @@ def adopt(
     return added
 
 
+def _topic_tail(count: int) -> str:
+    """What the description says about the facts — a COUNT, never the list of names.
+
+    The list used to be spelled out here, one entry per fact file, which makes the
+    description O(n) in the size of the repo: any budget is a cliff the repo walks off as
+    it grows, and `MAX_DESCRIPTION` is a hard platform limit rather than a preference. A
+    count is O(1), so this holds at three topics and at three hundred.
+
+    It also carries the routing hint that used to be a fixed sentence in the template.
+    Saying "topics are listed in this skill" twice cost ~60 characters of a 500-character
+    budget, and those characters come out of the author's own scope statement — the one
+    part of the description that is not boilerplate.
+
+    Nothing is lost by it. This description is what an agent reads to decide *whether* to
+    open the skill; the topic names it needs *after* deciding are in the body table, which
+    costs nothing until the skill is opened. (Facts also migrate into their related skills
+    over time via `/mneme:classify`, so the index is a waypoint, not a permanent home.)
+    """
+    if count == 0:
+        return " No facts recorded yet."
+    return f" {count} topic{'s' if count != 1 else ''}, listed in this skill, stored in facts/."
+
+
+def _fit(text: str, budget: int) -> str:
+    """`text` trimmed to `budget` characters, never mid-word.
+
+    The old cap was a bare slice, which could sever the final token and leave a
+    half-written topic name that routes nowhere — and said nothing about having dropped
+    anything, so the description read as complete. An ellipsis costs one character and
+    tells the reader the sentence was cut.
+    """
+    if budget <= 0:
+        return ""
+    if len(text) <= budget:
+        return text
+    cut = text[: budget - 1]
+    head, sep, _tail = cut.rpartition(" ")
+    return (head if sep else cut) + "…"
+
+
 def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
     entries: list[tuple[str, str, int]] = []
     # Every fact file, in both layouts: the index skill IS the routing surface, so a topic
@@ -166,18 +206,23 @@ def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
 
     # The description lands on a single frontmatter line: fold any newline/tab the
     # caller supplied so the rendered template stays parseable before we cap it.
+    scope = " ".join(description.split())
+    tail = _topic_tail(len(entries))
+    # Measured, not estimated: the boilerplate varies with the plugin name, so the room
+    # left for the caller's scope statement is whatever the template does not already use.
+    empty = templates.render(
+        templates.INDEX_SKILL_MD, name=name, description="", owner="", sensitivity="",
+    )
+    fixed = len(str(units.parse_frontmatter(empty)[0]["description"])) + len(tail)
     text = templates.render(
-        templates.INDEX_SKILL_MD, name=name, description=" ".join(description.split()),
+        templates.INDEX_SKILL_MD, name=name,
+        description=_fit(scope, units.MAX_DESCRIPTION - fixed),
         owner="", sensitivity="",
     )
     meta, body = units.parse_frontmatter(text)
-    rendered = str(meta["description"])
-    if entries:
-        topic_list = ", ".join(t for t, _, _ in entries)
-        rendered += f" Topics: {topic_list}"
-    # Cap on every path — the template boilerplate alone can push a lint-clean caller
-    # description over the limit, topics or not.
-    meta["description"] = rendered[: lint.MAX_DESCRIPTION]
+    # A final clamp, because a pathological plugin name can consume the budget on its own
+    # and there is then nothing left to trim — better a short description than an invalid one.
+    meta["description"] = (str(meta["description"]) + tail)[: units.MAX_DESCRIPTION]
     rows = "".join(f"| {t} | {p} | {c} |\n" for t, p, c in entries)
     out = units.serialize_frontmatter(meta, body + rows)
     path = target / "skills" / "knowledge-index" / "SKILL.md"

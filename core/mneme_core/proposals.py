@@ -9,7 +9,7 @@ from . import staging, units
 from .errors import MnemeError
 
 UNASSIGNED = staging.UNASSIGNED
-_MAX_DESCRIPTION = 1024
+_MAX_DESCRIPTION = units.MAX_DESCRIPTION
 # Caps on untrusted fields: proposals arrive as LLM output, so every unbounded string
 # is a memory/ledger-bloat vector. Sizes are generous enough that honest content never
 # trips them.

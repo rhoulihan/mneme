@@ -11,7 +11,7 @@ from .errors import MnemeError
 # bullet that must stay on one line.
 _TAG_RE = re.compile(r"[\w-]+")
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_MAX_DESCRIPTION = 1024
+_MAX_DESCRIPTION = units.MAX_DESCRIPTION
 
 
 def render_skill_unit(
