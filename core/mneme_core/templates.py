@@ -342,7 +342,7 @@ Output EXACTLY one JSON object, no prose, matching:
     {
       "type": "skill", "edit": "new" | "update", "target": "<plugin-name>" | "unassigned",
       "target_unit": "<unit id, required when edit=update>",
-      "name": "<kebab-case-skill-name>", "description": "<trigger-rich, <=1024 chars>",
+      "name": "<kebab-case-skill-name>", "description": "<trigger-rich, <=500 chars>",
       "procedure": "<verified steps, markdown>", "failure_pattern": "<what failed first, markdown>",
       "confidence": 0.0, "rationale": "<why this clears the promotion rule>"
     },

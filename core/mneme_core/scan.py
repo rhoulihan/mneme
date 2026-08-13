@@ -35,24 +35,39 @@ _RULES: list[tuple[str, str, re.Pattern[str]]] = [
 
 _ASSIGN_RE = re.compile(r"[:=]\s*['\"]?(?P<value>[A-Za-z0-9+/_=-]{20,})['\"]?")
 
-# Lowercase words joined by hyphens, and nothing else: no digits, no uppercase, no other
-# separator. This is the shape of mneme's own topic slugs (`units.normalize_topic_key`),
-# and a fact file's frontmatter reads to `_ASSIGN_RE` as `topic: <value>` — so a slug long
-# enough to accumulate distinct characters cleared the 4.0 entropy bar and mneme blocked
-# the content mneme had just generated. Observed on a real harvest:
-# `mongodb-java-driver-tls-trust-not-configurable-via-uri`, 54 chars, entropy 4.016.
+# mneme writes a fact file's own `topic:` frontmatter, and `_ASSIGN_RE` reads that line as
+# an assignment. A slug long enough to accumulate distinct characters clears the 4.0 entropy
+# bar, so mneme blocked content mneme had just generated — a real harvest failed CI on
+# `mongodb-java-driver-tls-trust-not-configurable-via-uri` (54 chars, entropy 4.016).
+# Length is not a usable discriminator: entropy is not monotonic in it (a 60-character slug
+# scores 3.995 and passes while a 45-character one scores 4.047 and blocks).
 #
-# Length is not a usable discriminator, because entropy is not monotonic in it: a
-# 60-character slug scores 3.995 and passes while a 45-character one scores 4.047 and
-# blocks. Shortening the topic name only hides the problem until the next slug.
+# The exemption is deliberately narrow on THREE axes at once, because a wider version of it
+# was written first and opened a real hole. It matched any lowercase-hyphenated value under
+# any key, on the reasoning that no credential looks like that — which is false. Diceware,
+# 1Password's memorable password and Bitwarden's passphrase generator all emit exactly that
+# shape by default, and `\b` does not fire across an underscore, so `db_password`,
+# `client_secret`, `access_token` and `PGPASSWORD` never reach the keyword-anchored
+# `assigned-secret` rule either. Measured: 236 of 280 realistic passphrase assignments went
+# from BLOCK to clean. Two survivable gaps composed into an open door.
 #
-# The exemption is safe because it is a test of SHAPE, and no credential format has this
-# shape — AWS and GitHub tokens carry uppercase, base64 and hex carry digits, and none of
-# them use `-` as a word separator. The half that actually does the work is
-# `assigned-secret` above: it is keyword-anchored (`password:`, `token:`, `api_key`) and
-# never consults entropy, so a secret that announces itself is still caught by its NAME
-# no matter how English its value looks. `password: correct-horse-battery-staple` blocks.
-_SLUG_RE = re.compile(r"[a-z]+(?:-[a-z]+)+\Z")
+# So the exemption is keyed on the LINE, not the value: it must be one of the frontmatter
+# keys mneme itself generates, holding a kebab-case value and nothing else on the line.
+# `db_password: …` is not exempt under ANY value, and that key-scoping — not the value
+# shape — is what closes the hole.
+#
+# The word cap is 12 rather than `normalize_topic_key`'s 6: a fact file's `topic:` holds the
+# topic NAME, which is only constrained to kebab-case, and the slug that prompted this fix
+# is 9 words. It bounds how much can sit on an exempt line without pretending to be a
+# semantic check.
+#
+# Residual risk, stated plainly: a secret shaped like a diceware passphrase would be exempt
+# if written under `topic:` or `name:` specifically. That is accepted — those keys hold a
+# fact's topic, the value is human-reviewed at the share gate, and the alternative is
+# blocking every descriptive topic mneme generates.
+_TOPIC_LINE_RE = re.compile(
+    r"\A\s*(?:topic|name)\s*:\s*['\"]?[a-z0-9]+(?:-[a-z0-9]+){0,11}['\"]?\s*\Z"
+)
 
 
 @dataclass
@@ -80,10 +95,10 @@ def scan_text(text: str) -> list[Finding]:
         for rule, severity, pattern in _RULES:
             for m in pattern.finditer(line):
                 findings.append(Finding(rule, severity, n, _redact(m.group(0))))
+        if _TOPIC_LINE_RE.match(line):
+            continue
         for m in _ASSIGN_RE.finditer(line):
             value = m.group("value")
-            if _SLUG_RE.fullmatch(value):
-                continue
             if shannon_entropy(value) >= 4.0:
                 findings.append(Finding("high-entropy", BLOCK, n, _redact(value)))
     return findings
