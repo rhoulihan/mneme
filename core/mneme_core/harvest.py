@@ -56,12 +56,17 @@ def _fact_path(repo: Path, stem: str, what: str) -> Path:
     a repo already carries at the top level cannot fork it into a second file under the
     router skill — two files, one unit id, half the bullets in each. The name is validated
     against whichever directory is actually being written, never trusted.
+
+    A topic that does not exist yet goes to `facts_write_dir` — always canonical, even in
+    a repo whose other facts still sit at the root. Following the legacy layout here is
+    what kept pre-0.5 repos legacy forever; the root directory those files sit in is
+    migrated wholesale instead (`layout.migrate_legacy_facts`).
     """
     for d in units.facts_dirs(repo):
         path = _unit_path(d, "facts", stem, what, suffix=".md")
         if path.exists():
             return path
-    return _unit_path(units.facts_dir(repo), "facts", stem, what, suffix=".md")
+    return _unit_path(units.facts_write_dir(repo), "facts", stem, what, suffix=".md")
 
 
 def apply_skill(repo: Path, cand: Candidate) -> str:

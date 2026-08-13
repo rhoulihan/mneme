@@ -328,8 +328,28 @@ def fact_unit_id(topic_file_stem: str, bullet_text: str) -> str:
 FACTS_CANONICAL = "skills/knowledge-index/facts"
 
 
+def facts_write_dir(root: Path) -> Path:
+    """Where a NEW fact topic is written: ALWAYS the canonical directory.
+
+    Deliberately not a resolution — it looks at nothing on disk. When the destination
+    followed the repo's existing layout, a repo scaffolded before the canonical location
+    existed kept receiving new facts at its root forever: every contribution re-confirmed
+    the legacy layout instead of retiring it. Writes are canonical and a legacy layout is
+    migrated (`layout.migrate_legacy_facts`), never accommodated.
+
+    Reads are a different question and keep tolerating both layouts — see `facts_dir`,
+    `facts_dirs`, `fact_files`, `find_fact_file` — so an unmigrated repo stays fully
+    readable by lint, verify, index, search, and the classify/review bundles.
+    """
+    return root / FACTS_CANONICAL
+
+
 def facts_dir(root: Path) -> Path:
-    """Resolve where a NEW fact is written: canonical, else legacy, else canonical."""
+    """READ resolution for a repo's facts: canonical, else legacy, else canonical.
+
+    "Which single directory does this repo keep its facts in" — used to describe a repo,
+    not to place a write. `facts_write_dir` is where a new fact goes.
+    """
     canonical = root / FACTS_CANONICAL
     if canonical.is_dir():
         return canonical
@@ -342,9 +362,9 @@ def facts_dir(root: Path) -> Path:
 def facts_dirs(root: Path) -> list[Path]:
     """Every directory that currently holds facts, canonical first.
 
-    `facts_dir` answers "where does the next fact go" — one directory, so writes never
-    fork a repo's layout. Readers must answer a different question: "where IS the
-    knowledge". A repo carrying BOTH layouts is ordinary, not exotic — a 0.5 scaffold
+    `facts_write_dir` answers "where does the next NEW topic go" — one directory, so
+    writes never fork a repo's layout. Readers must answer a different question: "where IS
+    the knowledge". A repo carrying BOTH layouts is ordinary, not exotic — a 0.5 scaffold
     ships the canonical dir, and a contributor can still add a top-level `facts/` file by
     hand — and resolving to one directory there makes real, committed facts invisible to
     lint, verify, index, and search until a classify pass migrates them. Every reader
