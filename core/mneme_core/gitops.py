@@ -75,15 +75,30 @@ def reset_hard(repo: Path, sha: str) -> None:
     git(repo, "reset", "--hard", sha)
 
 
-def commit_harvest(repo: Path, unit_lines: list[str], sources: list[str]) -> str:
+def commit_harvest(
+    repo: Path,
+    unit_lines: list[str],
+    sources: list[str],
+    migrated: list[str] | None = None,
+) -> str:
+    """Commit the harvest; record a layout migration that rode along in its own section.
+
+    `migrated` is deliberately NOT folded into `unit_lines`: the unit lines are what this
+    harvest contributed — the ledger, the pull request title's count, `mneme share view` —
+    while a migration note describes knowledge the repo already had, moved. A reviewer
+    reads the second list to check that a large diff moved facts rather than rewriting
+    them, and would have to guess at it if the two were one list.
+    """
     git(repo, "add", "-A")
     if git(repo, "status", "--porcelain") == "":
         raise MnemeError("nothing to commit for this harvest")
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     subject = f"knowledge: harvest {date} ({len(unit_lines)} units)"
-    body_lines = [f"- {line}" for line in unit_lines]
-    trailers = [f"Mneme-Source: {s}" for s in sorted(set(sources))]
-    message = subject + "\n\n" + "\n".join(body_lines) + "\n\n" + "\n".join(trailers) + "\n"
+    sections = ["\n".join(f"- {line}" for line in unit_lines)]
+    if migrated:
+        sections.append("Migrated:\n" + "\n".join(f"- {line}" for line in migrated))
+    sections.append("\n".join(f"Mneme-Source: {s}" for s in sorted(set(sources))))
+    message = subject + "\n\n" + "\n\n".join(sections) + "\n"
     git(repo, "commit", "-m", message)
     return git(repo, "rev-parse", "HEAD")
 

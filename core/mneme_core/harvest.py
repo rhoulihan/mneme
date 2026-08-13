@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import gitops, lint, paths, registry, scan, units
+from . import gitops, layout, lint, paths, registry, scan, units
 from . import scaffold as scaffold_mod
 from .errors import MnemeError
 from .staging import Candidate
@@ -321,6 +321,14 @@ def apply_batch(
     # restore, or the repo is stranded dirty on the harvest branch and every later
     # `share apply` is refused by the is_clean precondition.
     try:
+        # First thing on the branch, before a single candidate is applied. A pre-0.5 repo
+        # is migrated by the next contribution it receives rather than being accommodated
+        # forever (`units.facts_write_dir`), and the order is what makes the rest work: an
+        # append to a topic that repo already had finds the file where it now lives, and
+        # `_regenerate_index` below reads the moved files through `fact_files`, so the
+        # routing table is correct for the new location by construction. PR-only holds —
+        # the branch already exists and `main` was only ever read.
+        migration = layout.migrate_legacy_facts(repo)
         for cand in candidates:
             if cand.type == "skill":
                 result.units.append(apply_skill(repo, cand))
@@ -348,7 +356,9 @@ def apply_batch(
     # the way back, leaving staging intact so the identical harvest can simply be retried.
     sources = [str(c.provenance.get("source", "unknown")) for c in candidates]
     try:
-        result.commit = gitops.commit_harvest(repo, result.units, sources)
+        result.commit = gitops.commit_harvest(
+            repo, result.units, sources, migration.body()
+        )
         if push and gitops.has_remote(repo):
             gitops.push_branch(repo, result.branch)
             title = f"knowledge: harvest ({len(result.units)} units)"

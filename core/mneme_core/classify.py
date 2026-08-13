@@ -17,7 +17,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import gitops, harvest, lint, paths, scan, templates, units
+from . import gitops, harvest, layout, lint, paths, scan, templates, units
 from .errors import MnemeError
 
 # The kind word is the whole difference between the rails: it names the branch namespace,
@@ -202,12 +202,20 @@ def bundle(home: Path, cwd: Path) -> dict:
 
 
 def _legacy_conflicts(repo: Path) -> list[str]:
-    """Filenames both fact layouts carry — the one thing the migration cannot decide.
+    """Filenames both fact layouts carry — the one thing this rail hands back to the agent.
 
     Checked BEFORE the finalize rail touches anything, because the rail's failure path is a
-    hard reset: raising this from inside `_migrate_legacy_facts` destroyed the pass's own
-    work (for review, an extraction the user had already approved, with nothing staged to
-    retry from) for a condition the agent can fix in one edit.
+    hard reset: raising from inside the migration destroyed the pass's own work (for review,
+    an extraction the user had already approved, with nothing staged to retry from) for a
+    condition the agent can fix in one edit.
+
+    `layout.migrate_legacy_facts` can now MERGE a colliding pair rather than refuse it, so
+    this is no longer the only possible answer — but it is still the right one HERE. The
+    collision on this rail is one the agent has just manufactured, in the working tree,
+    with the bundle's `facts_dir` naming the file it should have written to; asking it to
+    put the bullet in the right file is better than folding two versions together and
+    sending a human the difference. The harvest has no such author to ask, so it takes the
+    merge.
     """
     legacy = repo / "facts"
     if not legacy.is_dir():
@@ -233,44 +241,17 @@ def _legacy_conflict_error(kind: str, conflicts: list[str]) -> MnemeError:
     )
 
 
-def _migrate_legacy_facts(repo: Path, kind: str) -> list[tuple[str, str]]:
-    """Move whatever still lives in a top-level `facts/` under the router skill.
+def _named_in(rel: str, notes: list[str]) -> bool:
+    """Does one of the migration's own notes already name exactly this path?
 
-    Uses `git mv` for tracked files so the history of a fact follows it across the move.
-    Destinations are built from the walk itself (never from candidate-supplied text), and
-    the containment proof below keeps that true even if a hostile name ever appears.
+    A moved or merged file reaches `_changed_files` as well, and reporting it twice in one
+    commit body invites a reviewer to look for a second change that does not exist. The
+    test is a whole-token match rather than a substring: the notes are prose in three
+    shapes (`a -> b`, `a merged into b (n bullets)`, `a: …`) that all separate paths with
+    whitespace, and a substring test would suppress a top-level `README.md` merely because
+    some note mentioned `facts/README.md`.
     """
-    legacy = repo / "facts"
-    if not legacy.is_dir():
-        return []
-    canonical = repo / units.FACTS_CANONICAL
-    moves: list[tuple[str, str]] = []
-    for src in sorted(p for p in legacy.rglob("*") if p.is_file()):
-        rel = src.relative_to(legacy).as_posix()
-        dest = canonical / rel
-        rel_src = f"facts/{rel}"
-        rel_dest = f"{units.FACTS_CANONICAL}/{rel}"
-        if not dest.resolve().is_relative_to(canonical.resolve()):
-            raise MnemeError(f"legacy fact escapes the facts directory: {rel_src}")
-        if dest.exists():
-            if src.name == ".gitkeep":
-                # Both layouts carrying a placeholder is not a conflict — drop the old one.
-                gitops.git(repo, "rm", "-f", "--ignore-unmatch", "--quiet", "--", rel_src)
-                if src.exists():
-                    src.unlink()
-                continue
-            # Backstop for a collision that appeared after `_legacy_conflicts` ran; the
-            # message names the ACTIVE rail, since "run classify again" is not a command a
-            # review user has.
-            raise _legacy_conflict_error(kind, [rel])
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if gitops.git(repo, "ls-files", "--", rel_src):
-            gitops.git(repo, "mv", "--", rel_src, rel_dest)
-        else:
-            # A file the librarian just created: nothing for git to rename yet.
-            src.rename(dest)
-        moves.append((rel_src, rel_dest))
-    return moves
+    return any(rel in note.split() for note in notes)
 
 
 def _changed_files(repo: Path) -> list[str]:
@@ -519,8 +500,11 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
     try:
         dirty = not gitops.is_clean(repo)
         ahead = gitops.head_sha(repo) != base_sha
-        moves = _migrate_legacy_facts(repo, kind)
-        if not (dirty or ahead or moves):
+        # The one migration, shared with `harvest.apply_batch` and `mneme migrate`: a rail
+        # carrying its own walk would drift from the containment proofs, symlink refusals
+        # and never-delete-knowledge merges that only the shared one is tested for.
+        migration = layout.migrate_legacy_facts(repo)
+        if not (dirty or ahead or migration.lines or migration.removed_dir):
             raise MnemeError(
                 f"nothing to {kind} — no edits were made and no legacy facts needed"
                 f" migrating; the {kind} branch has been discarded"
@@ -540,10 +524,8 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
         harvest._abort(repo, branch, base_sha)
         raise MnemeError(f"{kind} aborted — {type(e).__name__}: {e}") from e
 
-    moved_dests = {dest for _src, dest in moves}
-    result.units = [f"{src} -> {dest} (migrated)" for src, dest in moves] + [
-        rel for rel in changed if rel not in moved_dests
-    ]
+    notes = migration.body()
+    result.units = notes + [rel for rel in changed if not _named_in(rel, notes)]
 
     try:
         result.commit = _commit(repo, scope.name, kind, result.units, base_sha)
