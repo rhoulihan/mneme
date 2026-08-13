@@ -25,6 +25,9 @@ _FACT_PATH_RES = (
     re.compile(r"^facts/(?P<stem>[^/]+)\.md$"),
 )
 _SKILL_PATH_RE = re.compile(r"^skills/(?P<name>[^/]+)/SKILL\.md$")
+# `skills/knowledge-index` — the generated router skill, and the directory the canonical
+# facts live inside. Never evidence of an integration (see `_integrated_texts`).
+_INDEX_SKILL_DIR = units.FACTS_CANONICAL.rsplit("/", 1)[0]
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
 
 _SKIP_REASON_CAP = 200
@@ -302,6 +305,54 @@ def _repo_bullet_keys(repo: Path) -> tuple[set[str], set[str]]:
     return hashes, ids
 
 
+def _normalized(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _integrated_texts(repo: Path) -> set[str]:
+    """Whitespace-normalized text of every HAND-WRITTEN skill file in `repo`.
+
+    This is the evidence for "already integrated". `/mneme:classify` files a fact into the
+    skill whose work it belongs to, preserving the sentence — and until now the only trace
+    of that in triage was the optional index, so a maintainer with no database re-read an
+    inbound bullet as new knowledge this repo had already absorbed, and a contributor got
+    asked for something that was already shipped. Whole-file containment, not line
+    matching: an integrated fact is a sentence inside prose, wrapped wherever the
+    paragraph wrapped it. The generated router skill is excluded — it is regenerated from
+    the fact files, so a hit there is the facts directory talking about itself. A file
+    that cannot be decoded costs its own evidence and nothing else: triage stays total.
+    """
+    texts: set[str] = set()
+    index_dir = repo / _INDEX_SKILL_DIR
+    for path in sorted((repo / "skills").rglob("SKILL.md")):
+        if index_dir in path.parents:
+            continue
+        try:
+            texts.add(_normalized(path.read_text(encoding="utf-8-sig")))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return texts
+
+
+def _is_integrated(text: str, integrated: set[str]) -> bool:
+    needle = _normalized(text)
+    return any(needle in blob for blob in integrated)
+
+
+def _head(repo: Path) -> dict:
+    """Which clone this triage was computed against — the annotations are only as fresh.
+
+    Every label below ("new", "duplicate") is an answer about the local tree. Stating the
+    branch, the commit, and whether `origin/main` has moved past it lets the agent say so
+    instead of presenting a stale answer as a current one.
+    """
+    return {
+        "branch": gitops.current_branch(repo),
+        "sha": gitops.head_sha(repo),
+        "behind_remote": gitops.behind_origin_main(repo),
+    }
+
+
 def _open_index(home: Path):
     """A read-only index connection, or None — the hint is optional by design."""
     db_file = paths.db_path(home)
@@ -332,14 +383,17 @@ def _similar_to(conn, plugin: str, text: str) -> str:
     return str(hits[0]["id"]) if hits else ""
 
 
-def _status(duplicate: bool, declined: bool, similar_to: str) -> str:
+def _status(duplicate: bool, declined: bool, integrated: bool, similar_to: str) -> str:
     # Ordered by how conclusive the evidence is: an exact match against the repo settles
-    # the question, a human's decline settles it next, and an index neighbour only raises
-    # one. Whatever the label, the verdict is the agent's and the action is the user's.
+    # the question, a human's decline settles it next, the sentence sitting in a skill
+    # says it was already filed, and an index neighbour only raises a question. Whatever
+    # the label, the verdict is the agent's and the action is the user's.
     if duplicate:
         return "duplicate"
     if declined:
         return "declined"
+    if integrated:
+        return "already-integrated"
     if similar_to.startswith("skills/"):
         return "possibly-integrated"
     return "new"
@@ -353,11 +407,18 @@ def triage(home: Path, cwd: Path) -> dict:
     # Seeded with the repo, then grown PR by PR in listing order: that single set is what
     # makes the second PR proposing a fact a duplicate of the first, not of nothing.
     seen, seen_ids = _repo_bullet_keys(repo)
-    declined_index = staging.declined_index(home)
+    # Scoped to the plugin under review on both counts: a fact a human declined for some
+    # other knowledge repo was never a verdict on this one's collection, and a skill that
+    # already carries the sentence is only evidence when it is a skill in THIS repo.
+    declined_index = staging.declined_index(home, scope.name)
+    integrated_texts = _integrated_texts(repo)
+    # Listed before the index is opened: a `gh` that is missing or failing raises here,
+    # and there is then no connection to leak on the way out.
+    listed, truncated = gitops.list_open_prs(repo)
     conn = _open_index(home)
     prs: list[dict] = []
     try:
-        for pr in gitops.list_open_prs(repo):
+        for pr in listed:
             try:
                 number = int(pr.get("number"))
             except (TypeError, ValueError):
@@ -385,14 +446,16 @@ def triage(home: Path, cwd: Path) -> dict:
                     seen.add(digest)
                 seen_ids.add(fact.unit_id)
                 declined = staging.is_declined_in(declined_index, fact.line)
+                integrated = _is_integrated(fact.text, integrated_texts)
                 similar_to = _similar_to(conn, scope.name, fact.text)
                 entries.append(
                     asdict(fact)
                     | {
                         "duplicate": duplicate,
                         "declined": declined,
+                        "integrated": integrated,
                         "similar_to": similar_to,
-                        "status": _status(duplicate, declined, similar_to),
+                        "status": _status(duplicate, declined, integrated, similar_to),
                     }
                 )
             # A deletion is a proposal too — to forget something. `moved` separates a
@@ -417,9 +480,12 @@ def triage(home: Path, cwd: Path) -> dict:
     finally:
         if conn is not None:
             conn.close()
-    return {
+    bundle = {
         "plugin": scope.name,
         "repo": str(repo),
+        # The clone these annotations were computed against, and whether it has fallen
+        # behind the remote — a "new" label read off a stale tree can be wrong.
+        "head": _head(repo),
         # Where an approved bullet is to be WRITTEN, resolved from this repo's own layout
         # (`units.facts_dir`), plus every topic file that already exists (`units.fact_files`,
         # both layouts). A skill that hardcoded the canonical path sent the agent to create
@@ -430,5 +496,14 @@ def triage(home: Path, cwd: Path) -> dict:
         "fact_files": [f.relative_to(repo).as_posix() for f in units.fact_files(repo)],
         "legacy_layout": (repo / "facts").is_dir(),
         "prs": prs,
+        "truncated": truncated,
         "instructions": templates.REVIEW_INSTRUCTIONS,
     }
+    if truncated:
+        # Said in words as well as in a flag: the maintainer acting on this bundle is
+        # about to decide "the queue is handled", and the queue may not be.
+        bundle["note"] = (
+            f"the pull-request listing filled its limit at {len(listed)} — more open pull"
+            " requests exist than were triaged here; triage these, then re-run"
+        )
+    return bundle

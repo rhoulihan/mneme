@@ -160,6 +160,7 @@ def decline(home: Path, cand: Candidate, reason: str) -> None:
     record = {
         "id": cand.id,
         "hash": units.semantic_hash(cand.body),
+        "target": cand.target,
         "reason": reason,
         "ts": _now(),
     }
@@ -176,16 +177,39 @@ def decline(home: Path, cand: Candidate, reason: str) -> None:
         existing.unlink()
 
 
-def declined_index(home: Path) -> tuple[set[str], set[str]]:
+def _applies_to(rec: dict, plugin: str | None) -> bool:
+    """Does this ledger line answer for `plugin` — or for every plugin?
+
+    A decline is a human's verdict on a candidate that was headed somewhere: "no, not in
+    THIS collection". Reading it as a verdict on the sentence everywhere let one repo's
+    curation silence the same knowledge for a repo whose maintainers never saw it. Two
+    lines stay global on purpose: one written before the field existed, and one for a
+    candidate that had no destination — neither ever named a repo to scope to, and
+    guessing a scope for them would resurrect knowledge a human has already rejected.
+    """
+    if plugin is None:
+        return True
+    target = rec.get("target")
+    if not isinstance(target, str) or target in ("", UNASSIGNED):
+        return True
+    return target == plugin
+
+
+def declined_index(home: Path, plugin: str | None = None) -> tuple[set[str], set[str]]:
     """`(line hashes, fact-text hashes)` from the declined ledger, read once.
 
     Callers that ask about many bodies — triage annotates every addition in every open PR —
     read the ledger once instead of once per question, so one large pull request cannot
-    turn the ledger into a per-bullet file read.
+    turn the ledger into a per-bullet file read. `plugin` narrows the ledger to the
+    declines that answer for that plugin (see `_applies_to`); the default reads all of it,
+    which is what a caller with no destination in hand — `mneme stage`, a human asking —
+    still wants.
     """
     lines: set[str] = set()
     texts: set[str] = set()
     for rec in _read_declined(home):
+        if not _applies_to(rec, plugin):
+            continue
         h, t = rec.get("hash"), rec.get("text_hash")
         if isinstance(h, str):
             lines.add(h)
@@ -207,5 +231,5 @@ def is_declined_in(index: tuple[set[str], set[str]], body: str) -> bool:
     return text_hash is not None and text_hash in texts
 
 
-def is_declined(home: Path, body: str) -> bool:
-    return is_declined_in(declined_index(home), body)
+def is_declined(home: Path, body: str, plugin: str | None = None) -> bool:
+    return is_declined_in(declined_index(home, plugin), body)

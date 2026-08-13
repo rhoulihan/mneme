@@ -1041,7 +1041,9 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
         except MnemeError as e:
             rejected.append(f"compose ({p.type} -> {p.target}): {e}")
             continue
-        if staging_mod.is_declined(home, body):
+        # Scoped to the plugin this proposal is FOR: a human declining a fact for one
+        # knowledge repo said nothing about another repo that never saw it.
+        if staging_mod.is_declined(home, body, plugin=p.target):
             skipped_declined += 1
             continue
         cand_id = staging_mod.candidate_id(p.type, p.target, body)
