@@ -23,6 +23,7 @@ import subprocess
 import pytest
 
 from mneme_core import layout, units
+from mneme_core.errors import MnemeError
 from mneme_index import build, db
 
 CANON = units.FACTS_CANONICAL
@@ -256,20 +257,153 @@ def test_a_closing_code_fence_is_not_deleted_as_a_duplicate(tmp_path):
     assert merged.count("```") == 2, "the closing fence was deleted as a duplicate"
 
 
-def test_a_dropped_frontmatter_value_is_named_in_the_note(tmp_path):
-    """Both values are knowledge; the note must say which one lost, not just which key."""
+def test_neither_of_two_differing_frontmatter_values_is_discarded(tmp_path):
+    """A colliding key with differing values keeps both files, not one value.
+
+    Demoting the loser into the body took it out of everything `parse_frontmatter` returns,
+    so a `topic:` a reader could search for before the migration was unfindable after —
+    with the report saying "merged". Both values stay metadata; a human reconciles them.
+    """
     repo = make_repo(tmp_path)
     write(repo / CANON / "t.md", "---\ntopic: t\nowner: platform\n---\n" + CANONICAL_BULLET)
     write(repo / "facts" / "t.md", "---\ntopic: t\nowner: sre-oncall-team\n---\n" + LEGACY_BULLET)
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "fixtures")
+    before = fact_rows(tmp_path, repo, "before")
 
     result = layout.migrate_legacy_facts(repo)
 
-    notes = " ".join(result.merged)
-    assert "owner" in notes
-    assert "sre-oncall-team" in notes  # the discarded value is recoverable from the report
-    assert "platform" in notes
+    canonical_meta, _b = units.parse_frontmatter((repo / CANON / "t.md").read_text(encoding="utf-8"))
+    aside_meta, _b = units.parse_frontmatter(
+        (repo / CANON / "t.legacy.md").read_text(encoding="utf-8")
+    )
+    assert canonical_meta["owner"] == "platform"
+    assert aside_meta["owner"] == "sre-oncall-team"
+    assert fact_rows(tmp_path, repo, "after") >= before
+    assert any("kept separate" in line for line in result.moved)
+
+
+def test_a_differing_topic_stays_searchable(tmp_path):
+    """The value readers project into a row: it must survive the migration, not become prose."""
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "deploys.md", "---\ntopic: deploy-runbook\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "deploys.md", "---\ntopic: incident-response\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    layout.migrate_legacy_facts(repo)
+
+    topics = set()
+    for path in (repo / CANON).rglob("*.md"):
+        meta, _b = units.parse_frontmatter(path.read_text(encoding="utf-8"))
+        if "topic" in meta:
+            topics.add(meta["topic"])
+    assert {"deploy-runbook", "incident-response"} <= topics
+
+
+def test_the_report_pins_every_note_the_merge_can_emit(tmp_path):
+    """The note stream is the migration's whole account of itself in the PR body.
+
+    Relaxing the suite's exact-list assertions to make room for a new note left the stream
+    unpinned past its first line — a spurious, duplicated or silently dropped note would be
+    invisible. One fixture exercises all four notes at once and asserts the set.
+    """
+    repo = make_repo(tmp_path)
+    shared = "- [gotcha] A sentence both files carry here for thirty seconds #x (verified: 2026-08-12)\n"
+    write(repo / CANON / "t.md", "---\ntopic: t\n---\n" + shared)
+    write(
+        repo / "facts" / "t.md",
+        # An identical header (nothing to carry, nothing differing), the same bullet
+        # (duplicate fold), a bullet sharing its topic key (divergent), and prose (verbatim).
+        "---\ntopic: t\n---\n"
+        + shared
+        + "- [gotcha] A sentence both files carry here for sixty seconds #y (verified: 2026-08-12)\n"
+        + "some prose a human wrote\n",
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    notes = " || ".join(result.merged)
+    assert result.merged[0].startswith("facts/t.md merged into")
+    assert "share a topic key" in notes
+    assert "already said what a canonical bullet says" in notes  # the fold is reported
+    assert "unparsed line(s) carried over verbatim" in notes
+    assert len(result.merged) == 4, result.merged  # no note appears twice, none is missing
+
+
+def test_the_refusal_note_warns_that_names_and_ids_move(tmp_path):
+    """The aside path renames the file, which moves both its unit ids and — when the file
+    has no `topic:` of its own — the topic every reader falls back to the stem for."""
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", "---\nnot a key line\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", LEGACY_BULLET)  # no header, so the stem is the topic
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    note = " ".join(result.moved)
+    assert "kept separate" in note
+    assert "unit ids move" in note
+    assert "topic" in note  # the stem-derived topic moves with the name too
+
+
+def test_the_aside_walk_gives_up_rather_than_overwrite(tmp_path):
+    """`.legacy`, `.legacy-2`, `.legacy-3`… and a clear error when every name is taken."""
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", "---\nnot a key line\n---\n" + CANONICAL_BULLET)
+    for attempt in range(1, 100):
+        suffix = ".legacy" if attempt == 1 else f".legacy-{attempt}"
+        write(repo / CANON / f"t{suffix}.md", "- [gotcha] occupied #z (verified: 2026-08-12)\n")
+    write(repo / "facts" / "t.md", LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "are all taken" in str(exc.value)
+    assert (repo / "facts" / "t.md").is_file()  # nothing moved, nothing overwritten
+
+
+def test_a_legacy_directory_that_cannot_be_emptied_is_reported(tmp_path):
+    """`_drop_empty` refuses while anything remains rather than leaving a half-migrated repo."""
+    repo = make_repo(tmp_path)
+    write(repo / "facts" / "t.md", LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+    # An entry the walk never sees: created after iterdir would have listed the directory.
+    original = layout._migrate_into
+
+    def leave_something(*args, **kwargs):
+        original(*args, **kwargs)
+        (repo / "facts" / "leftover.txt").write_text("x", encoding="utf-8")
+
+    layout._migrate_into = leave_something
+    try:
+        with pytest.raises(MnemeError) as exc:
+            layout.migrate_legacy_facts(repo)
+    finally:
+        layout._migrate_into = original
+
+    assert "still holds" in str(exc.value)
+
+
+def test_a_canonical_file_with_no_trailing_newline_is_terminated_before_appending(tmp_path):
+    """Appending past a file that stopped mid-line must not glue two lines together."""
+    repo = make_repo(tmp_path)
+    canonical = write(repo / CANON / "t.md", "---\ntopic: t\n---\n" + CANONICAL_BULLET.rstrip("\n"))
+    write(repo / "facts" / "t.md", "---\ntopic: t\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    layout.migrate_legacy_facts(repo)
+
+    lines = canonical.read_text(encoding="utf-8").splitlines()
+    assert "Canonical bullet that was already retrievable" in lines[-2]
+    assert "Legacy bullet arriving in the merge" in lines[-1]
 
 
 def test_the_report_says_when_a_header_was_demoted(tmp_path):

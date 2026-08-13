@@ -156,10 +156,12 @@ def _migrate_into(
                     _move(repo, src, aside, rel_src, rel_aside)
                     result.moved.append(
                         f"{rel_src} -> {rel_aside} (kept separate: merging into {rel_dest}"
-                        f" would have made {len(refused.lost)} readable item(s) unreadable,"
-                        f" because {rel_dest} does not parse — fix its frontmatter and merge"
-                        " the two by hand. Note the saved file's unit ids move with its"
-                        f" name, from facts/{name[:-3]}#… to facts/{rel_aside.rsplit('/', 1)[-1][:-3]}#…)"
+                        f" would have made {len(refused.lost)} readable item(s) unreadable —"
+                        " fix the two by hand and merge them. Note the saved file's unit ids"
+                        f" move with its name, from facts/{name[:-3]}#… to"
+                        f" facts/{rel_aside.rsplit('/', 1)[-1][:-3]}#…, and so does its topic"
+                        " if it has no `topic:` key of its own, since every reader falls back"
+                        " to the file stem)"
                     )
                 continue
             if src.is_dir() and dest.is_dir() and not dest.is_symlink():
@@ -425,16 +427,24 @@ def _retrievable(text: str) -> set[str]:
     check exists to stop, one field type over. `_carry_meta` has always said as much: an
     `owner:` key "is a line a human committed exactly as much as a bullet is".
 
-    Keys, not key/value pairs, deliberately: when both files set the same key the canonical
-    value wins the header and the legacy block travels into the body with both values named
-    in the report. That is a documented reconciliation, not a disappearance — the key is
-    still retrievable. A key that yields NOTHING afterwards is the loss this measures.
+    Keys AND their values. An earlier version measured key names only, on the argument that
+    a colliding key is "reconciled, not lost" because the key survives — true of the key and
+    false of the value, and the value is the retrievable thing: `topic:` is projected into
+    the index row, into `regenerate_index_skill`'s routing table and into the classify
+    bundle, so a differing `topic` demoted to prose makes a fact that `mneme search` found
+    before the migration unfindable after it, with the report saying "merged".
+
+    No key is special-cased. Every attempt in this series failed the same way — measuring
+    something strictly smaller than the property demanded — so the measurement is simply
+    everything the parser returns. A value that stops being returned is a loss, and the
+    merge is refused; the legacy file is kept whole beside the canonical one instead, which
+    reconciles the two without deciding which value a human meant to keep.
     """
     try:
         meta, body = units.parse_frontmatter(text)
     except MnemeError:
         return set()
-    found = {f"meta:{key}" for key in meta}
+    found = {f"meta:{key}={_normalized(str(value))}" for key, value in meta.items()}
     for line in _line_contents(body):
         bullet = _bullet(line)
         if bullet is not None:

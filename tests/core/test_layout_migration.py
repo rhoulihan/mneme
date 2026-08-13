@@ -571,14 +571,19 @@ def test_a_frontmatter_key_the_two_files_disagree_on_is_reported_not_resolved(tm
 
     result = layout.migrate_legacy_facts(repo)
 
-    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
-    meta, _body = units.parse_frontmatter(text)
-    assert meta["owner"] == "platform"  # canonical wins the HEADER, as it does for a bullet
-    # …but the losing block is not deleted. `_meta_blocks` attaches any line it cannot key
-    # to the preceding key, so discarding a colliding key's block deleted whatever had been
-    # glued to it — from a file this merge then removes. It travels into the body instead.
-    assert "owner: sre" in text
-    assert any("owner" in note and "differ" in note for note in result.merged)
+    # Neither value is discarded, because neither is mneme's to discard: demoting the loser
+    # into the body took it out of everything `parse_frontmatter` returns, so a value a
+    # reader could retrieve before the migration could not be retrieved after it. The two
+    # files are kept side by side instead and a human decides which value is right.
+    canonical_meta, _body = units.parse_frontmatter(
+        (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    )
+    assert canonical_meta["owner"] == "platform"
+    aside_meta, _body = units.parse_frontmatter(
+        (repo / CANON / "deploys.legacy.md").read_text(encoding="utf-8")
+    )
+    assert aside_meta["owner"] == "sre"  # still metadata, still retrievable
+    assert any("kept separate" in line for line in result.moved)
 
 
 def test_an_unterminated_canonical_frontmatter_does_not_wedge_the_merge(tmp_path):
