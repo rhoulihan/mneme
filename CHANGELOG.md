@@ -8,6 +8,72 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.7.0 — 2026-08-13
+
+Facts writes are unconditional and a legacy layout is migrated, never accommodated
+(user direction, 2026-08-12). Before this release `units.facts_dir` fell back to a
+top-level `facts/` whenever the canonical directory was absent, so a repo scaffolded
+before v0.5.0 — mneme's own development-knowledge plugin is exactly that repo — kept
+receiving new facts at its root forever. "Respect the existing layout" turned out to be
+the mechanism that made the old layout permanent.
+
+- **Every new fact topic lands canonically** — `units.facts_write_dir` is always
+  `skills/knowledge-index/facts/`, whatever exists on disk. A topic file that already
+  exists in a legacy repo is still appended to where it lives, because splitting one
+  topic across two files would give one unit id two homes; only a topic file that does
+  not exist yet is created, and it is created canonically. Reads are untouched:
+  `facts_dir`, `facts_dirs`, `fact_files` and `find_fact_file` still resolve both
+  layouts, so an unmigrated repo stays fully readable by lint, verify, search and the
+  index.
+- **`layout.migrate_legacy_facts` — a git-aware move that never loses a bullet** — a
+  tracked file moves with `git mv` so `git log --follow` still reaches its pre-move
+  history; an untracked one is renamed. When the same topic exists in both layouts the
+  legacy file's bullets are *merged* into the canonical one — topic-key dedup, canonical
+  wins a collision, and a bullet that will not parse is carried over verbatim rather than
+  dropped. Every destination goes through the same containment proof a harvest write
+  does, because a legacy filename is repo content and therefore untrusted; a `facts/`
+  symlink is refused rather than followed, since the migration's own `git rm` would
+  otherwise delete files at the far end of the link.
+- **Migration happens inside every branch flow, automatically** — `share apply` runs it
+  as the first thing on the harvest branch, before any candidate is applied, and the
+  shared classify/review finalize rail runs the same function. The order is what makes
+  the rest correct by construction: the index regeneration that follows reads the moved
+  files through `fact_files`, so the router skill's paths are right for the new location
+  without a special case. The moves are recorded under a `Migrated:` section of the
+  commit body, bounded so a mature pre-0.5 repo's several hundred files cannot produce a
+  body that `git commit -m` refuses (E2BIG) or that silently costs the pull request its
+  description. PR-only holds throughout — migration only ever happens on a `mneme/*`
+  branch, and any failure rolls back to a clean `main` with the branch deleted.
+- **`mneme migrate`** — the same rail with no session in the middle, for the repo whose
+  only pending change *is* the migration: nothing staged, nothing to classify. Branch
+  `mneme/migrate-*`, migrate, regenerate the index, lint + secret scan the changed files,
+  commit, push and open the PR when there is a remote. A repo with nothing to migrate
+  gets `no legacy facts directory — nothing to migrate` and no leftover branch.
+- **The repos that need it are the ones nobody is contributing to, so `mneme status` says
+  so** — one `legacy facts layout: <name> (run: mneme migrate in that repo)` line per
+  registered plugin whose clone still carries a root `facts/`, silent when there are
+  none, and silent about a clone that has gone missing. `mneme adopt` prints the same
+  notice and seeds the canonical directory, having previously left a pre-0.5 repo with
+  nowhere canonical to write — which is precisely how the next fact re-confirmed the
+  legacy layout.
+- **Triage accuracy** (carried from the Plan 11 audit) — a fact whose sentence already
+  appears in a skill's prose is labelled `already-integrated` from the files themselves,
+  with no database involved, ranking above the index-derived `possibly-integrated` hint;
+  the generated router skill is excluded, so a fact cannot be "integrated" into the
+  listing of itself. Declines are plugin-scoped, so knowledge one repo's maintainer
+  rejected is not reported as declined for another (ledger lines written before the field
+  existed stay global). `gitops.list_open_prs` reports truncation instead of quietly
+  triaging the first hundred pull requests, and the bundle carries the clone's `head`
+  with `behind_remote`, because a "new" label computed against a stale tree can be wrong
+  and the maintainer should be told which it is.
+- **Injection and traversal hardening** (also carried) — the standing rule that everything
+  quoted is DATA is now emitted *before* the untrusted content in the triage bundle, the
+  classify bundle and the distiller prompt, and repeated after it: a defense serialized
+  after what it governs is read second. `review._header_path` rejects backslash segments
+  and NUL alongside its POSIX checks, so a fabricated diff path can never reach a caller
+  looking clean. The spec's command inventory is checked against `skills/` in both
+  directions by a test, so it can neither undercount the surface nor invent one.
+
 ## 0.6.1 — 2026-08-13
 
 Two defects found by a real harvest into a registered knowledge repo, plus the

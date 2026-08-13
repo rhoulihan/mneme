@@ -61,8 +61,11 @@ acme-knowledge/
 ```
 
 Everything above except the two `←` rows exists the moment `mneme new` returns; those two
-arrive with your first merged harvest. (Facts live at `skills/knowledge-index/facts/` as of
-v0.5.0; a legacy top-level `facts/` stays readable and is migrated on the next branch flow.)
+arrive with your first merged harvest. (Facts live at `skills/knowledge-index/facts/` —
+canonical since v0.5.0, and every new topic goes there. A repo still carrying a legacy
+top-level `facts/` stays fully readable and is migrated automatically on its next
+contribution, moves included in that same pull request; `mneme migrate` covers a repo with
+nothing else pending.)
 For a walkthrough of all of this with real output, see [docs/getting-started.md](docs/getting-started.md).
 
 **Skills** carry procedures with their failure patterns — knowledge enters only with evidence of success and the dead ends that made it non-obvious. **Facts** are single-line typed bullets (`decision | constraint | gotcha | runbook-note | reference`) with tags and verified-dates:
@@ -92,6 +95,7 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | ✅ merged (v0.5.0) |
 | 11 — Review | `/mneme:review` inbound-PR triage: machine-annotated fact additions (duplicate / declined / possibly-integrated / new), per-PR human approval for every merge, closure, or extraction; deterministic fact-preservation gate at finalize | ✅ merged (v0.6.0) |
 | — | Fixes: Claude Code's 500-char description limit honored end to end (index description now O(1) in fact count); secret scanner no longer blocks mneme's own topic slugs. Docs: [getting-started walkthrough](docs/getting-started.md) | ✅ merged (v0.6.1) |
+| 12 — Canonical facts | Every new fact topic lands in `skills/knowledge-index/facts/`, whatever the repo's layout; a legacy root `facts/` is migrated automatically on the next contribution — history-preserving moves, merge-never-overwrite, delivered in that contribution's own PR — plus `mneme migrate` for a repo with nothing else pending | ✅ merged (v0.7.0) |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 

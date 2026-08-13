@@ -26,7 +26,7 @@ def _pyproject_version() -> str:
 
 
 def test_version_consistency():
-    assert mneme_core.__version__ == "0.6.1"
+    assert mneme_core.__version__ == "0.7.0"
     manifest = json.loads(
         (REPO_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
@@ -47,3 +47,35 @@ def test_readme_status_complete():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "🔨 in progress" not in readme
     assert "📝 planned" not in readme
+
+
+def _first_changelog_section() -> str:
+    """The heading of the newest release section in CHANGELOG.md."""
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    headings = [
+        line for line in changelog.splitlines() if line.startswith("## ")
+    ]
+    assert headings, "CHANGELOG.md has no release sections at all"
+    return headings[0]
+
+
+def test_the_changelog_leads_with_the_version_being_shipped():
+    """A release whose notes are filed under an older heading reads as unreleased.
+
+    `test_version_consistency` only asks that the version appear SOMEWHERE in the
+    file, which a section appended at the bottom — or a version bumped with the
+    notes left under the previous heading — satisfies while every reader of the
+    changelog is told the newest release is the one before it.
+    """
+    heading = _first_changelog_section()
+    assert heading.startswith(f"## {mneme_core.__version__}"), heading
+
+
+def test_the_readme_status_table_records_the_version_being_shipped():
+    """The README status table is the release's user-visible index; a bump without a
+    row there ships a phase nobody reading the front page knows landed."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    rows = [line for line in readme.splitlines() if line.startswith("|")]
+    assert [r for r in rows if f"(v{mneme_core.__version__})" in r], (
+        f"no README status row names v{mneme_core.__version__}"
+    )
