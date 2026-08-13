@@ -284,9 +284,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"registered {args.name}")
             return 0
         if args.command == "adopt":
+            from . import layout as layout_mod
             from . import lint as lint_mod
             from . import registry as registry_mod
             from . import scaffold as scaffold_mod
+            from . import units as units_mod
 
             added = scaffold_mod.adopt(
                 home, args.name, description=args.description, owner=args.owner
@@ -296,6 +298,16 @@ def main(argv: list[str] | None = None) -> int:
             if not added:
                 print("nothing to add")
             plugin = registry_mod.get_plugin(home, args.name)
+            # Adoption is where a pre-0.5 repo meets mneme, so it is where the user learns
+            # that its layout is on the way out — before a later branch appears to move
+            # files nobody asked to move. Adopt itself moved nothing; this is the notice,
+            # not the migration.
+            if (Path(plugin.path) / layout_mod.LEGACY_DIRNAME).is_dir():
+                print(
+                    f"legacy facts layout: {layout_mod.LEGACY_DIRNAME}/ is left as it is —"
+                    f" the next contribution migrates it into"
+                    f" {units_mod.FACTS_CANONICAL}/ (or run: mneme migrate here)"
+                )
             issues = lint_mod.lint_repo(Path(plugin.path))
             errors = [i for i in issues if i.severity == "error"]
             if errors:

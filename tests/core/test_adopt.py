@@ -11,8 +11,8 @@ def run(capsys, *argv):
     return code, captured.out, captured.err
 
 
-def make_existing_plugin(tmp_path, home):
-    repo = tmp_path / "existing-kb"
+def make_existing_plugin(tmp_path, home, name="existing-kb"):
+    repo = tmp_path / name
     d = repo / "skills" / "legacy-skill"
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(
@@ -22,7 +22,7 @@ def make_existing_plugin(tmp_path, home):
     (repo / "README.md").write_text("# existing\n", encoding="utf-8")
     registry.add_plugin(
         home,
-        Plugin(name="existing-kb", repo="git@example.com:kb.git", path=str(repo),
+        Plugin(name=name, repo="git@example.com:kb.git", path=str(repo),
                sensitivity="restricted"),
     )
     return repo
@@ -47,22 +47,69 @@ def test_adopt_adds_only_missing(tmp_path, capsys):
     assert "* @team-leads" in (repo / "CODEOWNERS").read_text(encoding="utf-8")
 
 
-def test_adopt_keeps_an_existing_legacy_facts_dir(tmp_path, capsys):
-    """An adopted repo that already files facts at the top level is left in that layout."""
-    home = tmp_path / "home"
-    repo = make_existing_plugin(tmp_path, home)
+def legacy_facts(repo):
+    """A top-level facts file, exactly as a pre-0.5 repo carries it."""
     (repo / "facts").mkdir()
-    (repo / "facts" / "billing.md").write_text(
+    path = repo / "facts" / "billing.md"
+    path.write_text(
         "---\ntopic: billing\n---\n"
         "- [decision] Invoices settle monthly #billing (verified: 2026-08-11)\n",
         encoding="utf-8",
     )
+    return path
+
+
+def test_adopt_seeds_canonical_beside_an_existing_legacy_facts_dir(tmp_path, capsys):
+    """Adoption seeds the canonical dir even here, and still moves nothing itself.
+
+    Plan 10 skipped the canonical directory whenever a top-level `facts/` existed, which is
+    the accommodation the 2026-08-12 directive retires: writes are canonical, and a legacy
+    layout is migrated by the next contribution rather than preserved by adoption. What
+    adopt must NOT do is any of the migrating — it never rewrites, moves or deletes repo
+    content, so the legacy file is byte-identical afterwards and still the file every
+    reader resolves to.
+    """
+    home = tmp_path / "home"
+    repo = make_existing_plugin(tmp_path, home)
+    fact = legacy_facts(repo)
+    before = fact.read_bytes()
+
     added = scaffold.adopt(home, "existing-kb")
-    assert f"{units.FACTS_CANONICAL}/.gitkeep" not in added
-    assert not (repo / units.FACTS_CANONICAL).exists()
-    assert units.facts_dir(repo) == repo / "facts"
+
+    assert f"{units.FACTS_CANONICAL}/.gitkeep" in added
+    assert (repo / units.FACTS_CANONICAL / ".gitkeep").is_file()
+    # Nothing was moved, rewritten or removed: the legacy dir holds exactly what it held.
+    assert fact.read_bytes() == before
+    assert [p.name for p in sorted((repo / "facts").iterdir())] == ["billing.md"]
+    # ...and nothing new was seeded at the top level either.
+    assert [rel for rel in added if rel.startswith("facts/")] == []
+    # The seeded canonical dir is empty, so it cannot shadow the facts that are still
+    # legacy: every reader keeps resolving to the real file until the migration runs.
+    assert units.fact_files(repo) == [fact]
     index = (repo / "skills" / "knowledge-index" / "SKILL.md").read_text(encoding="utf-8")
     assert "| billing | facts/billing.md | 1 |" in index
+
+
+def test_adopt_cli_reports_the_pending_migration(tmp_path, capsys):
+    """The user is told what will happen to the legacy dir — and is not told when there is
+    no legacy dir to happen to."""
+    home = tmp_path / "home"
+    repo = make_existing_plugin(tmp_path, home, name="legacy-kb")
+    legacy_facts(repo)
+    code, out, _ = run(capsys, "--home", str(home), "adopt", "legacy-kb")
+    assert code == 0
+    notice = [line for line in out.splitlines() if line.startswith("legacy facts layout:")]
+    assert len(notice) == 1, out
+    # Where it is, where it goes, when, and the command for "I want it now".
+    assert "facts/" in notice[0]
+    assert "skills/knowledge-index/facts" in notice[0]
+    assert "next contribution" in notice[0]
+    assert "mneme migrate" in notice[0]
+
+    make_existing_plugin(tmp_path, home, name="canonical-kb")
+    code, out, _ = run(capsys, "--home", str(home), "adopt", "canonical-kb")
+    assert code == 0
+    assert "legacy facts layout" not in out
 
 
 def test_adopt_is_idempotent(tmp_path, capsys):
