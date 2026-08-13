@@ -174,6 +174,88 @@ def test_carried_body_is_never_read_as_a_frontmatter_block(tmp_path):
     assert fact_rows(tmp_path, repo, "after") >= max(before, 1)
 
 
+# The canonical side, which the first table never varied — and which is where the merge
+# could bury facts with a perfectly well-formed legacy file, or none at all.
+BROKEN_CANONICAL_HEADERS = {
+    "unterminated": "---\ntopic: t\n",
+    "terminated-but-malformed": "---\nnot a key line\n---\n",
+    "bad-nested-block": "---\nowner:\n  not a nested key\n---\n",
+}
+
+LEGACY_SHAPES = {
+    "well-formed-header": "---\ntopic: t\n---\n",
+    "no-header-at-all": "",
+}
+
+
+@pytest.mark.parametrize("legacy_shape", sorted(LEGACY_SHAPES))
+@pytest.mark.parametrize("canonical_shape", sorted(BROKEN_CANONICAL_HEADERS))
+def test_facts_are_never_buried_in_a_canonical_file_that_does_not_parse(
+    tmp_path, canonical_shape, legacy_shape
+):
+    """The merge is a convenience; keeping every fact readable is not.
+
+    A canonical file whose own header the reader rejects yields nothing, so bullets folded
+    into it stop being retrievable — with a well-formed legacy file, or one with no header
+    at all, which is why no guard on the legacy side can catch this. The legacy file is
+    kept beside it instead.
+    """
+    repo = make_repo(tmp_path)
+    canonical = write(
+        repo / CANON / "t.md", BROKEN_CANONICAL_HEADERS[canonical_shape] + CANONICAL_BULLET
+    )
+    canonical_bytes = canonical.read_bytes()
+    write(repo / "facts" / "t.md", LEGACY_SHAPES[legacy_shape] + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+    before = fact_rows(tmp_path, repo, "before")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    assert fact_rows(tmp_path, repo, "after") >= before
+    assert canonical.read_bytes() == canonical_bytes  # the broken file is left untouched
+    aside = repo / CANON / "t.legacy.md"
+    assert aside.is_file(), "the legacy file must be kept, not buried"
+    assert "Legacy bullet arriving in the merge" in aside.read_text(encoding="utf-8")
+    assert not (repo / "facts").exists()
+    assert any("kept separate" in line for line in result.moved)
+
+
+def test_a_colliding_frontmatter_key_never_takes_extra_lines_with_it(tmp_path):
+    """`_meta_blocks` glues an unrecognised line to the PRECEDING key, so discarding a
+    colliding key's block deleted those lines from a file the merge then removes."""
+    repo = make_repo(tmp_path)
+    canonical = write(repo / CANON / "t.md", "---\ntags: x\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\ntags: x\n- a\n- b\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    layout.migrate_legacy_facts(repo)
+
+    merged = canonical.read_text(encoding="utf-8")
+    units.parse_frontmatter(merged)
+    assert "- a" in merged and "- b" in merged  # glued lines survive somewhere
+    assert "Legacy bullet arriving in the merge" in merged
+
+
+def test_a_closing_code_fence_is_not_deleted_as_a_duplicate(tmp_path):
+    """The dedup that dropped a `---` dropped a fence for the same reason; both are
+    structure, and neither is the module's to delete."""
+    repo = make_repo(tmp_path)
+    canonical = write(repo / CANON / "t.md", "---\ntopic: t\n---\n" + CANONICAL_BULLET)
+    write(
+        repo / "facts" / "t.md",
+        "---\ntopic: t\n---\n" + LEGACY_BULLET + "```\ncode\n```\n",
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    layout.migrate_legacy_facts(repo)
+
+    merged = canonical.read_text(encoding="utf-8")
+    assert merged.count("```") == 2, "the closing fence was deleted as a duplicate"
+
+
 def test_a_dropped_frontmatter_value_is_named_in_the_note(tmp_path):
     """Both values are knowledge; the note must say which one lost, not just which key."""
     repo = make_repo(tmp_path)

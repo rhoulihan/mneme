@@ -476,7 +476,12 @@ def test_an_unterminated_canonical_header_keeps_the_legacy_header_in_the_body(tm
     lines = (repo / CANON / "deploys.md").read_text(encoding="utf-8").splitlines()
     assert lines[0] == "---"  # untouched: no second block invented above it
     assert "owner: sre" in lines  # carried verbatim, never dropped
-    assert lines.count("topic: deploys") == 1
+    # `topic: deploys` now appears twice — once in the canonical file's own (unterminated)
+    # header and once in the carried legacy header. Deduplicating non-bullet lines was
+    # dropped: it deleted a `---` that closed a block and a fence that closed a code span,
+    # each "a duplicate" by text and structure by role. A repeated line costs a line; a
+    # deleted one costs knowledge, and this module may only make the first trade.
+    assert lines.count("topic: deploys") == 2
     assert any("verbatim" in note for note in result.merged[1:])
 
 
@@ -558,14 +563,25 @@ def test_a_frontmatter_key_the_two_files_disagree_on_is_reported_not_resolved(tm
 
     result = layout.migrate_legacy_facts(repo)
 
-    meta, _body = units.parse_frontmatter((repo / CANON / "deploys.md").read_text(encoding="utf-8"))
-    assert meta["owner"] == "platform"  # canonical wins, as it does for a bullet
-    assert "owner" in result.merged[1] and "differ" in result.merged[1]
+    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    meta, _body = units.parse_frontmatter(text)
+    assert meta["owner"] == "platform"  # canonical wins the HEADER, as it does for a bullet
+    # …but the losing block is not deleted. `_meta_blocks` attaches any line it cannot key
+    # to the preceding key, so discarding a colliding key's block deleted whatever had been
+    # glued to it — from a file this merge then removes. It travels into the body instead.
+    assert "owner: sre" in text
+    assert any("owner" in note and "differ" in note for note in result.merged)
 
 
 def test_an_unterminated_canonical_frontmatter_does_not_wedge_the_merge(tmp_path):
     """`harvest._body_start` raises here, naming no file — right for one fact apply, wrong
-    for a migration wired into every branch flow. Lint (MN010) reports that file by name."""
+    for a migration wired into every branch flow. Lint (MN010) reports that file by name.
+
+    The migration must not wedge — and must not "succeed" by folding readable facts into a
+    file no reader can parse, which is what it used to do: this test asserted only that the
+    legacy bullet's BYTES had arrived, while the index yielded zero rows for that file. The
+    legacy file is kept beside the broken one instead, where its facts stay retrievable.
+    """
     repo = make_repo(tmp_path)
     write(repo / CANON / "deploys.md", "---\ntopic: deploys\n" + bullet("the lb keeps stale") + "\n")
     only_legacy = bullet("blue/green needs a 90 second drain", tag="drain")
@@ -573,10 +589,15 @@ def test_an_unterminated_canonical_frontmatter_does_not_wedge_the_merge(tmp_path
 
     result = layout.migrate_legacy_facts(repo)
 
-    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
-    assert "the lb keeps stale" in text and only_legacy in text
-    assert text.count("topic: deploys") == 1  # the legacy header deduped, not duplicated
-    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"
+    aside = repo / CANON / "deploys.legacy.md"
+    assert aside.is_file()
+    assert only_legacy in aside.read_text(encoding="utf-8")
+    units.parse_frontmatter(aside.read_text(encoding="utf-8"))  # still readable
+    # The broken file is left exactly as it was — nothing buried in it, nothing rewritten.
+    assert (repo / CANON / "deploys.md").read_text(encoding="utf-8") == (
+        "---\ntopic: deploys\n" + bullet("the lb keeps stale") + "\n"
+    )
+    assert any("kept separate" in line for line in result.moved)
     assert not (repo / "facts").exists()
 
 

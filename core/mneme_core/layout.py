@@ -146,7 +146,20 @@ def _migrate_into(
             continue
         if _occupied(dest):
             if name.endswith(".md") and src.is_file() and dest.is_file():
-                result.merged.extend(_merge(repo, src, dest, rel_src, rel_dest))
+                try:
+                    result.merged.extend(_merge(repo, src, dest, rel_src, rel_dest))
+                except _MergeWouldBury as refused:
+                    # The destination cannot hold these facts readably — its own header is
+                    # broken, so anything folded into it stops being retrievable. The file
+                    # keeps its knowledge and its history under a free name beside it.
+                    aside, rel_aside = _aside(canonical, name, rel_canonical, rel_src)
+                    _move(repo, src, aside, rel_src, rel_aside)
+                    result.moved.append(
+                        f"{rel_src} -> {rel_aside} (kept separate: merging into {rel_dest}"
+                        f" would have made {len(refused.lost)} readable fact(s) unreadable,"
+                        f" because {rel_dest} does not parse — fix its frontmatter and"
+                        " merge the two by hand)"
+                    )
                 continue
             if src.is_dir() and dest.is_dir() and not dest.is_symlink():
                 # Both layouts carry this subdirectory. `dest` must be a real directory:
@@ -163,6 +176,26 @@ def _migrate_into(
             dest.parent.mkdir(parents=True, exist_ok=True)
         _move(repo, src, dest, rel_src, rel_dest)
         result.moved.append(f"{rel_src} -> {rel_dest}")
+
+
+def _aside(canonical: Path, name: str, rel_canonical: str, rel_src: str) -> tuple[Path, str]:
+    """A free name beside `name` in the canonical directory, for a file that cannot merge.
+
+    `<stem>.legacy.md`, then `-2`, `-3`… Every candidate goes through `_contained`, because
+    the stem still comes from a legacy filename; the suffix is appended to a name that
+    proof has already accepted, so it cannot introduce a segment of its own.
+    """
+    stem = name[: -len(".md")] if name.endswith(".md") else name
+    for attempt in range(1, 100):
+        suffix = ".legacy" if attempt == 1 else f".legacy-{attempt}"
+        candidate = f"{stem}{suffix}.md"
+        path = _contained(canonical, candidate, rel_src)
+        if not _occupied(path):
+            return path, f"{rel_canonical}/{candidate}"
+    raise MnemeError(
+        f"cannot migrate {rel_src}: {rel_canonical}/{stem}.legacy*.md are all taken —"
+        " reconcile them by hand, then run the migration again"
+    )
 
 
 def _drop_empty(legacy: Path, rel: str) -> None:
@@ -376,6 +409,27 @@ def _reader_accepts(meta_lines: list[str]) -> bool:
     return True
 
 
+def _retrievable(text: str) -> set[str]:
+    """The fact sentences a READER can actually get out of `text`, normalized.
+
+    Not the bullets the bytes contain — the ones `units.parse_frontmatter` plus the bullet
+    grammar yield, because that pair is what lint, the index build, search and the classify
+    bundle all walk. A file whose header the parser rejects yields nothing at all, however
+    many bullets are sitting in it, which is the whole reason this set is the unit of
+    measurement here: knowledge lost is knowledge that stopped being retrievable.
+    """
+    try:
+        _meta, body = units.parse_frontmatter(text)
+    except MnemeError:
+        return set()
+    found: set[str] = set()
+    for line in _line_contents(body):
+        bullet = _bullet(line)
+        if bullet is not None:
+            found.add(_normalized(bullet.text))
+    return found
+
+
 def _meta_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
     """Frontmatter lines grouped under the key each belongs to, `""` for lines under none.
 
@@ -424,8 +478,12 @@ def _carry_meta(
             legacy_value = _normalized(" ".join(block))
             if have[key] != legacy_value:
                 # Both values are knowledge — the same rule that keeps two bullets sharing
-                # a topic key. The canonical one wins the file, but the loser is named in
-                # the note, or the only trace of it is a diff a reviewer has to go find.
+                # a topic key. The canonical one wins the HEADER; the legacy block travels
+                # into the body rather than being discarded, because discarding it deleted
+                # whatever `_meta_blocks` had attached to that key as well (a stray line, a
+                # list under it, a comment a human wrote) from a file this merge then
+                # removes. The note names both values so the reviewer can reconcile them.
+                body.extend(block)
                 differing.append(f"{have[key]} (kept) vs {legacy_value} (from {rel_src})")
             continue
         carried.extend(block)
@@ -455,6 +513,22 @@ def _carry_meta(
             " — reconcile in review"
         )
     return carried, body, notes
+
+
+class _MergeWouldBury(Exception):
+    """Folding the legacy file into this canonical one would cost retrievable knowledge.
+
+    Raised only after the merge has been attempted and measured, because the condition is
+    a property of the RESULT, not of either input: a canonical file whose own header the
+    reader rejects yields nothing, so bullets merged into it are buried — and that happens
+    with a perfectly well-formed legacy file, or one with no header at all, which is why no
+    amount of guarding the legacy side can catch it. The caller moves the file aside
+    instead, where its facts stay readable and a human reconciles the two in the PR.
+    """
+
+    def __init__(self, lost: set[str]):
+        super().__init__("the merge would bury retrievable facts")
+        self.lost = lost
 
 
 def _bullet(line: str) -> units.FactBullet | None:
@@ -495,8 +569,15 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     the end of this function, so a key only it carries has to land in the canonical header
     or it is gone.
     """
-    canonical_meta, canonical_body = _sections(_read_text(dest, rel_dest))
-    legacy_meta, legacy_body = _sections(_read_text(src, rel_src))
+    with _guarded(rel_dest, "cannot read it"):
+        dest_before = dest.read_bytes()  # the exact bytes to put back if the merge is refused
+    dest_text = _read_text(dest, rel_dest)
+    src_text = _read_text(src, rel_src)
+    # Measured on the way in, checked on the way out: the merge is allowed to move a fact
+    # anywhere, and not allowed to make one stop being readable.
+    retrievable_before = _retrievable(dest_text) | _retrievable(src_text)
+    canonical_meta, canonical_body = _sections(dest_text)
+    legacy_meta, legacy_body = _sections(src_text)
     carried_meta: list[str] = []
     new_block: list[str] = []
     meta_notes: list[str] = []
@@ -538,7 +619,6 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     canonical_bullets = [b for b in (_bullet(l) for l in canonical_body) if b is not None]
     texts = {_normalized(b.text) for b in canonical_bullets}
     keys = {b.topic_key for b in canonical_bullets}
-    seen = {_normalized(l) for l in canonical_body if l.strip()}
     carried: list[str] = []
     bullets = 0
     verbatim = 0
@@ -561,17 +641,23 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         # No parser can key this line — an unparseable bullet, or prose someone wrote
         # between the bullets. It travels verbatim: the legacy file is about to be deleted,
         # and a line mneme cannot read is still a line a human meant to keep.
-        norm = _normalized(line)
-        # `---` is structure, not prose: two of them are not a duplicate pair, and dropping
-        # the second one leaves the block it closed unterminated — a deletion this module
-        # forbids itself, arriving disguised as deduplication.
-        if norm != "---" and norm in seen:
-            continue
-        seen.add(norm)
+        # Carried without deduplication, deliberately. Deduping non-bullet lines deleted a
+        # `---` that closed a block and a fence that closed a code span — each one "a
+        # duplicate" by text and structure by role. Bullets have a meaningful identity
+        # (their sentence) and are deduped above; for every other line the module's own
+        # doctrine settles it: a repeated line costs a line, a deleted one costs knowledge.
         carried.append(line)
         verbatim += 1
     if carried or carried_meta or new_block:
         _apply_merge(dest, carried_meta, carried, rel_dest, new_block)
+    lost = retrievable_before - _retrievable(_read_text(dest, rel_dest))
+    if lost:
+        # The one check that cannot be fooled by reasoning about either file's shape. Put
+        # the destination back byte-for-byte and let the caller move the legacy file aside:
+        # a merge is a convenience, and keeping every fact readable is not.
+        with _guarded(rel_dest, "cannot restore it after refusing the merge"):
+            dest.write_bytes(dest_before)
+        raise _MergeWouldBury(lost)
     notes = [f"{rel_src} merged into {rel_dest} ({bullets} bullets)"]
     if divergent:
         notes.append(
