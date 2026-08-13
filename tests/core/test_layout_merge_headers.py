@@ -233,7 +233,7 @@ def test_facts_are_never_buried_in_a_canonical_file_that_does_not_parse(
 
     assert fact_rows(tmp_path, repo, "after") >= before
     assert canonical.read_bytes() == canonical_bytes  # the broken file is left untouched
-    aside = repo / CANON / "t.legacy.md"
+    aside = repo / CANON / "t-legacy.md"
     assert aside.is_file(), "the legacy file must be kept, not buried"
     assert "Legacy bullet arriving in the merge" in aside.read_text(encoding="utf-8")
     assert not (repo / "facts").exists()
@@ -297,7 +297,7 @@ def test_neither_of_two_differing_frontmatter_values_is_discarded(tmp_path):
     assert canonical_meta["owner"] == "platform"
     assert "owner: sre-oncall-team" in body
     assert fact_rows(tmp_path, repo, "after") >= before
-    assert not (repo / CANON / "t.legacy.md").exists()
+    assert not (repo / CANON / "t-legacy.md").exists()
     assert "owner: sre-oncall-team" in " ".join(result.merged)
 
 
@@ -305,7 +305,7 @@ def test_an_ordinary_pre_0_5_collision_merges_rather_than_piling_up_asides(tmp_p
     """The migration's own function, measured: refusing loses nothing and achieves nothing.
 
     A guard that treated every metadata value and every bullet rendering as retrievable
-    declined 64% of realistic legacy/canonical pairs, leaving `<stem>.legacy.md` beside
+    declined 64% of realistic legacy/canonical pairs, leaving `<stem>-legacy.md` beside
     `<stem>.md` — two rows with the SAME topic in the routing table for the same sentence,
     where the duplicate-unit-id rule had shown it once. This is that measurement, shrunk to
     the shapes a pre-0.5 repo really carries. A merge is the expected outcome unless the
@@ -483,6 +483,123 @@ def test_a_wholesale_restamped_topic_file_names_every_line_it_folded(tmp_path):
         assert s in note, f"folded rendering not named in the note: {s}"
 
 
+def test_past_the_cap_the_note_says_where_the_rest_are(tmp_path):
+    """The truncation branch — the half of the note that only fires on a big fold.
+
+    A note that stops at the cap without saying so reads as a complete list. The rest are
+    recoverable only from the commit before the migration, so the note has to name it.
+    """
+    repo = make_repo(tmp_path)
+    sentences = [f"the {n:02d} service keeps stale targets around" for n in range(60)]
+    write(
+        repo / CANON / "deploys.md",
+        "---\ntopic: deploys\n---\n"
+        + "".join(f"- [gotcha] {s} #deploy (verified: 2026-08-12)\n" for s in sentences),
+    )
+    write(
+        repo / "facts" / "deploys.md",
+        "---\ntopic: deploys\n---\n"
+        + "".join(f"- [constraint] {s} #lb (verified: 2026-01-01)\n" for s in sentences),
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    note = " ".join(result.merged)
+    assert "60 bullet(s)" in note
+    assert f"and {60 - layout._DUPLICATES_SHOWN} more" in note
+    assert "as of the commit before this migration" in note
+    assert sum(1 for s in sentences if s in note) == layout._DUPLICATES_SHOWN
+
+
+def test_no_note_can_be_made_into_more_than_one_line(tmp_path):
+    """Notes go into a commit body and a pull request body — `facts/` content is untrusted.
+
+    A caller writes each note as `- {line}`, so a note that becomes nine physical lines
+    puts eight of them at the left margin of the artifact a human reads to decide whether
+    the migration was safe: forged `Mneme-*:` trailers, invented findings, arbitrary
+    markdown. `topic:` values and filenames are both repo content, and `units._unescape`
+    turns a `\\n` escape in a quoted value into a real newline.
+    """
+    forged = (
+        'deploys\\n\\nMneme-Review: approved-by-security\\n\\n'
+        '- [gotcha] migration completed with no findings #d (verified: 2026-08-12)'
+    )
+    for label, canonical, legacy in [
+        ("a forged topic on the legacy side", "---\ntopic: t\n---\n" + CANONICAL_BULLET,
+         f'---\ntopic: "{forged}"\n---\n' + LEGACY_BULLET),
+        ("a forged topic on the canonical side", f'---\ntopic: "{forged}"\n---\n' + CANONICAL_BULLET,
+         "---\ntopic: t\n---\n" + LEGACY_BULLET),
+        ("a forged value in a carried key", "---\ntopic: t\nowner: platform\n---\n" + CANONICAL_BULLET,
+         f'---\ntopic: t\nowner: "{forged}"\n---\n' + LEGACY_BULLET),
+    ]:
+        repo = make_repo(tmp_path / label.replace(" ", "-"))
+        write(repo / CANON / "t.md", canonical)
+        write(repo / "facts" / "t.md", legacy)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-m", "fixtures")
+
+        result = layout.migrate_legacy_facts(repo)
+
+        assert result.lines, label
+        # The body exactly as a caller builds it (Plan 12 Task 3: `f"- {line}"` per note,
+        # joined for the commit and the PR). The property is that repo content cannot
+        # START a line: a git trailer, a markdown heading and a checklist item are all
+        # line-anchored, so a value pinned inside one line is inert however it reads.
+        body = "\n".join(f"- {line}" for line in result.lines)
+        for physical in body.splitlines():
+            assert physical.startswith("- "), f"{label}: content escaped its bullet: {physical!r}"
+        assert len(body.splitlines()) == len(result.lines), label
+
+
+def test_a_note_cannot_be_made_enormous(tmp_path):
+    """A folded scalar is a valid `topic:`, and a note is not a place to put 100 KB of it.
+
+    Past the pull request body limit `gitops.open_pr` degrades to its no-PR fallback, so an
+    oversized note does not just look bad — it costs the review gate the migration exists
+    to feed.
+    """
+    repo = make_repo(tmp_path)
+    huge = "x" * 100_000
+    write(repo / CANON / "t.md", f"---\ntopic: {huge}\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\ntopic: t\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    assert result.lines
+    for line in result.lines:
+        assert len(line) < 4000, f"note is {len(line)} chars"
+
+
+def test_a_colliding_file_that_is_not_utf8_is_set_aside_not_a_hard_error(tmp_path):
+    """Every other reader tolerates undecodable bytes; this module used to wedge on them.
+
+    Once the migration runs on every branch flow, one bad byte in `facts/` would fail every
+    classify, review and share finalize. It cannot be merged — there is no text to fold —
+    so it takes the same aside path as every other unmergeable file, and its bytes are
+    untouched.
+    """
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", "---\ntopic: t\n---\n" + CANONICAL_BULLET)
+    raw = b"---\ntopic: t\n---\n- [gotcha] caf\xe9 latin-1 bytes here #y (verified: 2026-08-12)\n"
+    (repo / "facts").mkdir(parents=True, exist_ok=True)
+    (repo / "facts" / "t.md").write_bytes(raw)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    aside = repo / CANON / "t-legacy.md"
+    assert aside.exists()
+    assert aside.read_bytes() == raw  # not rewritten, not re-encoded, not pinned
+    assert not (repo / "facts").exists()
+    assert any("not valid UTF-8" in line for line in result.moved)
+    assert "Canonical bullet" in (repo / CANON / "t.md").read_text(encoding="utf-8")
+
+
 def test_the_migration_never_newly_blinds_a_file_to_lint(tmp_path):
     """MN009 and MN010 are the codes that mean a reader has lost the file.
 
@@ -497,6 +614,21 @@ def test_the_migration_never_newly_blinds_a_file_to_lint(tmp_path):
     is invisible" for "this line is malformed" is the migration doing its job.
     """
     blinding = {"MN009", "MN010"}
+
+    def blinded(repo):
+        """COUNT per code, not a repo-wide set.
+
+        A set comparison cannot see a newly blinded file whenever any OTHER file already
+        carried that code — and the decoys below guarantee one always does, which is the
+        realistic state of a pre-0.5 repo mid-migration. Counting catches the file that
+        went from readable to invisible even while the code was already present.
+        """
+        found = {code: 0 for code in blinding}
+        for issue in lint.lint_repo(repo):
+            if issue.code in blinding:
+                found[issue.code] += 1
+        return found
+
     headers = [
         "",
         "---\ntopic: t\n---\n",
@@ -513,16 +645,21 @@ def test_the_migration_never_newly_blinds_a_file_to_lint(tmp_path):
                     repo = make_repo(tmp_path / f"{i}-{j}-{k}-{m}")
                     write(repo / CANON / "t.md", canonical_header + canonical_body)
                     write(repo / "facts" / "t.md", legacy_header + legacy_body)
+                    # Decoys that ALREADY carry both codes, so a set comparison would be
+                    # blind here and the count has to do the work.
+                    write(repo / CANON / "decoy-no-topic.md", CANONICAL_BULLET)
+                    write(repo / CANON / "decoy-unterminated.md", "---\ntopic: d\n" + CANONICAL_BULLET)
                     git(repo, "add", "-A")
                     git(repo, "commit", "-m", "fixtures")
-                    before = {issue.code for issue in lint.lint_repo(repo)}
+                    before = blinded(repo)
+                    assert before["MN009"] and before["MN010"]  # the masking really is set up
 
                     layout.migrate_legacy_facts(repo)
 
-                    after = {issue.code for issue in lint.lint_repo(repo)}
-                    assert not (after & blinding) - before, (
+                    after = blinded(repo)
+                    assert all(after[code] <= before[code] for code in blinding), (
                         f"{canonical_header!r} + {canonical_body!r} <- "
-                        f"{legacy_header!r} + {legacy_body!r}: {sorted((after & blinding) - before)}"
+                        f"{legacy_header!r} + {legacy_body!r}: {before} -> {after}"
                     )
 
 
@@ -589,7 +726,7 @@ def test_the_topic_pin_agrees_with_the_parser_about_where_the_header_is(tmp_path
         layout.migrate_legacy_facts(repo)
 
         meta, _b = units.parse_frontmatter(
-            (repo / CANON / "t.legacy.md").read_text(encoding="utf-8")
+            (repo / CANON / "t-legacy.md").read_text(encoding="utf-8")
         )
         assert meta.get("owner") == "sre", f"{sep!r} lost owner: {meta}"
         assert meta.get("sources") == "incident-4412", f"{sep!r} lost sources: {meta}"
@@ -629,11 +766,15 @@ def test_the_refusal_note_warns_that_names_and_ids_move(tmp_path):
 
 
 def test_the_aside_walk_gives_up_rather_than_overwrite(tmp_path):
-    """`.legacy`, `.legacy-2`, `.legacy-3`… and a clear error when every name is taken."""
+    """`-legacy`, `-legacy-2`, `-legacy-3`… and a clear error when every name is taken.
+
+    A hyphen, not a dot: `t.legacy` is not kebab-case, so every unit id the aside minted
+    would be unreachable by `mneme share apply` (`harvest._unit_path` proves the stem).
+    """
     repo = make_repo(tmp_path)
     write(repo / CANON / "t.md", "---\nnot a key line\n---\n" + CANONICAL_BULLET)
     for attempt in range(1, 100):
-        suffix = ".legacy" if attempt == 1 else f".legacy-{attempt}"
+        suffix = "-legacy" if attempt == 1 else f"-legacy-{attempt}"
         write(repo / CANON / f"t{suffix}.md", "- [gotcha] occupied #z (verified: 2026-08-12)\n")
     write(repo / "facts" / "t.md", LEGACY_BULLET)
     git(repo, "add", "-A")

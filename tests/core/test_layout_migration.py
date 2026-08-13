@@ -112,7 +112,7 @@ def test_a_restamped_retagged_copy_of_a_canonical_bullet_merges_and_the_note_nam
     `index_tree` stores the first and reports the second as a duplicate. The legacy
     rendering was therefore never retrievable while the two files coexisted, and folding it
     away takes nothing from a reader — an earlier round refused this merge to protect a row
-    the index did not have, which turned two thirds of ordinary collisions into `.legacy`
+    the index did not have, which turned two thirds of ordinary collisions into `-legacy`
     asides and put two rows with the SAME topic in the routing table.
 
     What the legacy line still has is a human reader, so the note writes its rendering out
@@ -129,7 +129,7 @@ def test_a_restamped_retagged_copy_of_a_canonical_bullet_merges_and_the_note_nam
 
     result = layout.migrate_legacy_facts(repo)
 
-    assert not (repo / CANON / "deploys.legacy.md").exists()  # merged, not kept apart
+    assert not (repo / CANON / "deploys-legacy.md").exists()  # merged, not kept apart
     assert not (repo / "facts").exists()
     canonical = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
     assert "[gotcha]" in canonical and "#deploy" in canonical
@@ -499,7 +499,7 @@ def test_readable_legacy_metadata_is_not_buried_in_an_unterminated_canonical_fil
 
     result = layout.migrate_legacy_facts(repo)
 
-    aside = repo / CANON / "deploys.legacy.md"
+    aside = repo / CANON / "deploys-legacy.md"
     assert aside.is_file(), "the readable legacy file must be kept, not buried"
     after, _body = units.parse_frontmatter(aside.read_text(encoding="utf-8"))  # parses
     assert set(before) <= set(after)  # every key that was readable still is
@@ -598,7 +598,7 @@ def test_a_frontmatter_key_the_two_files_disagree_on_is_reported_not_resolved(tm
     assert "owner: sre" in body
     note = " ".join(result.merged)
     assert "owner: platform (kept)" in note and "owner: sre" in note
-    assert not (repo / CANON / "deploys.legacy.md").exists()
+    assert not (repo / CANON / "deploys-legacy.md").exists()
 
 
 def test_an_unterminated_canonical_frontmatter_does_not_wedge_the_merge(tmp_path):
@@ -617,7 +617,7 @@ def test_an_unterminated_canonical_frontmatter_does_not_wedge_the_merge(tmp_path
 
     result = layout.migrate_legacy_facts(repo)
 
-    aside = repo / CANON / "deploys.legacy.md"
+    aside = repo / CANON / "deploys-legacy.md"
     assert aside.is_file()
     assert only_legacy in aside.read_text(encoding="utf-8")
     units.parse_frontmatter(aside.read_text(encoding="utf-8"))  # still readable

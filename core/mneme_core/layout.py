@@ -152,13 +152,24 @@ def _migrate_into(
         if _occupied(dest):
             if name.endswith(".md") and src.is_file() and dest.is_file():
                 try:
-                    result.merged.extend(_merge(repo, src, dest, rel_src, rel_dest))
+                    result.merged.extend(
+                        _normalized(note)
+                        for note in _merge(repo, src, dest, rel_src, rel_dest)
+                    )
                 except _MergeWouldBury as refused:
                     # The destination cannot hold these facts readably — its own header is
                     # broken, so anything folded into it stops being retrievable. The file
                     # keeps its knowledge and its history under a free name beside it.
                     aside, rel_aside = _aside(canonical, name, rel_canonical, rel_src)
-                    before = _readable(src, _read_text(src, rel_src))
+                    # `_decode`, not `_read_text`: one reason a merge is refused is that
+                    # this very file is not UTF-8, and the refusal path may not raise on
+                    # the file it was invoked to rescue.
+                    src_text = _decode(src, rel_src)
+                    before = (
+                        _readable(src, src_text)
+                        if src_text is not None
+                        else _Readable({}, "", (), frozenset(), False)
+                    )
                     pinned = _pin_stem_topic(src, Path(name).stem, rel_src)
                     _move(repo, src, aside, rel_src, rel_aside)
                     # The refusal path writes (the pin) and renames (the move), and a
@@ -167,29 +178,39 @@ def _migrate_into(
                     # that labels facts is not, and the pin exists to hold it. Measured
                     # rather than assumed, so an unpinnable file is REPORTED as having
                     # moved its topic instead of quietly doing it.
-                    after = _readable(aside, _read_text(aside, rel_aside))
+                    moved_text = _decode(aside, rel_aside)
+                    after = (
+                        _readable(aside, moved_text)
+                        if moved_text is not None
+                        else _Readable({}, "", (), frozenset(), False)
+                    )
                     stranded = _labelled([before]) - _labelled([after])
                     result.moved.append(
-                        f"{rel_src} -> {rel_aside} (kept separate: merging into {rel_dest}"
-                        f" would have cost {len(refused.lost)} readable item(s)"
-                        f" — {_describe_lost(refused.lost)} —"
-                        " fix the two by hand and merge them. Note the saved file's unit ids"
-                        f" move with its name, from facts/{name[:-3]}#… to"
-                        f" facts/{rel_aside.rsplit('/', 1)[-1][:-3]}#…"
-                        + (
-                            f"; `topic: {Path(name).stem}` was written into it first, so the"
-                            " topic its old filename gave it survives the rename"
-                            if pinned
-                            else ""
+                        _normalized(
+                            f"{_safe(rel_src)} -> {_safe(rel_aside)} (kept separate: merging"
+                            f" into {_safe(rel_dest)} would have cost {len(refused.lost)}"
+                            f" readable item(s) — {_describe_lost(refused.lost)} —"
+                            " fix the two by hand and merge them. Note the saved file's unit"
+                            f" ids move with its name, from facts/{_safe(name[:-3])}#… to"
+                            f" facts/{_safe(rel_aside.rsplit('/', 1)[-1][:-3])}#…"
+                            + (
+                                f"; `topic: {_safe(Path(name).stem)}` was written into it"
+                                " first, so the topic its old filename gave it survives the"
+                                " rename"
+                                if pinned
+                                else ""
+                            )
+                            + (
+                                f". Its facts moved to topic “{_safe(after.topic)}”: the"
+                                " topic"
+                                f" “{'”, “'.join(_safe(t) for t in sorted(stranded))}” came"
+                                " from its filename and could not be written into its"
+                                " header — set `topic:` by hand"
+                                if stranded
+                                else ""
+                            )
+                            + ")"
                         )
-                        + (
-                            f". Its facts moved to topic “{after.topic}”: the topic"
-                            f" “{'”, “'.join(sorted(stranded))}” came from its filename and"
-                            " could not be written into its header — set `topic:` by hand"
-                            if stranded
-                            else ""
-                        )
-                        + ")"
                     )
                 continue
             if src.is_dir() and dest.is_dir() and not dest.is_symlink():
@@ -206,25 +227,31 @@ def _migrate_into(
         with _guarded(rel_src, f"cannot create {rel_canonical}/"):
             dest.parent.mkdir(parents=True, exist_ok=True)
         _move(repo, src, dest, rel_src, rel_dest)
-        result.moved.append(f"{rel_src} -> {rel_dest}")
+        result.moved.append(f"{_safe(rel_src)} -> {_safe(rel_dest)}")
 
 
 def _aside(canonical: Path, name: str, rel_canonical: str, rel_src: str) -> tuple[Path, str]:
     """A free name beside `name` in the canonical directory, for a file that cannot merge.
 
-    `<stem>.legacy.md`, then `-2`, `-3`… Every candidate goes through `_contained`, because
+    `<stem>-legacy.md`, then `-2`, `-3`… Every candidate goes through `_contained`, because
     the stem still comes from a legacy filename; the suffix is appended to a name that
     proof has already accepted, so it cannot introduce a segment of its own.
+
+    A HYPHEN, not a dot. Every unit id this file mints is `facts/<stem>#<key>`, and the
+    write rail proves that stem is kebab-case (`harvest.apply_fact` -> `_fact_path` ->
+    `_unit_path`), so `t.legacy` would mint ids that `mneme share apply` can never target —
+    the migration deliberately minting unaddressable knowledge, on the one third of
+    collisions it declines. `t-legacy` reads the same and stays writable.
     """
     stem = name[: -len(".md")] if name.endswith(".md") else name
     for attempt in range(1, 100):
-        suffix = ".legacy" if attempt == 1 else f".legacy-{attempt}"
+        suffix = "-legacy" if attempt == 1 else f"-legacy-{attempt}"
         candidate = f"{stem}{suffix}.md"
         path = _contained(canonical, candidate, rel_src)
         if not _occupied(path):
             return path, f"{rel_canonical}/{candidate}"
     raise MnemeError(
-        f"cannot migrate {rel_src}: {rel_canonical}/{stem}.legacy*.md are all taken —"
+        f"cannot migrate {rel_src}: {rel_canonical}/{stem}-legacy*.md are all taken —"
         " reconcile them by hand, then run the migration again"
     )
 
@@ -240,7 +267,9 @@ def _pin_stem_topic(path: Path, stem: str, rel: str) -> bool:
     the header the reader sees is one it can read (a file it already rejects has no
     retrievable topic to preserve).
     """
-    text = _read_text(path, rel)
+    text = _decode(path, rel)
+    if text is None:
+        return False  # not UTF-8: no header to pin a topic into, and nothing readable to lose
     try:
         meta, _body = units.parse_frontmatter(text)
     except MnemeError:
@@ -408,6 +437,32 @@ def _remove(repo: Path, src: Path, rel_src: str) -> None:
 
 def _normalized(line: str) -> str:
     return " ".join(line.split())
+
+
+# How much of one repo-derived value a note may carry. Long enough for a real topic, a
+# real path and a real fact sentence; short enough that a note stays a note.
+_NOTE_VALUE_MAX = 160
+
+
+def _safe(value: object) -> str:
+    """A value read out of the repo, made fit to go into a commit body and a PR body.
+
+    Every note this module returns is spliced into the commit body and, through
+    `gitops.open_pr`, into the pull request body — the artifact a human reads to decide
+    whether the migration was safe. A `topic:` value and a filename are both repo content,
+    and this module's own docstring is explicit that `facts/` is untrusted: a contributor,
+    or a merged pull request, can commit `topic: "deploys\\n\\nMneme-Review: approved"`,
+    and `units._unescape` turns that `\\n` into a real newline. One note then becomes nine
+    physical lines carrying a forged trailer and an invented finding — the `- ` prefix a
+    caller puts on a note covers only the first of them.
+
+    Collapsing the whitespace is what `_carry_meta` already did to a value before putting
+    it in a note; the cap is what a folded scalar needs, since a 105 KB `topic: >` produced
+    a 208 KB note (the value appears twice), past the pull request body limit, which
+    degrades `open_pr` to its no-PR fallback and loses the review gate entirely.
+    """
+    text = _normalized(str(value))
+    return text if len(text) <= _NOTE_VALUE_MAX else text[: _NOTE_VALUE_MAX - 1] + "…"
 
 
 def _line_contents(text: str) -> list[str]:
@@ -627,12 +682,12 @@ def _lost(before: list[_Readable], after: list[_Readable]) -> set[tuple[str, str
         if rows_after.get(uid) != row:
             lost.add(("fact", _render(row)))
     for topic in _labelled(before) - _labelled(after):
-        lost.add(("topic", f"topic “{topic}”, which labels facts in the routing table"))
+        lost.add(("topic", f"topic “{_safe(topic)}”, which labels facts in the routing table"))
     lines_after = frozenset().union(*(f.lines for f in after)) if after else frozenset()
     for f in before:
         for line in f.header:
             if line.strip() and _normalized(line) not in lines_after:
-                lost.add(("frontmatter", line.strip()))
+                lost.add(("frontmatter", _safe(line)))
     return lost
 
 
@@ -645,12 +700,12 @@ def _render(row: tuple) -> str:
     was plainly still in the file.
     """
     topic, text, category, tags, verified = row
-    rendered = f"“{text}” [{category}]"
+    rendered = f"“{_safe(text)}” [{_safe(category)}]"
     if tags:
-        rendered += " " + " ".join(f"#{t}" for t in tags)
+        rendered += " " + " ".join(f"#{_safe(t)}" for t in tags)
     if verified:
-        rendered += f" (verified: {verified})"
-    return f"{rendered} under topic “{topic}”"
+        rendered += f" (verified: {_safe(verified)})"
+    return f"{rendered} under topic “{_safe(topic)}”"
 
 
 def _meta_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
@@ -722,7 +777,9 @@ def _carry_meta(
                 # list under it, a comment a human wrote) from a file this merge then
                 # removes. The note names both values so the reviewer can reconcile them.
                 body.extend(block)
-                differing.append(f"{have[key]} (kept) vs {legacy_value} (from {rel_src})")
+                differing.append(
+                    f"{_safe(have[key])} (kept) vs {_safe(legacy_value)} (from {_safe(rel_src)})"
+                )
             continue
         carried.extend(block)
         keys.append(key)
@@ -739,15 +796,17 @@ def _carry_meta(
     notes: list[str] = []
     if demoted:
         notes.append(
-            f"{rel_src}: its header is not readable as frontmatter alongside {rel_dest}'s,"
+            f"{_safe(rel_src)}: its header is not readable as frontmatter alongside {_safe(rel_dest)}'s,"
             " so those lines travelled into the body — nothing was dropped; promote them"
             " in review if they were meant as metadata"
         )
     elif keys:
-        notes.append(f"{rel_src}: frontmatter key(s) carried over: {', '.join(keys)}")
+        notes.append(
+            f"{_safe(rel_src)}: frontmatter key(s) carried over: {', '.join(_safe(k) for k in keys)}"
+        )
     if differing:
         notes.append(
-            f"{rel_src}: frontmatter differs from {rel_dest} — {'; '.join(differing)}"
+            f"{_safe(rel_src)}: frontmatter differs from {_safe(rel_dest)} — {'; '.join(differing)}"
             " — reconcile in review"
         )
     return carried, body, notes
@@ -799,6 +858,28 @@ def _read_text(path: Path, rel: str) -> str:
         raise MnemeError(f"cannot migrate {rel}: {e}") from e
 
 
+def _decode(path: Path, rel: str) -> str | None:
+    """The file's text, or None when it is not UTF-8 at all.
+
+    A `.md` under `facts/` that is not valid UTF-8 is repo content like any other, and
+    every other reader tolerates it: `build._read_unit_text` records it in `skipped`,
+    `classify._fact_entries` notes it and continues. Only this module used to raise, which
+    once the migration runs on every branch flow would wedge every classify, review and
+    share finalize on one undecodable byte. It cannot be MERGED — there is no text to fold
+    — so it takes the same aside path as every other file this module cannot merge.
+
+    An OSError still raises: a permission or I/O failure is a problem with the machine, not
+    a property of the file, and guessing past it is how a migration reports "moved" for a
+    file it never read.
+    """
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    except OSError as e:
+        raise MnemeError(f"cannot migrate {rel}: {e}") from e
+
+
 def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> list[str]:
     """Fold the legacy file's lines into the canonical one, then remove the legacy file.
 
@@ -822,8 +903,13 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     """
     with _guarded(rel_dest, "cannot read it"):
         dest_before = dest.read_bytes()  # the exact bytes to put back if the merge is refused
-    dest_text = _read_text(dest, rel_dest)
-    src_text = _read_text(src, rel_src)
+    dest_text = _decode(dest, rel_dest)
+    src_text = _decode(src, rel_src)
+    if src_text is None or dest_text is None:
+        # Nothing to fold, in either direction: refused like any other unmergeable pair, so
+        # the legacy file keeps its bytes and its history beside the canonical one.
+        unreadable = rel_src if src_text is None else rel_dest
+        raise _MergeWouldBury({("bytes", f"{_safe(unreadable)} is not valid UTF-8")})
     # Measured on the way in, checked on the way out: the merge is allowed to move a fact
     # anywhere, and not allowed to make one stop being readable. The canonical file goes
     # FIRST, because that is the order `units.fact_files` yields and therefore the order
@@ -851,14 +937,14 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         if _reader_accepts(legacy_meta):
             new_block = legacy_meta
             meta_notes.append(
-                f"{rel_src}: {rel_dest} had no frontmatter — the legacy header became its block"
+                f"{_safe(rel_src)}: {_safe(rel_dest)} had no frontmatter — the legacy header became its block"
             )
         else:
             legacy_body = legacy_meta + legacy_body
             demoted_meta = len(legacy_meta)
             meta_notes.append(
-                f"{rel_src}: its header is not readable as frontmatter, so those lines"
-                f" travelled into the body of {rel_dest} instead of becoming a block —"
+                f"{_safe(rel_src)}: its header is not readable as frontmatter, so those lines"
+                f" travelled into the body of {_safe(rel_dest)} instead of becoming a block —"
                 " every line is there as prose; promote them in review if they were meant"
                 " as metadata. Its two `---` delimiters are not carried: they delimited a"
                 " block that no longer exists, and a stray pair in a body is read as a"
@@ -933,14 +1019,14 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         with _guarded(rel_dest, "cannot restore it after refusing the merge"):
             dest.write_bytes(dest_before)
         raise _MergeWouldBury(lost)
-    notes = [f"{rel_src} merged into {rel_dest} ({bullets} bullets)"]
+    notes = [f"{_safe(rel_src)} merged into {_safe(rel_dest)} ({bullets} bullets)"]
     if divergent:
         notes.append(
-            f"{rel_src}: {divergent} bullet(s) share a topic key with a canonical bullet"
+            f"{_safe(rel_src)}: {divergent} bullet(s) share a topic key with a canonical bullet"
             " — both kept, reconcile them in review"
         )
     if verbatim:
-        notes.append(f"{rel_src}: {verbatim} unparsed line(s) carried over verbatim")
+        notes.append(f"{_safe(rel_src)}: {verbatim} unparsed line(s) carried over verbatim")
     if duplicates:
         # Written out in full up to a cap, and the cap says where the rest are. This note
         # IS the record: the fold is sound because the index never held these renderings
@@ -948,15 +1034,15 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         # remaining view of a folded `#tag` or `verified:` stamp is this line. Truncating
         # at three bit hardest in the very shape this is for — a topic file copied and
         # re-verified wholesale, where every bullet folds and all but three vanish.
-        shown = "; ".join(duplicates[:_DUPLICATES_SHOWN])
+        shown = "; ".join(_safe(d) for d in duplicates[:_DUPLICATES_SHOWN])
         more = (
             f"; and {len(duplicates) - _DUPLICATES_SHOWN} more — the full set is in"
-            f" {rel_src} as of the commit before this migration"
+            f" {_safe(rel_src)} as of the commit before this migration"
             if len(duplicates) > _DUPLICATES_SHOWN
             else ""
         )
         notes.append(
-            f"{rel_src}: {len(duplicates)} bullet(s) already said what a canonical bullet"
+            f"{_safe(rel_src)}: {len(duplicates)} bullet(s) already said what a canonical bullet"
             " says — the canonical line kept. Their own rendering is folded away with them,"
             f" so it is written out here: {shown}{more}"
         )
