@@ -135,6 +135,96 @@ def test_a_fact_that_only_moves_is_preserved(tmp_path):
     assert not any(p.startswith("facts/") for p in tree)
 
 
+def test_de_bulleting_a_fact_in_place_is_refused(tmp_path):
+    """The gate's own directory is not an integration destination.
+
+    The audit's bypass: rewrite the bullet as prose *inside the fact file*. The file lives
+    under `skills/`, so it counted as "a skill file the pass changed" and the sentence was
+    'accounted for' — while `units.fact_files` + `parse_bullet_line` (lint, the index build,
+    search, the classify bundle) no longer saw a bullet there at all.
+    """
+    home, target = make_kb(tmp_path)
+    branch = classify.begin(home, target)
+    (target / units.FACTS_CANONICAL / "deploys.md").write_text(
+        f"---\ntopic: deploys\n---\nretired note: {DEPLOY_FACT} (was #deploy)\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MnemeError) as exc:
+        classify.finalize(home, target, push=False)
+
+    message = str(exc.value)
+    assert DEPLOY_FACT[:80] in message
+    assert message.endswith(LOSS_SENTENCE)
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)
+    assert gitops.git(target, "branch", "--list", branch) == ""
+    # rolled back to the bullet main carries, not the prose
+    text = (target / units.FACTS_CANONICAL / "deploys.md").read_text(encoding="utf-8")
+    assert f"- [gotcha] {DEPLOY_FACT}" in text
+
+
+def test_moving_a_fact_into_a_facts_subdirectory_is_refused(tmp_path):
+    """`units.fact_files` globs `*.md` — one directory deep is out of every reader's sight."""
+    home, target = make_kb(tmp_path)
+    classify.begin(home, target)
+    facts = target / units.FACTS_CANONICAL
+    archive = facts / "archive"
+    archive.mkdir()
+    (archive / "deploys.md").write_text(
+        (facts / "deploys.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (facts / "deploys.md").unlink()
+
+    with pytest.raises(MnemeError) as exc:
+        classify.finalize(home, target, push=False)
+
+    assert DEPLOY_FACT[:80] in str(exc.value)
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)
+    assert not (facts / "archive").exists()
+
+
+def test_the_legacy_migration_cannot_launder_a_hidden_fact(tmp_path):
+    """Same bypass through the legacy layout: the migration lifts `facts/archive/` too.
+
+    `_migrate_legacy_facts` runs before the gate, so a fact tucked into a subdirectory of
+    the top-level layout arrives under `skills/` — and used to be read as integration text.
+    """
+    home, target = make_kb(tmp_path, legacy=True)
+    classify.begin(home, target)
+    legacy = target / "facts"
+    (legacy / "archive").mkdir()
+    (legacy / "archive" / "deploys.md").write_text(
+        (legacy / "deploys.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (legacy / "deploys.md").unlink()
+
+    with pytest.raises(MnemeError) as exc:
+        classify.finalize(home, target, push=False)
+
+    assert DEPLOY_FACT[:80] in str(exc.value)
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)
+    assert (legacy / "deploys.md").is_file()
+
+
+def test_review_finalize_refuses_a_de_bulleted_fact_too(tmp_path):
+    """The rail is shared, so extraction from a stranger's PR cannot de-bullet ours."""
+    home, target = make_kb(tmp_path)
+    classify.review_begin(home, target)
+    (target / units.FACTS_CANONICAL / "queues.md").write_text(
+        f"---\ntopic: queues\n---\nnote: {QUEUE_FACT}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(MnemeError) as exc:
+        classify.review_finalize(home, target, push=False)
+
+    assert QUEUE_FACT[:80] in str(exc.value)
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)
+
+
 def test_instructions_never_ask_for_a_pass_finalize_would_refuse():
     """The librarian contract has to be executable: retiring a fact still writes it down.
 

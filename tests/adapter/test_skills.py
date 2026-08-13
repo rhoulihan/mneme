@@ -123,6 +123,16 @@ def test_review_never_acts_without_per_pr_approval():
     assert "/mneme:register" in body
 
 
+def test_review_surfaces_deletions_and_writes_where_the_repo_keeps_facts():
+    # Two things the rails hand the skill that its prose has to actually use: the `removed`
+    # list (a PR that deletes knowledge is not "clean") and the bundle's own fact
+    # destination (hardcoding the canonical path breaks every legacy-layout repo).
+    body = (SKILLS_DIR / "review" / "SKILL.md").read_text(encoding="utf-8")
+    assert "removed" in body
+    assert "facts_dir" in body
+    assert "fact_files" in body
+
+
 def test_review_takes_no_argument():
     # Same rule as classify (spec §7.7): the current directory IS the argument.
     meta, body = units.parse_frontmatter(

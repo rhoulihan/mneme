@@ -14,14 +14,31 @@ plugins scaffolded by `mneme new` do carry their own independent versions.
   on the repo you are standing in (the current directory is the argument, same
   resolution and failure message as classify). `mneme review triage` lists every
   open pull request through `gh` and annotates every fact bullet each one ADDS:
-  `duplicate` (the bullet's semantic hash already exists in the repo, or an
-  earlier-listed PR added it — cross-PR dedup included), `declined` (a human
-  already rejected that knowledge; the ledger remembers), `possibly-integrated`
-  (the index's nearest existing unit, named for you to judge), or `new`.
+  `duplicate` (the bullet says what the repo — or an earlier-listed PR — already
+  says, cross-PR dedup included, or it collides with an existing unit id),
+  `declined` (a human already rejected that knowledge; the ledger remembers),
+  `possibly-integrated` (the index's nearest existing unit, named for you to
+  judge), or `new`. Identity is the bullet's **text**: the `[category]` prefix,
+  the `#tags`, and the `verified:` stamp are all contributor-controlled, so
+  keying on the rendered line let a one-character retag re-surface knowledge a
+  human had already declined.
   Diff parsing is read-only and tolerant: malformed bullets, non-fact files,
   CRLF, and binary noise never crash a triage — unparseable additions come back
   in a per-PR `skipped` list, and added `skills/*/SKILL.md` files are surfaced
   for human eyes rather than dedup'd.
+- **A PR that deletes knowledge is surfaced too** — triage was addition-only, so
+  a pull request removing forty fact bullets produced an empty annotation set and
+  read as clean. Each PR now carries a `removed` list (with `moved` marking a
+  bullet re-added elsewhere in the same PR), and the maintainer contract says a
+  deletion needs a reason before a merge is recommended.
+- **A PR's content can never pose as a PR's structure** — a diff renders added
+  lines with a `+` prefix, so a file whose content is `++ b/<path>` arrives as
+  `+++ b/<path>`. Triage now walks hunks (`@@ -a,b +c,d @@`) instead of scanning
+  line by line: inside a hunk nothing is a file header, so a pull request can no
+  longer attribute fabricated fact bullets or skill additions to files it never
+  touched — nor poison cross-PR dedup so an honest later PR looks duplicate.
+  Bullet lines are also length-capped, and the bullet grammar is linear rather
+  than quadratic, so no single PR line can stall the command.
 - **Labels are evidence; the human decides** — the agent proposes exactly one
   verdict per PR (merge / close-as-duplicate naming the covering unit ids /
   extract-new-facts) and executes nothing without your explicit approval for
@@ -33,17 +50,24 @@ plugins scaffolded by `mneme new` do carry their own independent versions.
   generalized to a branch prefix: new facts worth keeping are written on a
   `mneme/review-*` branch, knowledge-index regenerated, lint and secret scan
   gated over changed files, committed with provenance and delivered as mneme's
-  own pull request. Classify and review share the active-branch guard, so the
-  two passes can never interleave on one repo, and `main` is still never
-  written.
+  own pull request. The triage bundle names the write destination (`fact_files`
+  for a topic that exists, `facts_dir` for a new one) so extraction follows the
+  repo's own fact layout, and a repo whose two layouts carry the same filename is
+  refused *before* finalize touches anything — the approved work stays on the
+  branch to be fixed instead of being rolled back away. Classify and review share
+  the active-branch guard, so the two passes can never interleave on one repo,
+  and `main` is still never written.
 - **Facts can no longer vanish at finalize** — "never delete knowledge" was
   enforced only by instruction prose, and a pass that deleted a fact file
   without integrating its content used to finalize successfully. Both rails now
   compute the fact bullets on `main` before committing and require each one to
-  be accounted for on the branch — still a bullet somewhere, or its text carried
-  verbatim into a skill file the branch changed. Unaccounted bullets fail the
-  finalize with each lost line named, and the existing rollback restores the
-  repo.
+  be accounted for on the branch — still a parseable bullet in a file the readers
+  actually sweep, or its text carried verbatim into a skill file the branch
+  changed. The generated `skills/knowledge-index/` (which is where the canonical
+  facts directory lives) is not an integration destination, so a bullet cannot be
+  de-bulleted into prose in place, or hidden in a `facts/archive/` subdirectory,
+  and still count as preserved. Unaccounted bullets fail the finalize with each
+  lost line named, and the existing rollback restores the repo.
 - **Untrusted content is framed as data** — the classify bundle, the review
   bundle, and the distiller prompt all carry verbatim repo, staging, and PR text
   (skill descriptions, fact bullets, PR titles) inside an instruction context.

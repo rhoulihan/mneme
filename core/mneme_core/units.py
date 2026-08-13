@@ -160,11 +160,15 @@ def serialize_frontmatter(meta: dict, body: str) -> str:
 
 FACT_CATEGORIES = frozenset({"decision", "constraint", "gotcha", "runbook-note", "reference"})
 
-_BULLET_RE = re.compile(
-    r"^- \[(?P<category>[a-z-]+)\]\s+(?P<text>.+?)"
-    r"(?P<tags>(?:\s+#[\w-]+)*)"
-    r"(?:\s+\(verified:\s*(?P<verified>\d{4}-\d{2}-\d{2})\))?\s*$"
-)
+# A bullet is parsed as a linear head match plus two right-to-left tail walks, NOT as one
+# regex. The single pattern this replaces paired a lazy `(?P<text>.+?)` with a repeated
+# `(?:\s+#[\w-]+)*` group, which backtracks quadratically: measured on a bullet carrying
+# k trailing `#tag`s, 20 KB took 1.2 s and 160 KB took 76 s — and bullet lines arrive from
+# pull-request diffs, where a contributor picks the length. Everything below is O(len).
+_BULLET_HEAD_RE = re.compile(r"^- \[(?P<category>[a-z-]+)\]\s+(?P<rest>\S.*)$")
+_TAG_TOKEN_RE = re.compile(r"#[\w-]+\Z")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+_VERIFIED_OPEN = "(verified:"
 
 
 def normalize_topic_key(text: str) -> str:
@@ -187,16 +191,60 @@ class FactBullet:
         return normalize_topic_key(self.text)
 
 
+def _split_verified(rest: str) -> tuple[str, str | None]:
+    """Peel a trailing `(verified: YYYY-MM-DD)` stamp off the bullet's tail.
+
+    Index arithmetic rather than a search: `\\s+\\(verified:` scanned right-to-left over a
+    long run of whitespace is itself quadratic, which is the class of bug this replaces.
+    """
+    if not rest.endswith(")"):
+        return rest, None
+    open_at = rest.rfind(_VERIFIED_OPEN)
+    # The stamp must be preceded by whitespace and follow at least one character of text.
+    if open_at <= 0 or not rest[open_at - 1].isspace():
+        return rest, None
+    inner = rest[open_at + len(_VERIFIED_OPEN) : -1]
+    date = inner.lstrip()
+    if not _ISO_DATE_RE.fullmatch(date):
+        return rest, None
+    return rest[:open_at].rstrip(), date
+
+
+def _split_tags(rest: str) -> tuple[str, list[str]]:
+    """Peel trailing `#tag` tokens off the bullet's tail, right to left."""
+    tags: list[str] = []
+    end = len(rest)
+    while True:
+        stop = end
+        while stop > 0 and rest[stop - 1].isspace():
+            stop -= 1
+        start = stop
+        while start > 0 and not rest[start - 1].isspace():
+            start -= 1
+        # `start == 0` means the token IS the whole remaining text: a bullet is text with
+        # tags after it, never tags alone, so that token stays text.
+        if start == 0 or start == stop:
+            break
+        if not _TAG_TOKEN_RE.fullmatch(rest[start:stop]):
+            break
+        tags.append(rest[start + 1 : stop])
+        end = start
+    tags.reverse()
+    return rest[:end].strip(), tags
+
+
 def parse_bullet_line(line: str, line_no: int) -> FactBullet:
-    m = _BULLET_RE.match(line)
-    if not m:
+    m = _BULLET_HEAD_RE.match(line.rstrip())
+    if m:
+        rest, verified = _split_verified(m.group("rest").rstrip())
+        text, tags = _split_tags(rest)
+    if not m or not text:
         raise MnemeError(f"malformed fact bullet at line {line_no}: {line!r}")
-    tags = re.findall(r"#([\w-]+)", m.group("tags") or "")
     return FactBullet(
         category=m.group("category"),
-        text=m.group("text").strip(),
+        text=text,
         tags=tags,
-        verified=m.group("verified"),
+        verified=verified,
         line_no=line_no,
     )
 
@@ -244,6 +292,25 @@ def semantic_hash(text: str) -> str:
     and silently resurface a candidate a human already declined.
     """
     return content_hash(strip_capture_stamps(text))
+
+
+def fact_text_hash(body: str) -> str | None:
+    """Identity of what a fact bullet SAYS, or None when the body is not one bullet.
+
+    `semantic_hash` hashes the rendered line, so it only ignores the `verified:` stamp —
+    the `[category]` prefix and the `#tags` are contributor-controlled presentation, and
+    hashing them made "declined stays declined" and duplicate detection defeatable by a
+    one-character tag edit. This key is the bullet's text alone: retag it, recategorize it,
+    restamp it, and the same knowledge still hashes the same.
+    """
+    candidate = body.strip()
+    if not candidate.startswith("- ["):
+        return None
+    try:
+        bullet = parse_bullet_line(candidate, 1)
+    except MnemeError:
+        return None
+    return content_hash(bullet.text)
 
 
 def skill_unit_id(skill_name: str) -> str:

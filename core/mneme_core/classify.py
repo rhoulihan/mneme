@@ -24,6 +24,10 @@ from .errors import MnemeError
 # the commit subject, the ledger record, and every message the user reads.
 _RAIL_KINDS = ("classify", "review")
 
+# The generated router skill, `skills/knowledge-index/` — the directory the canonical facts
+# live inside. Never an integration destination (see `_is_integration_path`).
+_INDEX_SKILL_DIR = units.FACTS_CANONICAL.rsplit("/", 1)[0] + "/"
+
 
 def _branch_prefix(kind: str) -> str:
     return f"mneme/{kind}-"
@@ -197,7 +201,39 @@ def bundle(home: Path, cwd: Path) -> dict:
     }
 
 
-def _migrate_legacy_facts(repo: Path) -> list[tuple[str, str]]:
+def _legacy_conflicts(repo: Path) -> list[str]:
+    """Filenames both fact layouts carry — the one thing the migration cannot decide.
+
+    Checked BEFORE the finalize rail touches anything, because the rail's failure path is a
+    hard reset: raising this from inside `_migrate_legacy_facts` destroyed the pass's own
+    work (for review, an extraction the user had already approved, with nothing staged to
+    retry from) for a condition the agent can fix in one edit.
+    """
+    legacy = repo / "facts"
+    if not legacy.is_dir():
+        return []
+    canonical = repo / units.FACTS_CANONICAL
+    conflicts: list[str] = []
+    for src in sorted(p for p in legacy.rglob("*") if p.is_file()):
+        rel = src.relative_to(legacy).as_posix()
+        if src.name == ".gitkeep":
+            continue  # both layouts carrying a placeholder is not a conflict
+        if (canonical / rel).exists():
+            conflicts.append(rel)
+    return conflicts
+
+
+def _legacy_conflict_error(kind: str, conflicts: list[str]) -> MnemeError:
+    merges = "; ".join(
+        f"merge facts/{rel} into {units.FACTS_CANONICAL}/{rel} by hand" for rel in conflicts
+    )
+    return MnemeError(
+        f"both fact layouts carry {', '.join(conflicts)} — {merges}, then run"
+        f" 'mneme {kind} finalize' again"
+    )
+
+
+def _migrate_legacy_facts(repo: Path, kind: str) -> list[tuple[str, str]]:
     """Move whatever still lives in a top-level `facts/` under the router skill.
 
     Uses `git mv` for tracked files so the history of a fact follows it across the move.
@@ -223,10 +259,10 @@ def _migrate_legacy_facts(repo: Path) -> list[tuple[str, str]]:
                 if src.exists():
                     src.unlink()
                 continue
-            raise MnemeError(
-                f"both fact layouts carry {rel} — merge {rel_src} into {rel_dest} by hand,"
-                " then run classify again"
-            )
+            # Backstop for a collision that appeared after `_legacy_conflicts` ran; the
+            # message names the ACTIVE rail, since "run classify again" is not a command a
+            # review user has.
+            raise _legacy_conflict_error(kind, [rel])
         dest.parent.mkdir(parents=True, exist_ok=True)
         if gitops.git(repo, "ls-files", "--", rel_src):
             gitops.git(repo, "mv", "--", rel_src, rel_dest)
@@ -370,6 +406,21 @@ def _branch_fact_texts(repo: Path) -> set[str]:
     return texts
 
 
+def _is_integration_path(rel: str) -> bool:
+    """Is this changed path skill PROSE a fact could have been integrated into?
+
+    "Under `skills/`" is not the test, because the canonical facts directory lives under
+    `skills/` too — `skills/knowledge-index/facts/`. Counting a fact FILE as an integration
+    destination let the gate be satisfied by the very file whose bullet went missing: a
+    bullet rewritten as prose in place, or moved into `facts/archive/` where
+    `units.fact_files` (a flat `*.md` glob) never looks again, both left the sentence
+    "accounted for" while every reader — lint, the index build, search, the classify
+    bundle — had lost it. The rest of the router skill is generated from the fact files, so
+    it is no destination either.
+    """
+    return rel.startswith("skills/") and not rel.startswith(_INDEX_SKILL_DIR)
+
+
 def _integration_text(repo: Path, changed: list[str]) -> str:
     """One normalized blob of every skill file this pass touched — where facts go to live.
 
@@ -379,7 +430,7 @@ def _integration_text(repo: Path, changed: list[str]) -> str:
     """
     parts: list[str] = []
     for rel in changed:
-        if not rel.startswith("skills/"):
+        if not _is_integration_path(rel):
             continue
         path = repo / rel
         if not path.is_file():
@@ -459,10 +510,16 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
     base_sha = gitops.git(repo, "rev-parse", "main")
     result = harvest.HarvestResult(target=scope.name, branch=branch)
 
+    # Raised OUTSIDE the guarded block on purpose: nothing has been changed yet, so the
+    # branch — and the work on it — survives for the user to fix and finalize again.
+    conflicts = _legacy_conflicts(repo)
+    if conflicts:
+        raise _legacy_conflict_error(kind, conflicts)
+
     try:
         dirty = not gitops.is_clean(repo)
         ahead = gitops.head_sha(repo) != base_sha
-        moves = _migrate_legacy_facts(repo)
+        moves = _migrate_legacy_facts(repo, kind)
         if not (dirty or ahead or moves):
             raise MnemeError(
                 f"nothing to {kind} — no edits were made and no legacy facts needed"

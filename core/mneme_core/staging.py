@@ -163,6 +163,12 @@ def decline(home: Path, cand: Candidate, reason: str) -> None:
         "reason": reason,
         "ts": _now(),
     }
+    # A fact also gets the stronger key: `hash` covers the rendered line, so re-proposing
+    # a declined bullet under a different `#tag` or `[category]` used to read as brand new
+    # knowledge. `text_hash` is the sentence itself, which is what the human rejected.
+    text_hash = units.fact_text_hash(cand.body)
+    if text_hash is not None:
+        record["text_hash"] = text_hash
     with paths.declined_path(home).open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
     existing = _find(home, cand.id)
@@ -170,8 +176,36 @@ def decline(home: Path, cand: Candidate, reason: str) -> None:
         existing.unlink()
 
 
-def is_declined(home: Path, body: str) -> bool:
+def declined_index(home: Path) -> tuple[set[str], set[str]]:
+    """`(line hashes, fact-text hashes)` from the declined ledger, read once.
+
+    Callers that ask about many bodies — triage annotates every addition in every open PR —
+    read the ledger once instead of once per question, so one large pull request cannot
+    turn the ledger into a per-bullet file read.
+    """
+    lines: set[str] = set()
+    texts: set[str] = set()
+    for rec in _read_declined(home):
+        h, t = rec.get("hash"), rec.get("text_hash")
+        if isinstance(h, str):
+            lines.add(h)
+        if isinstance(t, str):
+            texts.add(t)
+    return lines, texts
+
+
+def is_declined_in(index: tuple[set[str], set[str]], body: str) -> bool:
     # Compared on the date-independent hash so a decline holds tomorrow too — the spec
     # §7.3 guarantee is "declined stays declined", not "declined until midnight UTC".
-    h = units.semantic_hash(body)
-    return any(rec.get("hash") == h for rec in _read_declined(home))
+    # For facts the ledger also carries the text-only key, so the guarantee survives a
+    # retag or a recategorization of the same sentence (ledger entries written before that
+    # key existed still match on the line hash alone).
+    lines, texts = index
+    if units.semantic_hash(body) in lines:
+        return True
+    text_hash = units.fact_text_hash(body)
+    return text_hash is not None and text_hash in texts
+
+
+def is_declined(home: Path, body: str) -> bool:
+    return is_declined_in(declined_index(home), body)
