@@ -15,15 +15,17 @@ Three properties are load-bearing:
   are inserted into its header — and only then removed. Anything the merge cannot key (an
   unparseable bullet, prose) is carried over verbatim rather than dropped: mneme is not
   entitled to decide that a line a human committed does not count.
-* **Nothing travels through a link.** The legacy directory, and every entry in it, must
-  really be what it appears to be. A `facts` symlink — a back-compat shim pointing at the
-  canonical directory is the natural one — makes `iterdir` yield files that live somewhere
-  else entirely, `git ls-files` report them as untracked (git does not traverse a symlinked
-  directory), and this module's own `unlink`/`rename` then act on the far end: the
-  canonical facts deleted while the note says "merged", or a file outside the repo that
-  `_abort`'s `git clean` can never bring back. That shape is decided by repo content — any
-  contributor or merged pull request can commit a symlink — so it is refused, never
-  followed.
+* **Nothing travels through a link — at either end.** The legacy directory, every entry in
+  it, and every segment of the canonical directory must really be what they appear to be. A
+  `facts` symlink — a back-compat shim pointing at the canonical directory is the natural
+  one — makes `iterdir` yield files that live somewhere else entirely, `git ls-files` report
+  them as untracked (git does not traverse a symlinked directory), and this module's own
+  `unlink`/`rename` then act on the far end: the canonical facts deleted while the note says
+  "merged", or a file outside the repo that `_abort`'s `git clean` can never bring back. A
+  symlinked *destination* is the mirror image (`_canonical_dir`): every fact is renamed out
+  of the repo, `facts/` is deleted, and the result still says "moved". Both shapes are
+  decided by repo content — any contributor or merged pull request can commit a symlink —
+  so both are refused, never followed.
 * **No commits, no branches.** Callers own both, because PR-only (spec §7.3) is decided one
   level up: a migration on `main` would be the doctrine's one exception, so this function
   never even knows which branch it is on.
@@ -103,12 +105,33 @@ def migrate_legacy_facts(repo: Path) -> MigrationResult:
         )
     if not legacy.is_dir():
         return result
-    canonical = units.facts_write_dir(repo)
+    canonical = _canonical_dir(repo)
+    _migrate_into(repo, legacy, canonical, LEGACY_DIRNAME, units.FACTS_CANONICAL, result)
+    _drop_empty(legacy, LEGACY_DIRNAME)
+    result.removed_dir = True
+    return result
 
+
+def _migrate_into(
+    repo: Path,
+    legacy: Path,
+    canonical: Path,
+    rel_legacy: str,
+    rel_canonical: str,
+    result: MigrationResult,
+) -> None:
+    """Migrate every entry of one legacy directory into its canonical counterpart.
+
+    Recursive so that a subdirectory BOTH layouts carry is merged entry by entry rather
+    than refused: two directories of the same name are not a collision between the facts
+    inside them, and a repo the code this replaces migrated cleanly must not meet a hard
+    error here. A subdirectory only the legacy layout has is still moved whole, in one
+    rename, so its history and its contents travel together.
+    """
     for src in sorted(legacy.iterdir(), key=lambda p: p.name):
         name = src.name
-        rel_src = f"{LEGACY_DIRNAME}/{name}"
-        rel_dest = f"{units.FACTS_CANONICAL}/{name}"
+        rel_src = f"{rel_legacy}/{name}"
+        rel_dest = f"{rel_canonical}/{name}"
         # Both ends are proven before anything is read or written through them, because
         # both are repo content — whatever a contributor, or a merged pull request,
         # committed into `facts/`. The DESTINATION is built from a legacy FILENAME (the
@@ -125,27 +148,69 @@ def migrate_legacy_facts(repo: Path) -> MigrationResult:
             if name.endswith(".md") and src.is_file() and dest.is_file():
                 result.merged.extend(_merge(repo, src, dest, rel_src, rel_dest))
                 continue
+            if src.is_dir() and dest.is_dir() and not dest.is_symlink():
+                # Both layouts carry this subdirectory. `dest` must be a real directory:
+                # recursing through a link would hand the next level a base that resolves
+                # elsewhere, which is exactly the hole `_canonical_dir` closes at the top.
+                _migrate_into(repo, src, dest, rel_src, rel_dest, result)
+                _drop_empty(src, rel_src)
+                continue
             raise MnemeError(
                 f"cannot migrate {rel_src}: {rel_dest} already exists —"
                 " move or merge it by hand, then run the migration again"
             )
-        with _guarded(rel_src, f"cannot create {units.FACTS_CANONICAL}/"):
+        with _guarded(rel_src, f"cannot create {rel_canonical}/"):
             dest.parent.mkdir(parents=True, exist_ok=True)
         _move(repo, src, dest, rel_src, rel_dest)
         result.moved.append(f"{rel_src} -> {rel_dest}")
 
-    # `git rm` prunes a directory it emptied, so the legacy dir may already be gone.
-    if legacy.is_dir():
-        remaining = sorted(p.name for p in legacy.iterdir())
-        if remaining:
+
+def _drop_empty(legacy: Path, rel: str) -> None:
+    """Remove a legacy directory the migration emptied; refuse while anything remains.
+
+    `git rm` prunes a directory it emptied, so the directory may already be gone.
+    """
+    if not legacy.is_dir():
+        return
+    remaining = sorted(p.name for p in legacy.iterdir())
+    if remaining:
+        raise MnemeError(
+            f"{rel}/ still holds {', '.join(remaining)} after migration —"
+            " refusing to remove a directory that still carries knowledge"
+        )
+    with _guarded(f"{rel}/", "cannot remove the legacy directory"):
+        legacy.rmdir()
+
+
+def _canonical_dir(repo: Path) -> Path:
+    """`units.facts_write_dir(repo)`, proven to be reachable without traversing a link.
+
+    The destination half of "nothing travels through a link", and the half `_contained`
+    cannot make: it proves a destination stays under the canonical directory *as resolved*,
+    so a canonical directory that is itself a link resolves to the far end and every
+    destination is trivially "contained" there. Followed, the migration renames every fact
+    out of the repo, deletes `facts/`, and reports `moved` — and the caller's `git add -A`
+    stages a bare deletion of knowledge with no counterpart anywhere in the tree.
+    `skills/knowledge-index/facts` is repo content like any other path (a contributor, or a
+    merged pull request, can commit any segment of it as a symlink), so every segment below
+    the repo root is proven here, once, before the first entry is read.
+
+    The repo root itself is deliberately not checked: it is the caller's own path, a clone
+    under a symlinked parent is ordinary, and every proof below is made relative to it.
+    """
+    walked = repo
+    for part in Path(units.FACTS_CANONICAL).parts:
+        walked = walked / part
+        if walked.is_symlink():
+            rel = walked.relative_to(repo).as_posix()
             raise MnemeError(
-                f"{LEGACY_DIRNAME}/ still holds {', '.join(remaining)} after migration —"
-                " refusing to remove a directory that still carries knowledge"
+                f"{rel} is a symlink, not a directory — refusing to migrate into"
+                f" {units.FACTS_CANONICAL}/ through it: every fact would be renamed to the"
+                " far end of the link, outside the gates this repo runs and outside what a"
+                " rollback can reach, while the migration reported it moved. Replace the"
+                " link with a real directory (or remove it), then run the migration again"
             )
-        with _guarded(f"{LEGACY_DIRNAME}/", "cannot remove the legacy directory"):
-            legacy.rmdir()
-    result.removed_dir = True
-    return result
+    return units.facts_write_dir(repo)
 
 
 def _from_legacy(src: Path, rel_src: str) -> None:
@@ -171,6 +236,10 @@ def _contained(canonical: Path, name: str, rel_src: str) -> Path:
     The resolved form is what matters: a canonical entry that is a *symlink* out of the
     repo would otherwise be appended to (a merge) or replaced (a move) — writing through
     the link to a file no gate in this repo ever sees.
+
+    Resolving `canonical` too is only sound because the base is proven link-free first
+    (`_canonical_dir`, and the same proof on each recursion): otherwise the base would
+    resolve to wherever the link points and containment could never fail.
     """
     dest = canonical / name
     try:
@@ -244,6 +313,11 @@ def _line_contents(text: str) -> list[str]:
     return [h._split_eol(line)[0] for line in h._lines_keepends(text)]
 
 
+def _opens_frontmatter(lines: list[str]) -> bool:
+    """Does the file start with a frontmatter delimiter (terminated or not)?"""
+    return bool(lines) and lines[0].strip() == "---"
+
+
 def _frontmatter_end(lines: list[str]) -> int | None:
     """Index of the line closing a leading frontmatter block, or None when there is none.
 
@@ -254,7 +328,7 @@ def _frontmatter_end(lines: list[str]) -> int | None:
     every branch flow with an error naming no file, while lint (MN010) already reports that
     file by name.
     """
-    if not lines or lines[0].strip() != "---":
+    if not _opens_frontmatter(lines):
         return None
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
@@ -360,7 +434,11 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     """Fold the legacy file's lines into the canonical one, then remove the legacy file.
 
     Identity is the bullet's SENTENCE, normalized — not the rendered line, and not the
-    topic key. Not the line, because `[category]`, `#tags` and the `(verified:)` stamp are
+    topic key. (A DECLARED departure from Plan 12's "topic-key dedup" wording, in the
+    direction that constraint's own next sentence demands — "a merge that would drop a
+    bullet is a bug, not a resolution". A topic key is derived FROM the sentence, so
+    sentence-identity is the finer relation: it can only keep more, never less.) Not the
+    line, because `[category]`, `#tags` and the `(verified:)` stamp are
     presentation: the same fact restamped a day later is the same fact, and appending it
     again would duplicate it (`units.fact_text_hash` draws the same line for declines and
     duplicate detection). And not the key, because a topic key is the sentence's first six
@@ -376,11 +454,23 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     canonical_meta, canonical_body = _sections(_read_text(dest, rel_dest))
     legacy_meta, legacy_body = _sections(_read_text(src, rel_src))
     carried_meta: list[str] = []
+    new_block: list[str] = []
     meta_notes: list[str] = []
-    if canonical_meta is None:
-        # No block to insert a key into, and inventing one would rewrite a file this merge
-        # only ever appends to: the legacy header travels with the body, verbatim, like
-        # every other line the merge cannot place.
+    if canonical_meta is None and legacy_meta and not _opens_frontmatter(canonical_body):
+        # The canonical file has no header at all. Dropping the legacy keys into its body
+        # would leave `topic:`/`owner:` sitting in the prose — nothing lost, but a file
+        # structurally worse than the well-formed one this merge just consumed. The block
+        # is CREATED instead, holding the legacy header verbatim: still an insert, not one
+        # existing line rewritten, and the result parses where the original did not.
+        new_block = legacy_meta
+        meta_notes.append(
+            f"{rel_src}: {rel_dest} had no frontmatter — the legacy header became its block"
+        )
+    elif canonical_meta is None:
+        # An UNTERMINATED block (or a legacy file with no keys to carry). Nothing below the
+        # opening delimiter can be proven to be metadata, so there is no block to insert a
+        # key into and inventing one would guess at what the file meant: the legacy header
+        # travels with the body, verbatim, like every other line the merge cannot place.
         legacy_body = (legacy_meta or []) + legacy_body
     elif legacy_meta:
         carried_meta, leftover, meta_notes = _carry_meta(
@@ -418,8 +508,8 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         seen.add(_normalized(line))
         carried.append(line)
         verbatim += 1
-    if carried or carried_meta:
-        _apply_merge(dest, carried_meta, carried, rel_dest)
+    if carried or carried_meta or new_block:
+        _apply_merge(dest, carried_meta, carried, rel_dest, new_block)
     notes = [f"{rel_src} merged into {rel_dest} ({bullets} bullets)"]
     if divergent:
         notes.append(
@@ -433,9 +523,12 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     return notes
 
 
-def _apply_merge(path: Path, meta: list[str], body: list[str], rel: str) -> None:
+def _apply_merge(
+    path: Path, meta: list[str], body: list[str], rel: str, block: list[str] | None = None
+) -> None:
     """Insert the carried lines: keys inside the frontmatter block, body after the last
-    bullet. Nothing already in the file is rewritten.
+    bullet, and — when the file has no block at all — `block` as a new one at the top.
+    Nothing already in the file is rewritten.
 
     Deliberately the harvest's own line discipline rather than a second implementation of
     it: a merge is a delta edit like any fact apply, so the BOM, the file's dominant line
@@ -466,6 +559,11 @@ def _apply_merge(path: Path, meta: list[str], body: list[str], rel: str) -> None
         # always the larger of the two.
         for offset, line in enumerate(meta):
             lines.insert(end + offset, line + eol)
+    if block and end is None:
+        # A block where there was none, last of the three so the earlier indexes are still
+        # the ones computed from the file as it was read.
+        for offset, line in enumerate(["---", *block, "---"]):
+            lines.insert(offset, line + eol)
     # newline="": the line endings in `lines` are the file's own, never retranslated.
     with _guarded(rel, "cannot write the merged file"):
         path.write_text(bom + "".join(lines), encoding="utf-8", newline="")

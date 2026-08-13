@@ -331,6 +331,167 @@ def test_a_legacy_entry_symlinked_out_of_the_repo_is_refused(tmp_path):
     )
 
 
+def test_a_canonical_facts_dir_symlinked_out_of_the_repo_is_refused(tmp_path):
+    """The mirror of the legacy-directory shim, and the worse half of it.
+
+    Followed, every fact is renamed to the far end of the link, `facts/` is deleted, and
+    the result still says "moved": the caller's `git add -A` then stages a bare deletion of
+    knowledge with no counterpart anywhere in the tree. Resolving the destination is no
+    defence — the base resolves to the far end too, so containment can never fail.
+    """
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (repo / CANON).parent.mkdir(parents=True)
+    symlink(repo / CANON, outside)
+    write(repo / "facts" / "deploys.md", fact("deploys", bullet("the lb keeps stale targets")))
+    commit(repo, "a canonical facts dir that is a link out of the repo")
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "symlink" in str(exc.value) and CANON in str(exc.value)
+    assert (repo / "facts" / "deploys.md").is_file()  # nothing moved, nothing deleted
+    assert sorted(p.name for p in outside.iterdir()) == []
+    assert gitops.is_clean(repo)
+
+
+def test_a_symlinked_segment_above_the_canonical_dir_is_refused(tmp_path):
+    """One level up is the same hazard: `skills/knowledge-index` can be the link."""
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "elsewhere"
+    (outside / "facts").mkdir(parents=True)
+    (repo / "skills").mkdir()
+    symlink(repo / "skills" / "knowledge-index", outside)
+    write(repo / "facts" / "deploys.md", fact("deploys", bullet("the lb keeps stale targets")))
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "symlink" in str(exc.value) and "skills/knowledge-index" in str(exc.value)
+    assert (repo / "facts" / "deploys.md").is_file()
+    assert sorted(p.name for p in (outside / "facts").iterdir()) == []
+
+
+def test_a_subdirectory_both_layouts_carry_is_merged_entry_by_entry(tmp_path):
+    """Two directories of the same name are not a collision between the facts inside them.
+
+    The code this migration replaces walked the legacy tree file-by-file and merged such a
+    directory cleanly; refusing it here would strand a repo shape that migrates today on a
+    hard error with nothing actually in conflict.
+    """
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "archive" / "kept.md", fact("kept", bullet("a canonical archived note")))
+    write(repo / "facts" / "archive" / "old.md", fact("old", bullet("a legacy archived note")))
+    write(repo / "facts" / "archive" / "deep" / "older.md", fact("older", bullet("deeper still")))
+    commit(repo, "both layouts carry an archive dir")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    assert result.moved == [
+        f"facts/archive/deep -> {CANON}/archive/deep",
+        f"facts/archive/old.md -> {CANON}/archive/old.md",
+    ]
+    assert "a canonical archived note" in (repo / CANON / "archive" / "kept.md").read_text(
+        encoding="utf-8"
+    )
+    assert "a legacy archived note" in (repo / CANON / "archive" / "old.md").read_text(
+        encoding="utf-8"
+    )
+    assert "deeper still" in (repo / CANON / "archive" / "deep" / "older.md").read_text(
+        encoding="utf-8"
+    )
+    assert not (repo / "facts").exists()
+
+
+def test_a_file_colliding_inside_a_shared_subdirectory_still_refuses(tmp_path):
+    """Merging the directories does not weaken the file-level gate one level down."""
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "archive" / "notes.txt", "canonical note\n")
+    write(repo / "facts" / "archive" / "notes.txt", "legacy note\n")
+
+    with pytest.raises(MnemeError) as exc:
+        layout.migrate_legacy_facts(repo)
+
+    assert "facts/archive/notes.txt" in str(exc.value)
+    canonical = repo / CANON / "archive" / "notes.txt"
+    assert canonical.read_text(encoding="utf-8") == "canonical note\n"
+    legacy = repo / "facts" / "archive" / "notes.txt"
+    assert legacy.read_text(encoding="utf-8") == "legacy note\n"
+
+
+def test_an_md_file_inside_a_shared_subdirectory_is_merged(tmp_path):
+    repo = make_repo(tmp_path)
+    shared = bullet("the lb keeps stale targets")
+    only_legacy = bullet("blue/green needs a 90 second drain", tag="drain")
+    write(repo / CANON / "archive" / "deploys.md", fact("deploys", shared))
+    write(repo / "facts" / "archive" / "deploys.md", fact("deploys", shared, only_legacy))
+
+    result = layout.migrate_legacy_facts(repo)
+
+    assert result.merged == [
+        f"facts/archive/deploys.md merged into {CANON}/archive/deploys.md (1 bullets)"
+    ]
+    text = (repo / CANON / "archive" / "deploys.md").read_text(encoding="utf-8")
+    assert text.count("90 second drain") == 1
+    assert not (repo / "facts").exists()
+
+
+def test_a_canonical_file_with_no_frontmatter_gains_a_block_from_the_legacy_header(tmp_path):
+    """The legacy header must not end up as loose prose in the merged file.
+
+    `topic:`/`owner:` dropped into the body is nothing lost but everything demoted — a file
+    structurally worse than the well-formed one the merge just consumed. A block is created
+    instead (an insert; not one existing line is rewritten), so the result parses.
+    """
+    repo = make_repo(tmp_path)
+    canonical_bullet = bullet("canonical only bullet")
+    legacy_bullet = bullet("legacy only bullet", tag="drain")
+    write(repo / CANON / "deploys.md", canonical_bullet + "\n")  # no frontmatter at all
+    write(
+        repo / "facts" / "deploys.md",
+        "---\ntopic: deploys\nowner: sre\n---\n" + legacy_bullet + "\n",
+    )
+
+    result = layout.migrate_legacy_facts(repo)
+
+    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    meta, body = units.parse_frontmatter(text)
+    assert meta == {"topic": "deploys", "owner": "sre"}
+    assert body.splitlines() == [canonical_bullet, legacy_bullet]
+    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"
+    assert "had no frontmatter" in result.merged[1]
+    assert not (repo / "facts").exists()
+
+
+def test_an_unterminated_canonical_header_keeps_the_legacy_header_in_the_body(tmp_path):
+    """The other shape stays as it was: nothing under an unterminated delimiter can be
+    proven to be metadata, so a created block would be a guess at what the file meant."""
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "deploys.md", "---\ntopic: deploys\n" + bullet("canonical bullet") + "\n")
+    write(repo / "facts" / "deploys.md", "---\ntopic: deploys\nowner: sre\n---\n")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    lines = (repo / CANON / "deploys.md").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "---"  # untouched: no second block invented above it
+    assert "owner: sre" in lines  # carried verbatim, never dropped
+    assert lines.count("topic: deploys") == 1
+    assert any("verbatim" in note for note in result.merged[1:])
+
+
+def test_a_canonical_file_that_is_empty_gains_the_legacy_header_and_bullets(tmp_path):
+    repo = make_repo(tmp_path)
+    legacy_bullet = bullet("legacy only bullet", tag="drain")
+    write(repo / CANON / "deploys.md", "")
+    write(repo / "facts" / "deploys.md", "---\ntopic: deploys\n---\n" + legacy_bullet + "\n")
+
+    layout.migrate_legacy_facts(repo)
+
+    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    assert text == "---\ntopic: deploys\n---\n" + legacy_bullet + "\n"
+
+
 def test_a_regular_file_where_the_canonical_dir_belongs_is_a_mneme_error(tmp_path):
     """A repo-shape problem, not a bug: it must abort the caller's flow through the
     guarded path with a message naming the file, not as a raw FileExistsError."""
