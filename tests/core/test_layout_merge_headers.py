@@ -28,6 +28,7 @@ longer true and stating it that way is how the next reader re-derives the wrong 
 below matches it.
 """
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +37,18 @@ from mneme_core.errors import MnemeError
 from mneme_index import build, db
 
 CANON = units.FACTS_CANONICAL
+
+# Absolute, deliberately NOT `layout._NOTE_MAX`/`_BODY_MAX`. The harms these guard are
+# absolute thresholds outside this codebase — a pull request body stops being accepted
+# around 65 KB (past which `gitops.open_pr` silently returns its no-PR fallback and the
+# review gate is gone), and `git commit -m` raises E2BIG past the platform argument limit.
+# A test that asserts `<= layout._NOTE_MAX` reads the constant it is supposed to be
+# guarding, so it cannot notice that constant being wrong: an earlier version of this file
+# did exactly that, and the 94 KB note it was written to catch came back and passed,
+# silently clamped by the very backstop the assertion was reading.
+PR_BODY_LIMIT = 65_536
+SAFE_NOTE = 16_000
+SAFE_BODY = 60_000
 
 CANONICAL_BULLET = "- [gotcha] Canonical bullet that was already retrievable #x (verified: 2026-08-12)\n"
 LEGACY_BULLET = "- [constraint] Legacy bullet arriving in the merge #y (verified: 2026-08-12)\n"
@@ -426,6 +439,41 @@ def test_the_refusal_note_names_what_it_protected(tmp_path):
     assert "#y" in note and "2026-08-12" in note  # rendered as its author wrote it
 
 
+def test_a_topic_that_labels_facts_cannot_stop_labelling_them(tmp_path):
+    """`_lost`'s third property, which nothing else in the suite reaches.
+
+    It is not subsumed by the row property, and the case that separates them is the
+    commonest overlap a pre-0.5 repo has: the same file copied and re-topiced. Sharing a
+    SENTENCE means sharing a unit id (`facts/<stem>#<key>`), so `_dedup(before)` holds only
+    the canonical row and the row property is structurally blind — the topic property is
+    the only thing standing between a merge and the disappearance of a topic an agent can
+    route by. Every other differing-topic test here uses DIFFERENT sentences, so the row
+    property fires first and this one never runs: deleting it from `_lost` left the whole
+    suite green.
+    """
+    repo = make_repo(tmp_path)
+    sentence = "the load balancer keeps stale targets in rotation after a deploy"
+    write(
+        repo / CANON / "deploys.md",
+        f"---\ntopic: deploys\n---\n- [gotcha] {sentence} #x (verified: 2026-08-12)\n",
+    )
+    write(
+        repo / "facts" / "deploys.md",
+        f"---\ntopic: incident-response\n---\n- [constraint] {sentence} #lb (verified: 2026-01-01)\n",
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+    before = topic_rows(tmp_path, repo, "before")
+    assert {name for name, _ in before} == {"deploys"}  # the duplicate id hides the other
+
+    result = layout.migrate_legacy_facts(repo)
+
+    after = topic_rows(tmp_path, repo, "after")
+    assert before <= after
+    assert "incident-response" in {name for name, _ in after}
+    assert any("kept separate" in line for line in result.moved)
+
+
 def test_the_one_thing_a_folded_duplicate_costs_is_paid_into_the_note(tmp_path):
     """The accepted cost of the fold, pinned so it stays accepted rather than forgotten.
 
@@ -445,10 +493,16 @@ def test_the_one_thing_a_folded_duplicate_costs_is_paid_into_the_note(tmp_path):
     # bullet, so a per-value cap removes precisely the fields this note exists to preserve.
     # Pinning it with a short sentence let a 160-char cap pass while the property was false.
     sentence = (
-        "the load balancer keeps stale targets in rotation for roughly ninety seconds "
-        "after a deploy finishes draining them"
+        "the load balancer keeps stale targets in rotation for roughly ninety seconds after "
+        "a deploy finishes draining them, which shows up as intermittent five-oh-two "
+        "responses from the edge for the rest of that minute and then clears on its own "
+        "once the health checks agree the old targets are gone"
     )
-    assert len(sentence) > 100
+    # The rendered bullet must exceed the OLD 160-char cap by enough that the tail — the
+    # tags and the `(verified:)` stamp, which is the whole point of the record — falls
+    # outside it. The previous fixture rendered to 156 characters, still UNDER 160, so the
+    # raise from 160 to 300 was unpinned and the regression it reverted was undetectable.
+    assert len(f"- [constraint] {sentence} #lb (verified: 2026-01-01)") > 260
     write(repo / CANON / "deploys.md", f"---\ntopic: deploys\n---\n- [gotcha] {sentence} #deploy (verified: 2026-08-12)\n")
     write(repo / "facts" / "deploys.md", f"---\ntopic: deploys\n---\n- [constraint] {sentence} #lb (verified: 2026-01-01)\n")
     git(repo, "add", "-A")
@@ -465,7 +519,14 @@ def test_the_one_thing_a_folded_duplicate_costs_is_paid_into_the_note(tmp_path):
     # The index is untouched, which is the line between accepted cost and knowledge loss.
     assert topic_rows(tmp_path, repo, "after") == indexed_before
     note = " ".join(result.merged)
+    # Both ENDS of the folded line, for a bullet longer than the cap. The category leads
+    # and the tags and stamp trail, and those ends are the whole record — the sentence
+    # itself is still in the canonical file, only this rendering is gone. A plain cap kept
+    # the head and dropped exactly the part worth keeping, so the line is elided in the
+    # MIDDLE and the ellipsis says so.
     assert "[constraint]" in note and "#lb" in note and "2026-01-01" in note
+    assert "…" in note
+    assert sentence[:40] in note and sentence[-40:] in note
 
 
 def test_a_wholesale_restamped_topic_file_names_every_line_it_folded(tmp_path):
@@ -525,14 +586,15 @@ def test_past_the_cap_the_note_says_where_the_rest_are(tmp_path):
     note = " ".join(result.merged)
     assert "60 bullet(s)" in note
     assert "as of the commit before this migration" in note
-    # Two caps guard this list — a count (`_DUPLICATES_SHOWN`) and a total-length budget —
-    # and which one bites depends on how long the bullets are. The property is that the
-    # count it reports and the lines it prints always add back up to the whole fold, so a
-    # reviewer is never told a truncated list is complete.
+    # The COUNT cap is the one meant to bind for ordinary bullets, and it must actually
+    # bind: sizing the length budget independently (1200 characters) made it bind first for
+    # any bullet over ~46 characters, quietly cutting the record to 10-14 lines while three
+    # comments and this test still said 25. An assertion of merely "0 < shown < 60" is what
+    # let that through, so this pins the number.
     shown = sum(1 for s in sentences if s in note)
-    assert 0 < shown < len(sentences)
+    assert shown == layout._DUPLICATES_SHOWN == 25
     assert f"and {len(sentences) - shown} more" in note
-    assert len(note) < layout._NOTE_MAX
+    assert len(note) < SAFE_NOTE
 
 
 def test_no_note_can_be_made_into_more_than_one_line(tmp_path):
@@ -598,9 +660,22 @@ def test_a_note_cannot_be_made_enormous(tmp_path):
         for i in range(36)
     ]
     vectors = {
-        "a 100 KB folded topic scalar": (
+        "a 100 KB folded topic scalar, canonical side": (
             f"---\ntopic: {'x' * 100_000}\n---\n" + CANONICAL_BULLET,
             "---\ntopic: t\n---\n" + LEGACY_BULLET,
+        ),
+        # The side matters, and an earlier version of this test had it backwards. A refusal
+        # names what it PROTECTED, which is the legacy file's topic and the legacy row —
+        # so a huge value on the canonical side never reaches a note at all, and testing
+        # only that side left the per-value cap unpinned.
+        "a 100 KB folded topic scalar, legacy side": (
+            "---\ntopic: t\n---\n" + CANONICAL_BULLET,
+            f"---\ntopic: {'x' * 100_000}\n---\n" + LEGACY_BULLET,
+        ),
+        "a 100 KB sentence in a lost row": (
+            "---\ntopic: alpha\n---\n" + CANONICAL_BULLET,
+            "---\ntopic: beta\n---\n- [constraint] " + "long " * 20_000
+            + "#y (verified: 2026-08-12)\n",
         ),
         "1200 differing frontmatter keys": (
             keyed(1200, "canonical-value") + CANONICAL_BULLET,
@@ -638,7 +713,17 @@ def test_a_note_cannot_be_made_enormous(tmp_path):
 
         assert result.lines, label
         for line in result.lines:
-            assert len(line) <= layout._NOTE_MAX, f"{label}: note is {len(line)} chars"
+            assert len(line) < SAFE_NOTE, f"{label}: note is {len(line)} chars"
+            # Short is not the same as informative. `_note` clamps a whole note as a last
+            # resort, which satisfies a length assertion while one repo value has crowded
+            # out everything the note was for — and a clamped note is exactly the one that
+            # ends mid-word in an ellipsis. Every note here should be brought under the
+            # limit by its own list budgets, so the backstop must never be what did it.
+            # This is what pins the per-value cap independently of that backstop.
+            assert not line.endswith("…"), f"{label}: note was clamped whole: {line[-70:]!r}"
+    # And the constants themselves stay inside the limits they exist to respect.
+    assert layout._NOTE_MAX <= SAFE_NOTE < PR_BODY_LIMIT
+    assert layout._BODY_MAX <= SAFE_BODY < PR_BODY_LIMIT
 
 
 def test_the_body_is_bounded_even_when_every_single_note_is(tmp_path):
@@ -658,10 +743,16 @@ def test_the_body_is_bounded_even_when_every_single_note_is(tmp_path):
 
     assert len(result.lines) == 600
     body = result.body()
-    assert sum(len(line) + 1 for line in body) <= layout._BODY_MAX
+    assert sum(len(line) + 1 for line in body) < SAFE_BODY
     # A small repo is never truncated, and a truncated one always says by how much.
+    # The TRUNCATING path is the one that can exceed its own budget, because the line
+    # that says "omitted" is itself part of the body. Measured at a budget small enough
+    # to force it, not only at the default where nothing truncates.
+    for budget in (200, 1000, 5000, 20_000):
+        truncated = result.body(budget=budget)
+        assert sum(len(line) + 1 for line in truncated) <= budget, budget
+        assert "more migration note(s), omitted" in truncated[-1], budget
     assert len(result.body(budget=200)) < 600
-    assert "more migration note(s), omitted" in result.body(budget=200)[-1]
     assert layout.MigrationResult(moved=["a", "b"]).body() == ["a", "b"]
 
 
@@ -707,17 +798,19 @@ def test_the_migration_never_newly_blinds_a_file_to_lint(tmp_path):
     blinding = {"MN009", "MN010"}
 
     def blinded(repo):
-        """COUNT per code, not a repo-wide set.
+        """Per FILE, not a repo-wide set or even a repo-wide count.
 
         A set comparison cannot see a newly blinded file whenever any OTHER file already
-        carried that code — and the decoys below guarantee one always does, which is the
-        realistic state of a pre-0.5 repo mid-migration. Counting catches the file that
-        went from readable to invisible even while the code was already present.
+        carries that code — and the decoys below guarantee one always does, which is the
+        realistic state of a pre-0.5 repo mid-migration. A repo-wide COUNT is barely
+        better: the merge always deletes the legacy file, so every case comes with a
+        guaranteed decrement that can mask a simultaneous increment on the surviving
+        canonical file. Keyed by file name, neither can hide the other.
         """
-        found = {code: 0 for code in blinding}
+        found = {}
         for issue in lint.lint_repo(repo):
             if issue.code in blinding:
-                found[issue.code] += 1
+                found.setdefault(Path(issue.path).name, set()).add(issue.code)
         return found
 
     headers = [
@@ -743,15 +836,18 @@ def test_the_migration_never_newly_blinds_a_file_to_lint(tmp_path):
                     git(repo, "add", "-A")
                     git(repo, "commit", "-m", "fixtures")
                     before = blinded(repo)
-                    assert before["MN009"] and before["MN010"]  # the masking really is set up
+                    codes_before = {c for codes in before.values() for c in codes}
+                    assert codes_before == blinding  # the masking really is set up
 
                     layout.migrate_legacy_facts(repo)
 
                     after = blinded(repo)
-                    assert all(after[code] <= before[code] for code in blinding), (
-                        f"{canonical_header!r} + {canonical_body!r} <- "
-                        f"{legacy_header!r} + {legacy_body!r}: {before} -> {after}"
-                    )
+                    for name, codes in after.items():
+                        assert not codes - before.get(name, set()), (
+                            f"{canonical_header!r} + {canonical_body!r} <- "
+                            f"{legacy_header!r} + {legacy_body!r}: {name} gained "
+                            f"{sorted(codes - before.get(name, set()))}"
+                        )
 
 
 def test_a_blank_topic_key_is_not_read_as_the_filename(tmp_path):

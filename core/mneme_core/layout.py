@@ -49,7 +49,10 @@ _BODY_MAX = 50_000
 
 # How many folded duplicate renderings a merge note writes out before pointing at git. A
 # fact bullet is one line, and a note that names 25 of them is still shorter than the diff
-# a reviewer would otherwise have to read to find them.
+# a reviewer would otherwise have to read to find them. The budget below is sized so that
+# THIS is the cap that normally binds: when it was 1200 it bound first for any bullet over
+# ~46 characters, silently cutting the record to 10-14 lines while the comments here still
+# claimed 25 — the note SHRANK in the commit that set out to enlarge it.
 _DUPLICATES_SHOWN = 25
 
 
@@ -94,7 +97,7 @@ class MigrationResult:
     def lines(self) -> list[str]:
         return [*self.moved, *self.merged]
 
-    def body(self, budget: int = _BODY_MAX) -> list[str]:
+    def body(self, budget: int | None = None) -> list[str]:
         """`lines`, bounded in TOTAL — what a caller should put in a commit or PR body.
 
         Each note is bounded on its own (`_note`), which is not the same as the body being
@@ -109,19 +112,33 @@ class MigrationResult:
         it out: every note describes a change that is in the diff of the commit it
         accompanies.
         """
+        # Resolved at CALL time, not bound as a default: a default argument freezes the
+        # constant at import, so `_BODY_MAX` could not be changed — or mutation-tested —
+        # and a bound nothing can falsify is not a bound.
+        budget = _BODY_MAX if budget is None else budget
+        lines = self.lines
+        # The omission line is part of the body, so it is reserved BEFORE the loop rather
+        # than appended after it. Appending after meant the one path that truncates was the
+        # one path that could exceed the budget — by the length of the sentence explaining
+        # that it had not.
+        def omission(n: int) -> str:
+            return (
+                f"…and {n} more migration note(s), omitted to keep this body inside the"
+                " commit and pull request limits — every one of them describes a change"
+                " that is in this commit's diff"
+            )
+
+        reserve = len(omission(len(lines))) + 1
         kept: list[str] = []
         used = 0
-        for line in self.lines:
-            if used + len(line) + 1 > budget:
+        for line in lines:
+            remaining = budget if len(kept) + 1 == len(lines) else budget - reserve
+            if used + len(line) + 1 > remaining:
                 break
             kept.append(line)
             used += len(line) + 1
-        if len(kept) < len(self.lines):
-            kept.append(
-                f"…and {len(self.lines) - len(kept)} more migration note(s), omitted to keep"
-                " this body inside the commit and pull request limits — every one of them"
-                " describes a change that is in this commit's diff"
-            )
+        if len(kept) < len(lines):
+            kept.append(omission(len(lines) - len(kept)))
         return kept
 
 
@@ -480,14 +497,14 @@ _NOTE_VALUE_MAX = 160
 # The whole of one note. A pull request body holds ~65 KB across every note the migration
 # emits, and `git commit -m` has a hard argument limit below that, so one note may not eat
 # the budget the rest need.
-_NOTE_MAX = 2000
+_NOTE_MAX = 10_000
 
 # A folded duplicate's own rendering gets a larger allowance than an ordinary value: it is
 # the only remaining view of that line's tags and stamp outside the diff, and tags and the
 # `(verified:)` stamp sit at the END of a bullet, so a short cap removes exactly the part
 # the note exists to preserve.
 _DUPLICATE_LINE_MAX = 300
-_DUPLICATES_BUDGET = 1200
+_DUPLICATES_BUDGET = _DUPLICATES_SHOWN * _DUPLICATE_LINE_MAX
 
 
 def _safe(value: object, cap: int = _NOTE_VALUE_MAX) -> str:
@@ -511,8 +528,29 @@ def _safe(value: object, cap: int = _NOTE_VALUE_MAX) -> str:
     return text if len(text) <= cap else text[: cap - 1] + "…"
 
 
+def _elided(text: str, cap: int) -> str:
+    """Cap a line by removing its MIDDLE, because a fact bullet carries value at both ends.
+
+    `- [gotcha] <sentence> #tag (verified: 2026-01-01)`: the category leads and the tags
+    and stamp trail, and for a folded duplicate those ends are the entire reason the note
+    exists — the sentence itself is still in the canonical file, and only the rendering is
+    gone. Cutting the tail off (a plain cap) therefore deletes exactly the part worth
+    keeping, which is what the first version of this did.
+    """
+    text = _normalized(text)
+    if len(text) <= cap:
+        return text
+    head = (cap - 1) * 2 // 3
+    return text[:head] + "…" + text[-(cap - 1 - head) :]
+
+
 def _join_capped(
-    items: list, sep: str, budget: int, cap: int = _NOTE_VALUE_MAX, limit: int | None = None
+    items: list,
+    sep: str,
+    budget: int,
+    cap: int = _NOTE_VALUE_MAX,
+    limit: int | None = None,
+    elide: bool = False,
 ) -> tuple[str, int]:
     """Join what fits in `budget` characters; return it and how many were left out.
 
@@ -528,7 +566,7 @@ def _join_capped(
     shown: list[str] = []
     used = 0
     for item in items:
-        text = _safe(item, cap)
+        text = _elided(str(item), cap) if elide else _safe(item, cap)
         if (limit is not None and len(shown) >= limit) or used + len(text) + len(sep) > budget:
             break
         shown.append(text)
@@ -1128,15 +1166,17 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     if verbatim:
         notes.append(f"{_safe(rel_src)}: {verbatim} unparsed line(s) carried over verbatim")
     if duplicates:
-        # Written out in full up to a cap, and the cap says where the rest are. This note
-        # IS the record: the fold is sound because the index never held these renderings
+        # Written out up to a cap, and the cap says where the rest are. This note IS the
+        # record: the fold is sound because the index never held these renderings
         # (`_dedup`), but the classify bundle and `mneme verify` did, so a reviewer's only
-        # remaining view of a folded `#tag` or `verified:` stamp is this line. Truncating
-        # at three bit hardest in the very shape this is for — a topic file copied and
-        # re-verified wholesale, where every bullet folds and all but three vanish.
+        # remaining view of a folded `#tag` or `verified:` stamp is this line. Both caps
+        # bite hardest in the very shape this is for — a topic file copied and re-verified
+        # wholesale, where EVERY bullet folds — so `_DUPLICATES_SHOWN` is the one meant to
+        # bind and `_DUPLICATES_BUDGET` is sized from it rather than guessed at. A budget
+        # chosen independently silently cut the record to 10 lines for ordinary bullets.
         shown, omitted = _join_capped(
             duplicates, "; ", _DUPLICATES_BUDGET,
-            cap=_DUPLICATE_LINE_MAX, limit=_DUPLICATES_SHOWN,
+            cap=_DUPLICATE_LINE_MAX, limit=_DUPLICATES_SHOWN, elide=True,
         )
         more = (
             f"; and {omitted} more — the full set is in"
