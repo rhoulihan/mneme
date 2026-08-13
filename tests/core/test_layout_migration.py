@@ -96,7 +96,7 @@ def test_a_topic_both_layouts_carry_is_merged_not_overwritten(tmp_path):
     result = layout.migrate_legacy_facts(repo)
 
     assert result.moved == []
-    assert result.merged == [f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"]
+    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"
     text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
     assert text.count("the lb keeps stale targets") == 1  # canonical wins, no duplicate
     assert text.count("90 second drain") == 1  # the bullet only the legacy file had
@@ -119,7 +119,7 @@ def test_a_restamped_retagged_copy_of_a_canonical_bullet_is_not_duplicated(tmp_p
 
     text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
     assert text.count(sentence) == 1
-    assert result.merged == [f"facts/deploys.md merged into {CANON}/deploys.md (0 bullets)"]
+    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (0 bullets)"
 
 
 def test_two_sentences_sharing_a_topic_key_are_both_kept(tmp_path):
@@ -429,9 +429,10 @@ def test_an_md_file_inside_a_shared_subdirectory_is_merged(tmp_path):
 
     result = layout.migrate_legacy_facts(repo)
 
-    assert result.merged == [
-        f"facts/archive/deploys.md merged into {CANON}/archive/deploys.md (1 bullets)"
-    ]
+    assert (
+        result.merged[0]
+        == f"facts/archive/deploys.md merged into {CANON}/archive/deploys.md (1 bullets)"
+    )
     text = (repo / CANON / "archive" / "deploys.md").read_text(encoding="utf-8")
     assert text.count("90 second drain") == 1
     assert not (repo / "facts").exists()
@@ -464,25 +465,34 @@ def test_a_canonical_file_with_no_frontmatter_gains_a_block_from_the_legacy_head
     assert not (repo / "facts").exists()
 
 
-def test_an_unterminated_canonical_header_keeps_the_legacy_header_in_the_body(tmp_path):
-    """The other shape stays as it was: nothing under an unterminated delimiter can be
-    proven to be metadata, so a created block would be a guess at what the file meant."""
+def test_readable_legacy_metadata_is_not_buried_in_an_unterminated_canonical_file(tmp_path):
+    """Metadata is knowledge too, and the same refusal protects it.
+
+    This fixture used to assert that `owner: sre` had ARRIVED in the canonical file — a
+    buried-bytes assertion: the destination's header is unterminated, so the reader yields
+    nothing from it, and appending the legacy keys there while deleting the file that held
+    them made three retrievable keys unretrievable while the report said "merged". The
+    merge is refused instead, and the check is the one the sibling module uses: the saved
+    file parses, nothing was dropped, and no key that was readable before is gone.
+    """
     repo = make_repo(tmp_path)
-    write(repo / CANON / "deploys.md", "---\ntopic: deploys\n" + bullet("canonical bullet") + "\n")
-    write(repo / "facts" / "deploys.md", "---\ntopic: deploys\nowner: sre\n---\n")
+    canonical_text = "---\ntopic: deploys\n" + bullet("canonical bullet") + "\n"
+    write(repo / CANON / "deploys.md", canonical_text)
+    legacy_text = "---\ntopic: deploys\nowner: sre\nsources: incident-4412\n---\n"
+    write(repo / "facts" / "deploys.md", legacy_text)
+    before, _body = units.parse_frontmatter(legacy_text)
 
     result = layout.migrate_legacy_facts(repo)
 
-    lines = (repo / CANON / "deploys.md").read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "---"  # untouched: no second block invented above it
-    assert "owner: sre" in lines  # carried verbatim, never dropped
-    # `topic: deploys` now appears twice — once in the canonical file's own (unterminated)
-    # header and once in the carried legacy header. Deduplicating non-bullet lines was
-    # dropped: it deleted a `---` that closed a block and a fence that closed a code span,
-    # each "a duplicate" by text and structure by role. A repeated line costs a line; a
-    # deleted one costs knowledge, and this module may only make the first trade.
-    assert lines.count("topic: deploys") == 2
-    assert any("verbatim" in note for note in result.merged[1:])
+    aside = repo / CANON / "deploys.legacy.md"
+    assert aside.is_file(), "the readable legacy file must be kept, not buried"
+    after, _body = units.parse_frontmatter(aside.read_text(encoding="utf-8"))  # parses
+    assert set(before) <= set(after)  # every key that was readable still is
+    assert after["owner"] == "sre" and after["sources"] == "incident-4412"
+    # The unreadable destination is left exactly as it was — nothing appended into it.
+    assert (repo / CANON / "deploys.md").read_text(encoding="utf-8") == canonical_text
+    assert any("kept separate" in line for line in result.moved)
+    assert not (repo / "facts").exists()
 
 
 def test_a_canonical_file_that_is_empty_gains_the_legacy_header_and_bullets(tmp_path):
@@ -527,7 +537,7 @@ def test_a_carried_line_with_an_exotic_separator_is_not_split_in_two(tmp_path):
 
     text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
     assert text.split("\n")[-2] == exotic  # one line, separator intact
-    assert result.merged == [f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"]
+    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (1 bullets)"
 
 
 def test_legacy_frontmatter_keys_the_canonical_file_lacks_are_carried_over(tmp_path):
@@ -548,10 +558,8 @@ def test_legacy_frontmatter_keys_the_canonical_file_lacks_are_carried_over(tmp_p
     meta, body = units.parse_frontmatter(text)
     assert meta == {"topic": "deploys", "owner": "platform-team", "sources": "incident-4412"}
     assert body.strip() == shared  # the body is untouched: the bullet was already there
-    assert result.merged == [
-        f"facts/deploys.md merged into {CANON}/deploys.md (0 bullets)",
-        "facts/deploys.md: frontmatter key(s) carried over: owner, sources",
-    ]
+    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (0 bullets)"
+    assert "frontmatter key(s) carried over: owner, sources" in " ".join(result.merged)
     assert not (repo / "facts").exists()
 
 

@@ -156,9 +156,10 @@ def _migrate_into(
                     _move(repo, src, aside, rel_src, rel_aside)
                     result.moved.append(
                         f"{rel_src} -> {rel_aside} (kept separate: merging into {rel_dest}"
-                        f" would have made {len(refused.lost)} readable fact(s) unreadable,"
-                        f" because {rel_dest} does not parse — fix its frontmatter and"
-                        " merge the two by hand)"
+                        f" would have made {len(refused.lost)} readable item(s) unreadable,"
+                        f" because {rel_dest} does not parse — fix its frontmatter and merge"
+                        " the two by hand. Note the saved file's unit ids move with its"
+                        f" name, from facts/{name[:-3]}#… to facts/{rel_aside.rsplit('/', 1)[-1][:-3]}#…)"
                     )
                 continue
             if src.is_dir() and dest.is_dir() and not dest.is_symlink():
@@ -410,23 +411,34 @@ def _reader_accepts(meta_lines: list[str]) -> bool:
 
 
 def _retrievable(text: str) -> set[str]:
-    """The fact sentences a READER can actually get out of `text`, normalized.
+    """Everything a READER can actually get out of `text`: fact sentences AND metadata keys.
 
-    Not the bullets the bytes contain — the ones `units.parse_frontmatter` plus the bullet
-    grammar yield, because that pair is what lint, the index build, search and the classify
-    bundle all walk. A file whose header the parser rejects yields nothing at all, however
-    many bullets are sitting in it, which is the whole reason this set is the unit of
-    measurement here: knowledge lost is knowledge that stopped being retrievable.
+    Not what the bytes contain — what `units.parse_frontmatter` plus the bullet grammar
+    yield, because that pair is what lint, the index build, search and the classify bundle
+    all walk. A file whose header the parser rejects yields nothing at all, however much is
+    sitting in it, which is why this set is the unit of measurement: knowledge lost is
+    knowledge that stopped being retrievable.
+
+    Metadata counts. Measuring only bullets left a legacy file that parses and carries
+    `topic:`/`owner:`/`sources:` but no parseable bullet free to be folded into a canonical
+    file the reader rejects and then deleted, with success reported — the same failure this
+    check exists to stop, one field type over. `_carry_meta` has always said as much: an
+    `owner:` key "is a line a human committed exactly as much as a bullet is".
+
+    Keys, not key/value pairs, deliberately: when both files set the same key the canonical
+    value wins the header and the legacy block travels into the body with both values named
+    in the report. That is a documented reconciliation, not a disappearance — the key is
+    still retrievable. A key that yields NOTHING afterwards is the loss this measures.
     """
     try:
-        _meta, body = units.parse_frontmatter(text)
+        meta, body = units.parse_frontmatter(text)
     except MnemeError:
         return set()
-    found: set[str] = set()
+    found = {f"meta:{key}" for key in meta}
     for line in _line_contents(body):
         bullet = _bullet(line)
         if bullet is not None:
-            found.add(_normalized(bullet.text))
+            found.add(f"fact:{_normalized(bullet.text)}")
     return found
 
 
@@ -603,7 +615,10 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
             meta_notes.append(
                 f"{rel_src}: its header is not readable as frontmatter, so those lines"
                 f" travelled into the body of {rel_dest} instead of becoming a block —"
-                " nothing was dropped; promote them in review if they were meant as metadata"
+                " every line is there as prose; promote them in review if they were meant"
+                " as metadata. Its two `---` delimiters are not carried: they delimited a"
+                " block that no longer exists, and a stray pair in a body is read as a"
+                " header on the next pass"
             )
     elif canonical_meta is None:
         # An UNTERMINATED block (or a legacy file with no keys to carry). Nothing below the
@@ -623,6 +638,7 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     bullets = 0
     verbatim = 0
     divergent = 0
+    duplicates = 0
     for line in legacy_body:
         if not line.strip():
             continue
@@ -630,7 +646,12 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         if bullet is not None:
             text = _normalized(bullet.text)
             if text in texts:
-                continue  # the same knowledge, already canonical: canonical wins
+                # The same knowledge, already canonical: canonical wins the sentence. Its
+                # category, tags and verified stamp go with it though, so the count is
+                # reported — a reviewer who wants the legacy line's `#tags` back needs to
+                # know one was folded away, not just that the file grew by nothing.
+                duplicates += 1
+                continue
             texts.add(text)
             if bullet.topic_key in keys:
                 divergent += 1
@@ -666,6 +687,12 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         )
     if verbatim:
         notes.append(f"{rel_src}: {verbatim} unparsed line(s) carried over verbatim")
+    if duplicates:
+        notes.append(
+            f"{rel_src}: {duplicates} bullet(s) already said what a canonical bullet says"
+            " — the canonical line kept, so their tags, category and verified stamp were"
+            " folded away with them; the diff has them if you want one back"
+        )
     notes.extend(meta_notes)
     _remove(repo, src, rel_src)
     return notes
