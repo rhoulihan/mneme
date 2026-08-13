@@ -22,7 +22,7 @@ import subprocess
 
 import pytest
 
-from mneme_core import classify, layout, units
+from mneme_core import classify, layout, lint, units
 from mneme_core.errors import MnemeError
 from mneme_index import build, db
 
@@ -481,6 +481,49 @@ def test_a_wholesale_restamped_topic_file_names_every_line_it_folded(tmp_path):
     assert "8 bullet(s)" in note
     for s in sentences:
         assert s in note, f"folded rendering not named in the note: {s}"
+
+
+def test_the_migration_never_newly_blinds_a_file_to_lint(tmp_path):
+    """MN009 and MN010 are the codes that mean a reader has lost the file.
+
+    Lint is the fourth reader of a fact file's `topic` (`lint.lint_fact_file`), and MN009
+    fires when that key is absent — so if `_carry_meta` could ever demote `topic` out of a
+    header, lint would say so. MN010 means the file does not parse at all: invisible to the
+    index, search, the classify bundle and lint's own bullet checks.
+
+    MN006 is deliberately not in this property. An unterminated legacy header is MN010
+    BEFORE the merge — the whole file unreadable — and after it those lines live in a file
+    that parses, where lint can finally name the one malformed bullet. Trading "this file
+    is invisible" for "this line is malformed" is the migration doing its job.
+    """
+    blinding = {"MN009", "MN010"}
+    headers = [
+        "",
+        "---\ntopic: t\n---\n",
+        "---\nowner: platform\n---\n",  # no topic: MN009 before AND after
+        "---\ntopic: t\n",  # unterminated: MN010 before
+        "---\nnot a key line\ntopic: t\n---\n",
+        "---\ntags:\n- a\n- b\n---\n",
+    ]
+    bodies = [CANONICAL_BULLET, LEGACY_BULLET, "- [broken not a bullet\nprose\n", ""]
+    for i, canonical_header in enumerate(headers):
+        for j, legacy_header in enumerate(headers):
+            for k, canonical_body in enumerate(bodies):
+                for m, legacy_body in enumerate(bodies):
+                    repo = make_repo(tmp_path / f"{i}-{j}-{k}-{m}")
+                    write(repo / CANON / "t.md", canonical_header + canonical_body)
+                    write(repo / "facts" / "t.md", legacy_header + legacy_body)
+                    git(repo, "add", "-A")
+                    git(repo, "commit", "-m", "fixtures")
+                    before = {issue.code for issue in lint.lint_repo(repo)}
+
+                    layout.migrate_legacy_facts(repo)
+
+                    after = {issue.code for issue in lint.lint_repo(repo)}
+                    assert not (after & blinding) - before, (
+                        f"{canonical_header!r} + {canonical_body!r} <- "
+                        f"{legacy_header!r} + {legacy_body!r}: {sorted((after & blinding) - before)}"
+                    )
 
 
 def test_a_blank_topic_key_is_not_read_as_the_filename(tmp_path):

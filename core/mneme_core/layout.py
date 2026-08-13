@@ -687,7 +687,10 @@ def _carry_meta(
 
     Demotion is a real answer rather than a consolation because `topic` is the only fact
     file key any reader projects (`build._fact_rows`, `scaffold.regenerate_index_skill`,
-    `classify._fact_entries` all read exactly one). Nothing retrieves `owner:` into a row,
+    `classify._fact_entries` and `lint.lint_fact_file` — every `parse_frontmatter` caller
+    that reads a fact file, and all four read exactly one key; MN009 checks that this same
+    key is PRESENT, which a demotion would break, so `topic` is the one key `_carry_meta`
+    must never demote). Nothing retrieves `owner:` into a row,
     an FTS column or the classify bundle, so that line is content a human reads, and it
     reads the same three lines lower. `topic` is the exception and is never demoted
     quietly: `_lost` refuses the whole merge when a topic that labels facts would stop
