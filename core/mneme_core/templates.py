@@ -188,7 +188,7 @@ __pycache__/
 
 INDEX_SKILL_MD = """---
 name: knowledge-index
-description: Consult when you need durable facts from $name — constraints, gotchas, decisions, and runbook notes. $description Topics listed in this skill route to fact files under facts/.
+description: Consult when you need durable facts from $name — constraints, gotchas, decisions, and runbook notes. $description
 ---
 
 # $name fact index

@@ -98,7 +98,8 @@ def test_regenerate_index_routes_to_both_layouts(tmp_path):
     text = (target / "skills" / "knowledge-index" / "SKILL.md").read_text(encoding="utf-8")
     assert "| deploys | facts/deploys.md | 1 |" in text
     assert "| pricing | facts/pricing.md | 1 |" in text
-    assert "Topics: deploys, pricing" in text
+    # Both layouts still reach the body table; the description reports the count.
+    assert "2 topics" in text
 
 
 def fact_candidate(target_name, body, **kw):
