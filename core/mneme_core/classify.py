@@ -201,17 +201,26 @@ def _skill_entries(repo: Path, notes: list[str]) -> list[dict]:
 
 
 def bundle(home: Path, cwd: Path) -> dict:
-    """Everything the in-session librarian needs, and nothing it has to guess."""
+    """Everything the in-session librarian needs, and nothing it has to guess.
+
+    Key ORDER is part of the contract: the CLI serializes this dict with `json.dumps`,
+    which writes keys in insertion order, so an agent reads it top to bottom. The
+    instructions — which open with the standing rule — therefore come first, before the
+    fact and skill text this repo's contributors wrote, and the rule is restated last.
+    Shipping the rule as the final key, as this bundle used to, meant every injection in
+    the quoted content was read before the sentence that disarms it.
+    """
     scope, repo = resolve(home, cwd)
     notes: list[str] = []
     return {
+        "instructions": templates.CLASSIFY_INSTRUCTIONS,
         "plugin": scope.name,
         "repo": str(repo),
         "facts": _fact_entries(repo, notes),
         "skills": _skill_entries(repo, notes),
         "legacy_layout": (repo / "facts").is_dir(),
         "notes": notes,
-        "instructions": templates.CLASSIFY_INSTRUCTIONS,
+        "standing_rule": templates.STANDING_RULE_REMINDER,
     }
 
 

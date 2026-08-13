@@ -44,10 +44,16 @@ _MAX_SIMILAR_QUERY = 500
 
 @dataclass
 class _FileDiff:
-    """One file's section of a unified diff: its path and the lines it adds/removes."""
+    """One file's section of a unified diff: its path and the lines it adds/removes.
+
+    `rejected` carries the raw header text of a path that could not be a repo path at all
+    (see `_header_target`). It is distinct from `path is None` for /dev/null: one is a
+    file being created, the other is a fabrication a human should be told about.
+    """
 
     path: str | None
     new_file: bool
+    rejected: str | None = None
     added: list[tuple[int, str]] = field(default_factory=list)
     removed: list[tuple[int, str]] = field(default_factory=list)
 
@@ -117,11 +123,15 @@ def _walk_diff(diff: str) -> list[_FileDiff]:
             new_file = True
             continue
         if line.startswith("--- "):
-            new_file = new_file or _header_path(line) is None
+            old, rejected = _header_target(line)
+            # Only /dev/null means "new file". A REJECTED old side is a fabrication, and
+            # reading it as a creation would let it dress the next header as a new skill.
+            new_file = new_file or (old is None and rejected is None)
             header_ready = True
             continue
         if line.startswith("+++ ") and header_ready:
-            current = _FileDiff(path=_header_path(line), new_file=new_file)
+            path, rejected = _header_target(line)
+            current = _FileDiff(path=path, new_file=new_file, rejected=rejected)
             files.append(current)
             new_file, header_ready = False, False
     return files
@@ -142,20 +152,37 @@ class PrFact:
     unit_id: str = ""
 
 
-def _header_path(line: str) -> str | None:
-    """The repo-relative path a `+++ `/`--- ` diff header names, or None for /dev/null."""
-    path = line[4:].strip()
+def _header_target(line: str) -> tuple[str | None, str | None]:
+    """`(repo-relative path, rejected raw text)` for one `+++ `/`--- ` diff header.
+
+    Exactly one of the two is ever set, and `(None, None)` means /dev/null — the file is
+    being created or deleted, which is structure, not a fabrication.
+
+    A path git wrote is POSIX and inside the repo. Anything else is a claim a contributor
+    made about where their lines belong, and this is the only place that claim is checked.
+    A leading slash or a `..` segment was always refused; a BACKSLASH segment is the same
+    traversal in Windows clothing and was not. It mattered because the fact-file patterns
+    match a FLAT directory, so `facts/..\\..\\evil.md` cleared them with the whole escape
+    sitting inside the filename segment: triage attributed the bullet to that path, minted
+    `facts/..\\..\\evil#<key>` as its unit id, and handed the maintainer a name an
+    extraction is told to write back to. A NUL is refused for the same reason — a path
+    that truncates differently in a different consumer is not one name.
+    """
+    raw = line[4:].strip()
     # Plain unified diffs (not `git diff`) append a tab-separated timestamp.
-    path = path.split("\t", 1)[0].strip()
-    if not path or path == "/dev/null":
-        return None
-    if path[:2] in ("a/", "b/"):
-        path = path[2:]
-    # A leading slash or a `..` segment cannot name anything inside the repo; treating
-    # such a path as "no current file" keeps hostile diffs from ever naming a target.
-    if not path or path.startswith("/") or ".." in path.split("/"):
-        return None
-    return path
+    raw = raw.split("\t", 1)[0].strip()
+    if not raw or raw == "/dev/null":
+        return None, None
+    path = raw[2:] if raw[:2] in ("a/", "b/") else raw
+    if (
+        not path
+        or path.startswith("/")
+        or ".." in path.split("/")
+        or "\\" in path
+        or "\x00" in path
+    ):
+        return None, raw
+    return path, None
 
 
 def _fact_stem(path: str) -> str | None:
@@ -221,6 +248,15 @@ def _added_facts(
     facts: list[PrFact] = []
     skipped: list[str] = []
     for section in sections:
+        if section.rejected is not None:
+            # Said out loud rather than dropped: a maintainer who sees nothing from a PR
+            # cannot tell "touched no facts" from "named a path we refused to believe".
+            skipped.append(
+                f"PR {pr_number}: diff header names"
+                f" {section.rejected[:_SKIP_REASON_CAP]!r}, which is not a path inside"
+                " this repo — its lines were not read; open the pull request to see them"
+            )
+            continue
         stem = _fact_stem(section.path) if section.path else None
         if stem is None:
             continue
@@ -480,7 +516,14 @@ def triage(home: Path, cwd: Path) -> dict:
     finally:
         if conn is not None:
             conn.close()
+    # Key ORDER is part of the contract: the CLI serializes this with `json.dumps`, which
+    # writes keys in insertion order, so the agent reads it top to bottom. The
+    # instructions — which open with the standing rule — come before the first byte of
+    # pull-request text, and the rule is restated as the last key (below). Shipping it
+    # last, as this bundle used to, put every injection ahead of the sentence that
+    # disarms it.
     bundle = {
+        "instructions": templates.REVIEW_INSTRUCTIONS,
         "plugin": scope.name,
         "repo": str(repo),
         # The clone these annotations were computed against, and whether it has fallen
@@ -497,7 +540,6 @@ def triage(home: Path, cwd: Path) -> dict:
         "legacy_layout": (repo / "facts").is_dir(),
         "prs": prs,
         "truncated": truncated,
-        "instructions": templates.REVIEW_INSTRUCTIONS,
     }
     if truncated:
         # Said in words as well as in a flag: the maintainer acting on this bundle is
@@ -506,4 +548,6 @@ def triage(home: Path, cwd: Path) -> dict:
             f"the pull-request listing filled its limit at {len(listed)} — more open pull"
             " requests exist than were triaged here; triage these, then re-run"
         )
+    # Last key, after every quoted PR title and bullet: the closing half of the sandwich.
+    bundle["standing_rule"] = templates.STANDING_RULE_REMINDER
     return bundle
