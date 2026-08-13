@@ -43,6 +43,11 @@ from .errors import MnemeError
 
 LEGACY_DIRNAME = "facts"
 
+# How many folded duplicate renderings a merge note writes out before pointing at git. A
+# fact bullet is one line, and a note that names 25 of them is still shorter than the diff
+# a reviewer would otherwise have to read to find them.
+_DUPLICATES_SHOWN = 25
+
 
 def _harvest():
     """The harvest module, imported on use.
@@ -556,14 +561,27 @@ def _readable(path: Path, text: str) -> _Readable:
 
 
 def _dedup(files: list[_Readable]) -> dict[str, tuple]:
-    """The rows a reader can actually retrieve across these files, first file winning.
+    """The rows the INDEX can retrieve across these files, first file winning.
 
     Unit ids are `facts/<stem>#<key>` — they carry the file's STEM, not its directory — so
     a legacy file and the canonical file it collides with produce the same ids, and
-    `index_tree` indexes only the first and reports the second as a duplicate. Two
-    renderings of one sentence under one stem were therefore never both retrievable, and a
-    merge that keeps one of them has taken nothing away. Measuring them as two (the fifth
-    attempt) is what made the migration refuse the majority of ordinary collisions.
+    `index_tree` stores only the first, reporting the second in `stats.skipped` as a
+    duplicate. Two renderings of one sentence under one stem are therefore never both in
+    the index, and folding one away costs `mneme search`, `list_facts` and the router
+    nothing. Measuring them as two (an earlier attempt) is what made the migration refuse
+    the majority of ordinary collisions.
+
+    Scoped deliberately, because it is NOT true of every reader. `classify._fact_entries`
+    and `cli._verify_cmd` walk `units.fact_files` and emit one entry per bullet per FILE,
+    with no dedup, so both renderings reach the librarian bundle and the staleness report
+    while the two files coexist — and after this merge only the canonical one does. That
+    cost is accepted rather than overlooked: Plan 12's constraint is topic-key dedup with
+    the canonical file winning a collision, `units.fact_text_hash` already defines a fact's
+    identity as its sentence alone (so declines and duplicate detection draw the same
+    line), and the fold is reported with the folded line written out in full, which is more
+    than the pre-migration duplicate ever got. What may NOT be lost is a row the index
+    holds, a topic that labels facts, or a frontmatter line — those are `_lost`'s strict
+    properties.
     """
     rows: dict[str, tuple] = {}
     for f in files:
@@ -588,9 +606,11 @@ def _lost(before: list[_Readable], after: list[_Readable]) -> set[tuple[str, str
 
     Four properties, each one a reader's own view rather than a model of it: the file still
     parses (a fact file that does not is invisible to lint, the index, search and the
-    classify bundle, however intact its bytes are); every retrievable row is still
-    retrievable, unchanged in every column a reader filters on; every topic that labelled a
-    fact still labels one; and every frontmatter line still exists SOMEWHERE in the result.
+    classify bundle, however intact its bytes are); every row the INDEX holds is still
+    held, unchanged in every column a reader filters on (`_dedup` — which is where the
+    scope of that word is argued, and where the one thing this does not protect is named);
+    every topic that labelled a fact still labels one; and every frontmatter line still
+    exists SOMEWHERE in the result.
 
     That last one is deliberately looser than the others. A key whose value the two files
     disagree on cannot stay a key — one file, one value — so `_carry_meta` demotes the
@@ -872,12 +892,14 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         if bullet is not None:
             text = _normalized(bullet.text)
             if text in texts:
-                # The same knowledge, already canonical: canonical wins the sentence. Both
-                # files share a stem, so both renderings share a unit id and only the
-                # canonical one was ever retrievable (`_dedup`) — folding this one away
-                # takes nothing from a reader. It can still differ in the columns a HUMAN
-                # reads, so the line itself goes into the note rather than a tally: a
-                # reviewer who wants this stamp or these tags back can see what they were.
+                # The same knowledge, already canonical: canonical wins the sentence, which
+                # is Plan 12's collision rule and `fact_text_hash`'s notion of identity.
+                # Both files share a stem, so both renderings share a unit id and only the
+                # canonical one is in the INDEX (`_dedup` — and see there for the readers
+                # that do see both, and why losing this rendering from them is accepted).
+                # It can still differ in the columns a HUMAN reads, so the line itself goes
+                # into the note rather than a tally: a reviewer who wants this stamp or
+                # these tags back can see what they were without reading the diff.
                 duplicates.append(line.strip())
                 continue
             texts.add(text)
@@ -917,8 +939,19 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     if verbatim:
         notes.append(f"{rel_src}: {verbatim} unparsed line(s) carried over verbatim")
     if duplicates:
-        shown = "; ".join(duplicates[:3])
-        more = f"; and {len(duplicates) - 3} more" if len(duplicates) > 3 else ""
+        # Written out in full up to a cap, and the cap says where the rest are. This note
+        # IS the record: the fold is sound because the index never held these renderings
+        # (`_dedup`), but the classify bundle and `mneme verify` did, so a reviewer's only
+        # remaining view of a folded `#tag` or `verified:` stamp is this line. Truncating
+        # at three bit hardest in the very shape this is for — a topic file copied and
+        # re-verified wholesale, where every bullet folds and all but three vanish.
+        shown = "; ".join(duplicates[:_DUPLICATES_SHOWN])
+        more = (
+            f"; and {len(duplicates) - _DUPLICATES_SHOWN} more — the full set is in"
+            f" {rel_src} as of the commit before this migration"
+            if len(duplicates) > _DUPLICATES_SHOWN
+            else ""
+        )
         notes.append(
             f"{rel_src}: {len(duplicates)} bullet(s) already said what a canonical bullet"
             " says — the canonical line kept. Their own rendering is folded away with them,"

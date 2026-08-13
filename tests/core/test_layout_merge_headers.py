@@ -22,7 +22,7 @@ import subprocess
 
 import pytest
 
-from mneme_core import layout, units
+from mneme_core import classify, layout, units
 from mneme_core.errors import MnemeError
 from mneme_index import build, db
 
@@ -417,6 +417,72 @@ def test_the_refusal_note_names_what_it_protected(tmp_path):
     assert "#y" in note and "2026-08-12" in note  # rendered as its author wrote it
 
 
+def test_the_one_thing_a_folded_duplicate_costs_is_paid_into_the_note(tmp_path):
+    """The accepted cost of the fold, pinned so it stays accepted rather than forgotten.
+
+    `_dedup` is scoped to the INDEX on purpose: `index_tree` drops a duplicate unit id, so
+    a folded rendering was never in the index. But `classify._fact_entries` and
+    `cli._verify_cmd` walk `units.fact_files` with no dedup, so while the two files coexist
+    both renderings DO reach the librarian bundle and the staleness report, and after the
+    merge only the canonical one does. That is the cost, it is real, and it is accepted:
+    Plan 12's collision rule is that the canonical file wins, and `units.fact_text_hash`
+    already treats the sentence alone as a fact's identity.
+
+    What makes it acceptable is that the note carries the folded line out in full, so this
+    test pins BOTH halves — the bundle shrinks, and the rendering it lost is in the report.
+    """
+    repo = make_repo(tmp_path)
+    sentence = "the lb keeps stale targets"
+    write(repo / CANON / "deploys.md", f"---\ntopic: deploys\n---\n- [gotcha] {sentence} #deploy (verified: 2026-08-12)\n")
+    write(repo / "facts" / "deploys.md", f"---\ntopic: deploys\n---\n- [constraint] {sentence} #lb (verified: 2026-01-01)\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+    notes = []
+    before = classify._fact_entries(repo, notes)
+    assert len(before) == 2  # both renderings reach the librarian while both files exist
+    indexed_before = topic_rows(tmp_path, repo, "before")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    after = classify._fact_entries(repo, notes)
+    assert len(after) == 1 and after[0]["category"] == "gotcha"  # canonical wins
+    # The index is untouched, which is the line between accepted cost and knowledge loss.
+    assert topic_rows(tmp_path, repo, "after") == indexed_before
+    note = " ".join(result.merged)
+    assert "[constraint]" in note and "#lb" in note and "2026-01-01" in note
+
+
+def test_a_wholesale_restamped_topic_file_names_every_line_it_folded(tmp_path):
+    """The note is the record, so it may not quietly stop at three.
+
+    A topic file copied and re-verified wholesale is the realistic pre-0.5 shape this fold
+    is built for: every bullet is a duplicate, so every rendering is folded, and a cap of
+    three left the rest visible only in git history — truncating hardest exactly where the
+    note is load-bearing.
+    """
+    repo = make_repo(tmp_path)
+    sentences = [f"the {n} service keeps stale targets around" for n in "abcdefgh"]
+    write(
+        repo / CANON / "deploys.md",
+        "---\ntopic: deploys\n---\n"
+        + "".join(f"- [gotcha] {s} #deploy (verified: 2026-08-12)\n" for s in sentences),
+    )
+    write(
+        repo / "facts" / "deploys.md",
+        "---\ntopic: deploys\n---\n"
+        + "".join(f"- [constraint] {s} #lb (verified: 2026-01-01)\n" for s in sentences),
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    note = " ".join(result.merged)
+    assert "8 bullet(s)" in note
+    for s in sentences:
+        assert s in note, f"folded rendering not named in the note: {s}"
+
+
 def test_a_blank_topic_key_is_not_read_as_the_filename(tmp_path):
     """`meta.get("topic") or stem` is not the readers' lookup — `meta.get("topic", stem)` is.
 
@@ -460,8 +526,13 @@ def test_the_topic_pin_agrees_with_the_parser_about_where_the_header_is(tmp_path
     delimiter line made the pin prepend a WHOLE NEW block above a header the parser was
     already reading, demoting every key in it to prose: the refusal path destroying the
     metadata it was invoked to protect.
+
+    The table is every character the two splitters disagree about, not a sample of
+    them: the argument this fix rests on is "write in the parser's own line space",
+    so the test has to cover the whole of that line space.
     """
-    for sep in ["\x0b", "\x0c", "\x85", "\x1c", " ", " "]:
+    for sep in ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ", " "]:
+        assert len(f"a{sep}b".splitlines()) == 2, f"{sep!r} is not a splitlines break"
         repo = make_repo(tmp_path / f"sep-{ord(sep)}")
         # A differing topic, so the merge is refused and the pin runs before the rename.
         write(repo / CANON / "t.md", "---\ntopic: other-topic\n---\n" + CANONICAL_BULLET)
