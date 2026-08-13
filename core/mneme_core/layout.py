@@ -153,11 +153,20 @@ def _migrate_into(
                     # broken, so anything folded into it stops being retrievable. The file
                     # keeps its knowledge and its history under a free name beside it.
                     aside, rel_aside = _aside(canonical, name, rel_canonical, rel_src)
+                    before = _readable(src, _read_text(src, rel_src))
                     pinned = _pin_stem_topic(src, Path(name).stem, rel_src)
                     _move(repo, src, aside, rel_src, rel_aside)
+                    # The refusal path writes (the pin) and renames (the move), and a
+                    # rename is a content change here: the stem feeds both the unit id and
+                    # the topic. The ids are meant to move and the note says so; a topic
+                    # that labels facts is not, and the pin exists to hold it. Measured
+                    # rather than assumed, so an unpinnable file is REPORTED as having
+                    # moved its topic instead of quietly doing it.
+                    after = _readable(aside, _read_text(aside, rel_aside))
+                    stranded = _labelled([before]) - _labelled([after])
                     result.moved.append(
                         f"{rel_src} -> {rel_aside} (kept separate: merging into {rel_dest}"
-                        f" would have made {len(refused.lost)} readable item(s) unreadable"
+                        f" would have cost {len(refused.lost)} readable item(s)"
                         f" — {_describe_lost(refused.lost)} —"
                         " fix the two by hand and merge them. Note the saved file's unit ids"
                         f" move with its name, from facts/{name[:-3]}#… to"
@@ -166,6 +175,13 @@ def _migrate_into(
                             f"; `topic: {Path(name).stem}` was written into it first, so the"
                             " topic its old filename gave it survives the rename"
                             if pinned
+                            else ""
+                        )
+                        + (
+                            f". Its facts moved to topic “{after.topic}”: the topic"
+                            f" “{'”, “'.join(sorted(stranded))}” came from its filename and"
+                            " could not be written into its header — set `topic:` by hand"
+                            if stranded
                             else ""
                         )
                         + ")"
@@ -228,15 +244,29 @@ def _pin_stem_topic(path: Path, stem: str, rel: str) -> bool:
         return False
     h = _harvest()
     raw, bom = h._read_raw(path)
-    lines = h._lines_keepends(raw)
-    eol = h._dominant_eol(lines)
+    eol = h._dominant_eol(h._lines_keepends(raw))
     line = f"topic: {stem}" + eol
-    if _frontmatter_end([h._split_eol(l)[0] for l in lines]) is None:
-        lines[0:0] = ["---" + eol, line, "---" + eol]
+    # Written in the PARSER's line space, because the insert has to land inside the block
+    # the parser recognises. Deciding that with this module's CR/LF-only splitting put a
+    # brand-new block ABOVE a header the parser was already reading whenever the two
+    # disagreed (a `\x0b` in the opening delimiter line is enough), demoting every key in
+    # it to prose — a refusal path destroying the metadata it was invoked to protect.
+    # `splitlines(keepends=True)[0]` is the opening delimiter exactly as the parser sees
+    # it, terminator included, so appending after it leaves every other byte untouched.
+    opening = raw.splitlines(keepends=True)
+    if opening and opening[0].strip() == "---":
+        pinned = opening[0] + line + raw[len(opening[0]) :]
     else:
-        lines.insert(1, line)
+        pinned = "---" + eol + line + "---" + eol + raw
     with _guarded(rel, "cannot pin its topic before renaming it"):
-        path.write_text(bom + "".join(lines), encoding="utf-8", newline="")
+        path.write_text(bom + pinned, encoding="utf-8", newline="")
+    # The pin is a write on the refusal path, so it is measured like every other write here
+    # — and reverted rather than trusted if it costs anything, since moving the file aside
+    # unpinned loses at most the stem-derived topic while a bad pin can hide the whole file.
+    if _lost([_readable(path, text)], [_readable(path, _read_text(path, rel))]):
+        with _guarded(rel, "cannot restore it after abandoning the topic pin"):
+            path.write_text(bom + raw, encoding="utf-8", newline="")
+        return False
     return True
 
 
@@ -451,45 +481,156 @@ def _reader_accepts(meta_lines: list[str]) -> bool:
     return True
 
 
-def _retrievable(path: Path, text: str) -> set[tuple]:
-    """Everything a READER gets out of this file, in the readers' own terms.
+@dataclass(frozen=True)
+class _Readable:
+    """One fact file as its READERS see it — the whole basis of this module's guard.
 
-    Five attempts at this check each measured something strictly smaller than the property
-    demanded — bullets only, then metadata keys, then metadata values — and each time a
-    real reader was still projecting something the check could not see. So the identity
-    here is the row `mneme_index.build._fact_rows` stores and `regenerate_index_skill`
-    routes on, field for field:
+    Six attempts at that guard each measured something strictly smaller than the property
+    demanded (bullets only, then metadata keys, then metadata values, then a re-derivation
+    of the topic), and each time a real reader was still projecting something the check
+    could not see. So nothing here is derived twice: `rows` is keyed and shaped exactly
+    like `mneme_index.build._fact_rows`, `topic` uses the readers' own `meta.get("topic",
+    stem)` lookup (`or` is not that lookup — a present-but-empty `topic:` stays empty for
+    every reader and would map back to the stem here), and `parses` is the parser's own
+    verdict rather than a second grammar.
 
-    * the TOPIC is `meta.get("topic", stem)` — the filename is a value source, so a file
-      with no `topic:` key still has a retrievable topic, and renaming it moves that topic;
-    * a bullet's CATEGORY, TAGS and VERIFIED stamp are columns, not decoration —
-      `list_facts(category=…, tag=…)` filters on them and the classify bundle prints them,
-      so folding a bullet away because another file has the same sentence loses them;
-    * metadata values are retrievable in their own right.
-
-    `path` matters as much as `text`: the same bytes under a different name are not the
-    same rows.
+    `path` matters as much as `text`: the same bytes under a different name are different
+    rows, because the stem feeds both the unit id and the topic.
     """
+
+    rows: dict[str, tuple]
+    topic: str
+    header: tuple[str, ...]
+    lines: frozenset[str]
+    parses: bool
+
+
+def _parser_header(text: str) -> tuple[str, ...]:
+    """The raw lines the PARSER treats as frontmatter, in the parser's own line space.
+
+    Not `_sections`, which splits on CR/LF only because a fact bullet may legitimately
+    contain `\\x0b` and friends as data. That difference is right for deciding what to
+    CARRY (a line must move verbatim) and wrong for deciding what a reader can SEE: where
+    the two disagree, `str.splitlines` is the one whose answer the readers use.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ()
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return tuple(lines[1:i])
+    return ()
+
+
+def _readable(path: Path, text: str) -> _Readable:
+    lines = frozenset(_normalized(line) for line in text.splitlines() if line.strip())
+    header = _parser_header(text)
     try:
         meta, body = units.parse_frontmatter(text)
     except MnemeError:
-        return set()
-    topic = str(meta.get("topic") or path.stem)
-    found: set[tuple] = {("meta", key, _normalized(str(value))) for key, value in meta.items()}
-    for line in _line_contents(body):
+        return _Readable({}, "", header, lines, False)
+    topic = str(meta.get("topic", path.stem))
+    rows: dict[str, tuple] = {}
+    # `body.splitlines()` and `line.startswith("- [")`, because that is what all three
+    # readers do — not this module's own CR/LF-only splitting, which would see one line
+    # where `build._fact_rows` sees two.
+    for line in body.splitlines():
+        if not line.startswith("- ["):
+            continue
         bullet = _bullet(line)
-        if bullet is not None:
-            found.add(
-                (
-                    "fact",
-                    topic,
-                    _normalized(bullet.text),
-                    bullet.category,
-                    tuple(bullet.tags),
-                    bullet.verified or "",
-                )
-            )
-    return found
+        if bullet is None:
+            continue
+        # `setdefault`, not assignment: `index_tree` keeps the FIRST row for a unit id and
+        # reports the rest as duplicates, so first-wins is the retrievable one here too.
+        rows.setdefault(
+            units.fact_unit_id(path.stem, bullet.text),
+            (
+                topic,
+                _normalized(bullet.text),
+                bullet.category,
+                tuple(bullet.tags),
+                bullet.verified or "",
+            ),
+        )
+    return _Readable(rows, topic, header, lines, True)
+
+
+def _dedup(files: list[_Readable]) -> dict[str, tuple]:
+    """The rows a reader can actually retrieve across these files, first file winning.
+
+    Unit ids are `facts/<stem>#<key>` — they carry the file's STEM, not its directory — so
+    a legacy file and the canonical file it collides with produce the same ids, and
+    `index_tree` indexes only the first and reports the second as a duplicate. Two
+    renderings of one sentence under one stem were therefore never both retrievable, and a
+    merge that keeps one of them has taken nothing away. Measuring them as two (the fifth
+    attempt) is what made the migration refuse the majority of ordinary collisions.
+    """
+    rows: dict[str, tuple] = {}
+    for f in files:
+        for uid, row in f.rows.items():
+            rows.setdefault(uid, row)
+    return rows
+
+
+def _labelled(files: list[_Readable]) -> set[str]:
+    """Topics that LABEL at least one fact — the routing table's rows, per `scaffold`.
+
+    A topic with no facts under it names a file and nothing else, and a merge is entitled
+    to make one filename stop existing. A topic that labels facts is knowledge: it is what
+    `regenerate_index_skill` puts in the router's table and what `list_facts(topic=…)`
+    filters on, so an agent that could reach a fact through it must still be able to.
+    """
+    return {f.topic for f in files if f.rows}
+
+
+def _lost(before: list[_Readable], after: list[_Readable]) -> set[tuple[str, str]]:
+    """What the readers could retrieve before and cannot after. Empty means nothing broke.
+
+    Four properties, each one a reader's own view rather than a model of it: the file still
+    parses (a fact file that does not is invisible to lint, the index, search and the
+    classify bundle, however intact its bytes are); every retrievable row is still
+    retrievable, unchanged in every column a reader filters on; every topic that labelled a
+    fact still labels one; and every frontmatter line still exists SOMEWHERE in the result.
+
+    That last one is deliberately looser than the others. A key whose value the two files
+    disagree on cannot stay a key — one file, one value — so `_carry_meta` demotes the
+    legacy line into the body and notes both values for the reviewer. The line is still
+    there to reconcile from, and no reader ever projected `owner:` into a row, so demoting
+    it costs a reviewer nothing and refusing over it cost the migration two thirds of its
+    ordinary merges.
+    """
+    lost: set[tuple[str, str]] = set()
+    if any(f.parses for f in before) and not all(f.parses for f in after):
+        lost.add(("file", "the result would not parse as a fact file, hiding everything in it"))
+    rows_after = _dedup(after)
+    for uid, row in _dedup(before).items():
+        if rows_after.get(uid) != row:
+            lost.add(("fact", _render(row)))
+    for topic in _labelled(before) - _labelled(after):
+        lost.add(("topic", f"topic “{topic}”, which labels facts in the routing table"))
+    lines_after = frozenset().union(*(f.lines for f in after)) if after else frozenset()
+    for f in before:
+        for line in f.header:
+            if line.strip() and _normalized(line) not in lines_after:
+                lost.add(("frontmatter", line.strip()))
+    return lost
+
+
+def _render(row: tuple) -> str:
+    """A fact row written the way its author wrote it, so a reviewer can tell two apart.
+
+    Naming only the sentence and the category (the fourth attempt) named the two fields
+    most likely to be IDENTICAL to the line that survived, and never the field that
+    actually differed — a reviewer read "would have lost “X” [gotcha]" while “X” [gotcha]
+    was plainly still in the file.
+    """
+    topic, text, category, tags, verified = row
+    rendered = f"“{text}” [{category}]"
+    if tags:
+        rendered += " " + " ".join(f"#{t}" for t in tags)
+    if verified:
+        rendered += f" (verified: {verified})"
+    return f"{rendered} under topic “{topic}”"
 
 
 def _meta_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
@@ -520,10 +661,22 @@ def _carry_meta(
     line a human committed exactly as much as a bullet is — the merge is not entitled to
     decide it does not count, which is precisely what reading only the body did. A key the
     canonical file already carries is left alone (canonical wins, as it does for a bullet);
-    one whose value differs is *reported* rather than silently resolved, because both
-    values are knowledge and only a human can pick. Anything the frontmatter grammar cannot
-    key travels with the body instead of into the block, so a stray line in a legacy header
-    can never make the canonical header unparseable.
+    one whose value differs cannot stay a key, because one file has one header, so its line
+    is demoted into the body and *reported* rather than silently dropped: both values are
+    knowledge and only a human can pick.
+
+    Demotion is a real answer rather than a consolation because `topic` is the only fact
+    file key any reader projects (`build._fact_rows`, `scaffold.regenerate_index_skill`,
+    `classify._fact_entries` all read exactly one). Nothing retrieves `owner:` into a row,
+    an FTS column or the classify bundle, so that line is content a human reads, and it
+    reads the same three lines lower. `topic` is the exception and is never demoted
+    quietly: `_lost` refuses the whole merge when a topic that labels facts would stop
+    labelling them. Treating every key like `topic` (the sixth attempt) refused two thirds
+    of ordinary collisions to protect values nothing was retrieving.
+
+    Anything the frontmatter grammar cannot key travels with the body instead of into the
+    block, so a stray line in a legacy header can never make the canonical header
+    unparseable.
     """
     have: dict[str, str] = {}
     for key, block in _meta_blocks(canonical):
@@ -588,24 +741,21 @@ class _MergeWouldBury(Exception):
     instead, where its facts stay readable and a human reconciles the two in the PR.
     """
 
-    def __init__(self, lost: set[str]):
+    def __init__(self, lost: set[tuple[str, str]]):
         super().__init__("the merge would bury retrievable facts")
         self.lost = lost
 
 
-def _describe_lost(lost: set[tuple]) -> str:
+def _describe_lost(lost: set[tuple[str, str]]) -> str:
     """Name what a refusal protected, in the terms a reviewer reconciles by.
 
-    A refusal is now the COMMON outcome of two files disagreeing about a metadata value, and
-    `_carry_meta`'s "X (kept) vs Y" note is discarded with the rest of the merge when it
-    fires — so without this the only line in the pull request would be a count, naming
-    neither the key nor either value, and a reviewer would have to diff to find out what
-    the migration declined to decide.
+    The notes a refused merge would have produced are discarded along with the merge, so
+    this is the only line in the pull request describing what the migration declined to
+    decide — a bare count names neither the topic nor the fact nor either value, and leaves
+    a reviewer to diff for it.
     """
-    shown = []
-    for item in sorted(lost, key=str)[:3]:
-        shown.append(f"{item[1]}: {item[2]}" if item[0] == "meta" else f"“{item[2]}” [{item[3]}]")
-    more = f" and {len(lost) - len(shown)} more" if len(lost) > len(shown) else ""
+    shown = [f"{kind}: {what}" for kind, what in sorted(lost)[:3]]
+    more = f"; and {len(lost) - len(shown)} more" if len(lost) > len(shown) else ""
     return "; ".join(shown) + more
 
 
@@ -652,13 +802,17 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     dest_text = _read_text(dest, rel_dest)
     src_text = _read_text(src, rel_src)
     # Measured on the way in, checked on the way out: the merge is allowed to move a fact
-    # anywhere, and not allowed to make one stop being readable.
-    retrievable_before = _retrievable(dest, dest_text) | _retrievable(src, src_text)
+    # anywhere, and not allowed to make one stop being readable. The canonical file goes
+    # FIRST, because that is the order `units.fact_files` yields and therefore the order
+    # `index_tree` resolves a duplicate unit id in — the canonical rendering is the
+    # retrievable one, before the merge and after it.
+    readable_before = [_readable(dest, dest_text), _readable(src, src_text)]
     canonical_meta, canonical_body = _sections(dest_text)
     legacy_meta, legacy_body = _sections(src_text)
     carried_meta: list[str] = []
     new_block: list[str] = []
     meta_notes: list[str] = []
+    demoted_meta = 0
     if canonical_meta is None and legacy_meta and not _opens_frontmatter(canonical_body):
         # The canonical file has no header at all. Dropping the legacy keys into its body
         # would leave `topic:`/`owner:` sitting in the prose — nothing lost, but a file
@@ -678,6 +832,7 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
             )
         else:
             legacy_body = legacy_meta + legacy_body
+            demoted_meta = len(legacy_meta)
             meta_notes.append(
                 f"{rel_src}: its header is not readable as frontmatter, so those lines"
                 f" travelled into the body of {rel_dest} instead of becoming a block —"
@@ -696,6 +851,11 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         carried_meta, leftover, meta_notes = _carry_meta(
             canonical_meta, legacy_meta, rel_src, rel_dest
         )
+        # Demoted header lines lead the body from here on. They are counted apart from the
+        # verbatim tally below: a demoted `owner:` is a line the merge understood and chose
+        # to place, and reporting it as "unparsed" tells a reviewer to go looking for a
+        # malformed line that does not exist. `_carry_meta`'s own note already names it.
+        demoted_meta = len(leftover)
         legacy_body = leftover + legacy_body
     canonical_bullets = [b for b in (_bullet(l) for l in canonical_body) if b is not None]
     texts = {_normalized(b.text) for b in canonical_bullets}
@@ -704,19 +864,21 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     bullets = 0
     verbatim = 0
     divergent = 0
-    duplicates = 0
-    for line in legacy_body:
+    duplicates: list[str] = []
+    for position, line in enumerate(legacy_body):
         if not line.strip():
             continue
         bullet = _bullet(line)
         if bullet is not None:
             text = _normalized(bullet.text)
             if text in texts:
-                # The same knowledge, already canonical: canonical wins the sentence. Its
-                # category, tags and verified stamp go with it though, so the count is
-                # reported — a reviewer who wants the legacy line's `#tags` back needs to
-                # know one was folded away, not just that the file grew by nothing.
-                duplicates += 1
+                # The same knowledge, already canonical: canonical wins the sentence. Both
+                # files share a stem, so both renderings share a unit id and only the
+                # canonical one was ever retrievable (`_dedup`) — folding this one away
+                # takes nothing from a reader. It can still differ in the columns a HUMAN
+                # reads, so the line itself goes into the note rather than a tally: a
+                # reviewer who wants this stamp or these tags back can see what they were.
+                duplicates.append(line.strip())
                 continue
             texts.add(text)
             if bullet.topic_key in keys:
@@ -734,10 +896,11 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         # (their sentence) and are deduped above; for every other line the module's own
         # doctrine settles it: a repeated line costs a line, a deleted one costs knowledge.
         carried.append(line)
-        verbatim += 1
+        if position >= demoted_meta:
+            verbatim += 1
     if carried or carried_meta or new_block:
         _apply_merge(dest, carried_meta, carried, rel_dest, new_block)
-    lost = retrievable_before - _retrievable(dest, _read_text(dest, rel_dest))
+    lost = _lost(readable_before, [_readable(dest, _read_text(dest, rel_dest))])
     if lost:
         # The one check that cannot be fooled by reasoning about either file's shape. Put
         # the destination back byte-for-byte and let the caller move the legacy file aside:
@@ -754,10 +917,12 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     if verbatim:
         notes.append(f"{rel_src}: {verbatim} unparsed line(s) carried over verbatim")
     if duplicates:
+        shown = "; ".join(duplicates[:3])
+        more = f"; and {len(duplicates) - 3} more" if len(duplicates) > 3 else ""
         notes.append(
-            f"{rel_src}: {duplicates} bullet(s) already said what a canonical bullet says"
-            " — the canonical line kept, so their tags, category and verified stamp were"
-            " folded away with them; the diff has them if you want one back"
+            f"{rel_src}: {len(duplicates)} bullet(s) already said what a canonical bullet"
+            " says — the canonical line kept. Their own rendering is folded away with them,"
+            f" so it is written out here: {shown}{more}"
         )
     notes.extend(meta_notes)
     _remove(repo, src, rel_src)

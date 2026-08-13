@@ -82,6 +82,24 @@ def fact_rows(tmp_path, repo, name):
         conn.close()
 
 
+def topic_rows(tmp_path, repo, name):
+    """The (topic, sentence) pairs the index can retrieve — the `name` column included.
+
+    `fact_rows` counts, which cannot see a fact that survived under the WRONG topic:
+    `list_facts(topic=…)` and the router's table both filter on that column, so a bullet
+    whose topic changed has stopped being reachable the way an agent reaches it.
+    """
+    conn = db.open_db(tmp_path / f"{name}.db")
+    try:
+        build.index_tree(conn, "p", repo)
+        return {
+            (r["name"], r["description"])
+            for r in conn.execute("SELECT * FROM units WHERE kind = 'fact'")
+        }
+    finally:
+        conn.close()
+
+
 def assert_merge_preserved(tmp_path, repo, legacy_header, canonical_path):
     """The three properties, checked around a real migration."""
     before = fact_rows(tmp_path, repo, "before")
@@ -258,11 +276,12 @@ def test_a_closing_code_fence_is_not_deleted_as_a_duplicate(tmp_path):
 
 
 def test_neither_of_two_differing_frontmatter_values_is_discarded(tmp_path):
-    """A colliding key with differing values keeps both files, not one value.
+    """A colliding key with differing values keeps both VALUES — one keyed, one demoted.
 
-    Demoting the loser into the body took it out of everything `parse_frontmatter` returns,
-    so a `topic:` a reader could search for before the migration was unfindable after —
-    with the report saying "merged". Both values stay metadata; a human reconciles them.
+    `topic` is the only fact-file key any reader projects into a row, so a differing
+    `owner:` costs a reader nothing once its line is still in the file, and the note names
+    both. Refusing the merge over it instead (an earlier round) protected a value nothing
+    was retrieving at the price of a duplicate topic file.
     """
     repo = make_repo(tmp_path)
     write(repo / CANON / "t.md", "---\ntopic: t\nowner: platform\n---\n" + CANONICAL_BULLET)
@@ -273,14 +292,53 @@ def test_neither_of_two_differing_frontmatter_values_is_discarded(tmp_path):
 
     result = layout.migrate_legacy_facts(repo)
 
-    canonical_meta, _b = units.parse_frontmatter((repo / CANON / "t.md").read_text(encoding="utf-8"))
-    aside_meta, _b = units.parse_frontmatter(
-        (repo / CANON / "t.legacy.md").read_text(encoding="utf-8")
-    )
+    merged = (repo / CANON / "t.md").read_text(encoding="utf-8")
+    canonical_meta, body = units.parse_frontmatter(merged)
     assert canonical_meta["owner"] == "platform"
-    assert aside_meta["owner"] == "sre-oncall-team"
+    assert "owner: sre-oncall-team" in body
     assert fact_rows(tmp_path, repo, "after") >= before
-    assert any("kept separate" in line for line in result.moved)
+    assert not (repo / CANON / "t.legacy.md").exists()
+    assert "owner: sre-oncall-team" in " ".join(result.merged)
+
+
+def test_an_ordinary_pre_0_5_collision_merges_rather_than_piling_up_asides(tmp_path):
+    """The migration's own function, measured: refusing loses nothing and achieves nothing.
+
+    A guard that treated every metadata value and every bullet rendering as retrievable
+    declined 64% of realistic legacy/canonical pairs, leaving `<stem>.legacy.md` beside
+    `<stem>.md` — two rows with the SAME topic in the routing table for the same sentence,
+    where the duplicate-unit-id rule had shown it once. This is that measurement, shrunk to
+    the shapes a pre-0.5 repo really carries. A merge is the expected outcome unless the
+    two files declare genuinely DIFFERENT topics, which only a human can reconcile.
+    """
+    headers = {
+        "mneme-written": "---\ntopic: t\n---\n",
+        "plus-owner": "---\ntopic: t\nowner: platform\n---\n",
+        "other-owner": "---\ntopic: t\nowner: sre\n---\n",
+        "no-header": "",
+    }
+    bodies = {
+        "same": CANONICAL_BULLET,
+        "restamped": CANONICAL_BULLET.replace("2026-08-12", "2026-01-01"),
+        "retagged": CANONICAL_BULLET.replace("#x", "#z"),
+        "disjoint": LEGACY_BULLET,
+    }
+    asides = []
+    for hc, canonical_header in headers.items():
+        for hl, legacy_header in headers.items():
+            for bc, canonical_body in bodies.items():
+                for bl, legacy_body in bodies.items():
+                    repo = make_repo(tmp_path / f"{hc}-{hl}-{bc}-{bl}")
+                    write(repo / CANON / "t.md", canonical_header + canonical_body)
+                    write(repo / "facts" / "t.md", legacy_header + legacy_body)
+                    git(repo, "add", "-A")
+                    git(repo, "commit", "-m", "fixtures")
+
+                    result = layout.migrate_legacy_facts(repo)
+
+                    if any("kept separate" in line for line in result.moved):
+                        asides.append(f"{hc}/{hl} {bc}/{bl}")
+    assert asides == [], f"ordinary collisions refused: {asides}"
 
 
 def test_a_differing_topic_stays_searchable(tmp_path):
@@ -339,22 +397,89 @@ def test_the_merge_paths_note_stream_is_pinned_exactly(tmp_path):
 
 
 def test_the_refusal_note_names_what_it_protected(tmp_path):
-    """A refusal is now the common outcome of two files disagreeing about a value.
+    """The notes a refused merge would have emitted die with it, so the refusal carries them.
 
-    `_carry_meta`'s "X (kept) vs Y" note is discarded along with the rest of the merge when
-    the refusal fires, so the refusal line has to carry that information or a reviewer gets
-    a bare count and has to diff to find out what the migration declined to decide.
+    A bare count names neither the topic nor the fact, leaving a reviewer to diff for what
+    the migration declined to decide. Naming only the sentence and the category was worse
+    than a count in the commonest case: both were still plainly in the canonical file.
     """
     repo = make_repo(tmp_path)
-    write(repo / CANON / "t.md", "---\ntopic: t\nowner: platform\n---\n" + CANONICAL_BULLET)
-    write(repo / "facts" / "t.md", "---\ntopic: t\nowner: sre-oncall-team\n---\n" + LEGACY_BULLET)
+    write(repo / CANON / "t.md", "---\ntopic: deploy-runbook\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\ntopic: incident-response\n---\n" + LEGACY_BULLET)
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "fixtures")
 
     result = layout.migrate_legacy_facts(repo)
 
     note = " ".join(result.moved)
-    assert "owner" in note and "sre-oncall-team" in note  # the value that would have gone
+    assert "incident-response" in note  # the topic that would have stopped labelling facts
+    assert "Legacy bullet arriving in the merge" in note  # and the fact it labels
+    assert "#y" in note and "2026-08-12" in note  # rendered as its author wrote it
+
+
+def test_a_blank_topic_key_is_not_read_as_the_filename(tmp_path):
+    """`meta.get("topic") or stem` is not the readers' lookup — `meta.get("topic", stem)` is.
+
+    `or` maps a present-but-EMPTY `topic:` back to the stem; `.get(key, default)` keeps the
+    empty string, and every reader uses the latter. A blank `topic:` parses and is
+    lint-clean (MN009 checks presence), so it is what a hand-written header really carries,
+    and reading it as the stem made the guard see one topic on both sides where the readers
+    saw two — merging a blank topic over a named one and emptying the `name` column that
+    `list_facts(topic=…)` filters on.
+    """
+    for label, canonical, legacy in [
+        (
+            "blank arriving from the legacy side",
+            CANONICAL_BULLET,
+            "---\ntopic:\nowner: sre\n---\n" + LEGACY_BULLET,
+        ),
+        (
+            "blank already on the canonical side",
+            "---\ntopic:\n---\n" + CANONICAL_BULLET,
+            "---\ntopic: deploys\n---\n" + LEGACY_BULLET,
+        ),
+    ]:
+        repo = make_repo(tmp_path / label.replace(" ", "-"))
+        write(repo / CANON / "deploys.md", canonical)
+        write(repo / "facts" / "deploys.md", legacy)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-m", "fixtures")
+        before = topic_rows(tmp_path, repo, f"before-{label}")
+
+        layout.migrate_legacy_facts(repo)
+
+        assert topic_rows(tmp_path, repo, f"after-{label}") >= before, label
+
+
+def test_the_topic_pin_agrees_with_the_parser_about_where_the_header_is(tmp_path):
+    """The refusal path writes, so its write is measured like every other write here.
+
+    `_pin_stem_topic` used this module's CR/LF-only splitting to decide whether the file
+    had a frontmatter block, while `parse_frontmatter` uses `str.splitlines` — which also
+    breaks on \\x0b, \\x0c, \\x85, \\x1c, \\u2028 and \\u2029. One of those in the opening
+    delimiter line made the pin prepend a WHOLE NEW block above a header the parser was
+    already reading, demoting every key in it to prose: the refusal path destroying the
+    metadata it was invoked to protect.
+    """
+    for sep in ["\x0b", "\x0c", "\x85", "\x1c", " ", " "]:
+        repo = make_repo(tmp_path / f"sep-{ord(sep)}")
+        # A differing topic, so the merge is refused and the pin runs before the rename.
+        write(repo / CANON / "t.md", "---\ntopic: other-topic\n---\n" + CANONICAL_BULLET)
+        write(
+            repo / "facts" / "t.md",
+            f"---{sep}owner: sre\nsources: incident-4412\n---\n" + LEGACY_BULLET,
+        )
+        git(repo, "add", "-A")
+        git(repo, "commit", "-m", "fixtures")
+
+        layout.migrate_legacy_facts(repo)
+
+        meta, _b = units.parse_frontmatter(
+            (repo / CANON / "t.legacy.md").read_text(encoding="utf-8")
+        )
+        assert meta.get("owner") == "sre", f"{sep!r} lost owner: {meta}"
+        assert meta.get("sources") == "incident-4412", f"{sep!r} lost sources: {meta}"
+        assert meta.get("topic") == "t", f"{sep!r} did not pin the topic: {meta}"
 
 
 def test_the_demotion_note_explains_the_dropped_delimiters(tmp_path):

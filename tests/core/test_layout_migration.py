@@ -105,14 +105,19 @@ def test_a_topic_both_layouts_carry_is_merged_not_overwritten(tmp_path):
     assert gitops.git(repo, "ls-files", "--", "facts/deploys.md") == ""
 
 
-def test_a_restamped_retagged_copy_of_a_canonical_bullet_keeps_both_renderings(tmp_path):
-    """A sentence is not the whole fact — category, tags and the verified stamp are columns.
+def test_a_restamped_retagged_copy_of_a_canonical_bullet_merges_and_the_note_names_it(tmp_path):
+    """The commonest overlap a pre-0.5 repo has: one sentence, re-verified or re-tagged.
 
-    Folding the legacy line away because another file has the same sentence used to delete
-    all three, from a file the merge then removed, while the report said "merged": readers
-    filter on `category=` and `tag=` and the classify bundle prints them, so those values
-    are retrievable knowledge. Two renderings of one sentence collide on unit id inside a
-    single file, so the only way to keep both is to keep both files.
+    Both files share a stem, so both renderings share a unit id (`facts/<stem>#<key>`), and
+    `index_tree` stores the first and reports the second as a duplicate. The legacy
+    rendering was therefore never retrievable while the two files coexisted, and folding it
+    away takes nothing from a reader — an earlier round refused this merge to protect a row
+    the index did not have, which turned two thirds of ordinary collisions into `.legacy`
+    asides and put two rows with the SAME topic in the routing table.
+
+    What the legacy line still has is a human reader, so the note writes its rendering out
+    rather than tallying it: `2026-01-01` and `#lb` are in the pull request even though the
+    canonical line won.
     """
     repo = make_repo(tmp_path)
     sentence = "the lb keeps stale targets"
@@ -124,11 +129,12 @@ def test_a_restamped_retagged_copy_of_a_canonical_bullet_keeps_both_renderings(t
 
     result = layout.migrate_legacy_facts(repo)
 
+    assert not (repo / CANON / "deploys.legacy.md").exists()  # merged, not kept apart
+    assert not (repo / "facts").exists()
     canonical = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
-    aside = (repo / CANON / "deploys.legacy.md").read_text(encoding="utf-8")
     assert "[gotcha]" in canonical and "#deploy" in canonical
-    assert "[constraint]" in aside and "#lb" in aside and "2026-01-01" in aside
-    assert any("kept separate" in line for line in result.moved)
+    note = " ".join(result.merged)
+    assert "[constraint]" in note and "#lb" in note and "2026-01-01" in note
 
 
 def test_two_sentences_sharing_a_topic_key_are_both_kept(tmp_path):
@@ -580,19 +586,19 @@ def test_a_frontmatter_key_the_two_files_disagree_on_is_reported_not_resolved(tm
 
     result = layout.migrate_legacy_facts(repo)
 
-    # Neither value is discarded, because neither is mneme's to discard: demoting the loser
-    # into the body took it out of everything `parse_frontmatter` returns, so a value a
-    # reader could retrieve before the migration could not be retrieved after it. The two
-    # files are kept side by side instead and a human decides which value is right.
-    canonical_meta, _body = units.parse_frontmatter(
-        (repo / CANON / "deploys.md").read_text(encoding="utf-8")
-    )
+    # One file has one header, so the two values cannot both stay keys. The canonical one
+    # wins the header and the legacy line is DEMOTED into the body rather than discarded —
+    # sound because `topic` is the only fact-file key any reader projects into a row, an
+    # FTS column or the classify bundle (`build._fact_rows`, `scaffold`, `classify`), so
+    # `owner:` is content a human reads and it reads the same three lines lower. The note
+    # names both values, which is the whole of "reported rather than resolved".
+    merged = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    canonical_meta, body = units.parse_frontmatter(merged)
     assert canonical_meta["owner"] == "platform"
-    aside_meta, _body = units.parse_frontmatter(
-        (repo / CANON / "deploys.legacy.md").read_text(encoding="utf-8")
-    )
-    assert aside_meta["owner"] == "sre"  # still metadata, still retrievable
-    assert any("kept separate" in line for line in result.moved)
+    assert "owner: sre" in body
+    note = " ".join(result.merged)
+    assert "owner: platform (kept)" in note and "owner: sre" in note
+    assert not (repo / CANON / "deploys.legacy.md").exists()
 
 
 def test_an_unterminated_canonical_frontmatter_does_not_wedge_the_merge(tmp_path):
