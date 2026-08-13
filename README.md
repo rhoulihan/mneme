@@ -91,6 +91,7 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 09 — PR-only | Contribution modes removed: mneme never writes a repo's `main` — every harvest is a branch + PR, enforced by an invariant test | ✅ merged (v0.4.0) |
 | 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | ✅ merged (v0.5.0) |
 | 11 — Review | `/mneme:review` inbound-PR triage: machine-annotated fact additions (duplicate / declined / possibly-integrated / new), per-PR human approval for every merge, closure, or extraction; deterministic fact-preservation gate at finalize | ✅ merged (v0.6.0) |
+| — | Fixes: Claude Code's 500-char description limit honored end to end (index description now O(1) in fact count); secret scanner no longer blocks mneme's own topic slugs. Docs: [getting-started walkthrough](docs/getting-started.md) | ✅ merged (v0.6.1) |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 

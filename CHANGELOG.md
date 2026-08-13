@@ -8,6 +8,47 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.6.1 — 2026-08-13
+
+Two defects found by a real harvest into a registered knowledge repo, plus the
+getting-started guide. Both defects had the same shape: mneme generated content
+that mneme's own machine gate then rejected, so every harvest needed a manual
+repair before its pull request could merge.
+
+- **`MAX_DESCRIPTION` is 500, not 1024** — Claude Code rejects a `SKILL.md` whose
+  frontmatter `description` exceeds 500 characters, and mneme's gate allowed twice
+  that, with independent copies of the wrong number in `lint`, `compose` and
+  `proposals`. That is the worst way for a gate to fail: lint passes, CI passes,
+  the pull request merges, and the plugin is broken at install time for everyone
+  who pulls it. Observed at 854 characters on one repo and 560 on another. The
+  limit now lives once, in `units.MAX_DESCRIPTION`.
+- **The generated knowledge-index description is O(1) in fact count** — it used to
+  spell out `Topics: a, b, c…`, one entry per fact file, so any budget was a cliff
+  the repo walked off as it grew. It now reports a count; measured at 461
+  characters with 0 topics and 463 with 500. The topic NAMES stay in the body
+  table, which no reader loads until the skill is opened. Trimming is
+  word-boundary aware with an ellipsis — the old cap was a bare slice that could
+  sever the final token and leave a half-written topic name that routes nowhere
+  while the description still read as complete. The `DISTILLER_PROMPT` no longer
+  instructs the model to emit descriptions in the band the gate now rejects.
+- **The secret scanner stopped blocking mneme's own topic slugs** — a fact file's
+  `topic:` frontmatter reads to the generic entropy rule as an assignment, and a
+  descriptive slug clears the 4.0 bar (`mongodb-java-driver-tls-trust-not-configurable-via-uri`, 54 characters, entropy 4.016). Length is not a usable
+  discriminator: entropy is not monotonic in it, so a 60-character slug passes
+  while a 45-character one blocks. The exemption is scoped to the LINE — `topic:`
+  or `name:`, kebab-case value, nothing else on it.
+  A wider first attempt exempted any lowercase-hyphenated value under any key and
+  opened a real hole: diceware, 1Password and Bitwarden passphrases are exactly
+  that shape, and `\b` does not fire across an underscore, so `db_password`,
+  `client_secret` and `PGPASSWORD` never reach the keyword-anchored rule either.
+  236 of 280 realistic passphrase assignments went from blocked to clean; the
+  key-scoped version returns 0 of 280. A known pre-existing gap — the keyword rule
+  cannot see underscored names — is recorded in the tests rather than closed here.
+- **`docs/getting-started.md`** — a worked walkthrough: create / register / adopt,
+  then one piece of knowledge from the moment you learn it to a merged pull
+  request. Every transcript is captured from a real run. Linked from the README,
+  which also gains a corrected scaffold file tree.
+
 ## 0.6.0 — 2026-08-12
 
 - **`/mneme:review` — inbound PR triage** — the maintainer side of the loop, run
