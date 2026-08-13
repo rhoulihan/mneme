@@ -17,8 +17,12 @@ from mneme_core.errors import MnemeError
 
 DEPLOY_FACT = "Deploys fail when the LB caches dead targets"
 QUEUE_FACT = "The widget queue caps at 500 jobs before shedding"
+# The refusal now names the third honest ending too: a fact may be retired when another
+# unit genuinely covers it, declared so the human sees what left and what replaced it.
 LOSS_SENTENCE = (
-    "facts may move, but never vanish — integrate the content or leave the fact in place"
+    "facts may move, but never vanish — integrate the content, leave the fact in place,"
+    " or retire it with `--retire <unit-id>=<covering-unit-id>` naming the unit that"
+    " already says it"
 )
 
 

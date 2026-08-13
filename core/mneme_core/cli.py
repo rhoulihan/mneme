@@ -126,6 +126,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cfinalize = classify_sub.add_parser("finalize")
     p_cfinalize.add_argument("--cwd", type=Path, default=None)
     p_cfinalize.add_argument("--no-push", action="store_true")
+    p_cfinalize.add_argument(
+        "--retire", action="append", default=[], metavar="RETIRED=COVERING",
+        help="retire a fact this pass removed, naming the unit that already covers it: <retired-unit-id>=<covering-unit-id> (repeatable)",
+    )
     p_cabort = classify_sub.add_parser("abort")
     p_cabort.add_argument("--cwd", type=Path, default=None)
 
@@ -142,6 +146,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rfinalize = review_sub.add_parser("finalize")
     p_rfinalize.add_argument("--cwd", type=Path, default=None)
     p_rfinalize.add_argument("--no-push", action="store_true")
+    p_rfinalize.add_argument(
+        "--retire", action="append", default=[], metavar="RETIRED=COVERING",
+        help="retire a fact this pass removed, naming the unit that already covers it: <retired-unit-id>=<covering-unit-id> (repeatable)",
+    )
     p_rabort = review_sub.add_parser("abort")
     p_rabort.add_argument("--cwd", type=Path, default=None)
 
@@ -828,7 +836,7 @@ def _classify_cmd(home: Path, args: argparse.Namespace) -> int:
         print(json_mod.dumps(classify_mod.bundle(home, cwd)))
         return 0
     if args.classify_command == "finalize":
-        result = classify_mod.finalize(home, cwd, push=not args.no_push)
+        result = classify_mod.finalize(home, cwd, push=not args.no_push, retire=args.retire)
         print(f"classified {result.target}: {len(result.units)} changes on {result.branch}")
         print(f"pr: {result.pr}")
         return 0
@@ -853,7 +861,9 @@ def _review_cmd(home: Path, args: argparse.Namespace) -> int:
         print(classify_mod.review_begin(home, cwd))
         return 0
     if args.review_command == "finalize":
-        result = classify_mod.review_finalize(home, cwd, push=not args.no_push)
+        result = classify_mod.review_finalize(
+            home, cwd, push=not args.no_push, retire=args.retire
+        )
         print(f"reviewed {result.target}: {len(result.units)} changes on {result.branch}")
         print(f"pr: {result.pr}")
         return 0

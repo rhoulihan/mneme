@@ -248,21 +248,35 @@ leave the facts directory holding only what genuinely has no better home.
 Rules:
 1. For each fact, find the MOST relevant existing skill and integrate the fact there:
    append it to an appropriate section of that skill's SKILL.md, or to a file under the
-   skill's directory. Preserve the fact's meaning, its tags, and its verified date, and
-   present it as a fact-derived note rather than rewriting it into something new.
+   skill's directory. Carry the fact's SENTENCE ACROSS VERBATIM, with its tags and its
+   verified date, and write whatever context the skill needs AROUND it — a lead-in line, a
+   heading, a note on when it applies. Do not paraphrase the sentence itself and do not
+   fold it into a sentence of your own: finalize looks for that exact text, so a rewrite
+   reads to the gate as knowledge that vanished, and the pass is refused.
 2. Keep each skill's existing structure — the file listing for every skill is in this
    bundle so you can see the shape before you edit it.
 3. Create a NEW skill only when several related facts together justify one; a single fact
    is never a skill.
 4. A fact with no good home STAYS in the facts directory, untouched.
-5. NEVER delete knowledge. Every fact either lands in a skill's content (verbatim or
-   merged, with its meaning and verified date intact) or remains a fact. Retiring a fact
-   that merely restates what a skill already says still means carrying its sentence into
-   that skill as a quoted fact-derived note, then recording it in your report as retired
-   into that skill: finalize refuses any pass where a fact's sentence survives nowhere.
+5. NEVER delete knowledge silently. A fact has exactly three honest endings:
+   (a) it lands in a skill with its sentence verbatim (rule 1) — the usual case;
+   (b) it stays a fact, untouched (rule 4);
+   (c) it is RETIRED as a duplicate, because some other unit already says it.
+   Take (c) only when the knowledge genuinely survives elsewhere, and declare it when you
+   finalize:
+     mneme classify finalize --retire <retired-unit-id>=<covering-unit-id>
+   repeating the flag per retirement. The unit ids are in this bundle. finalize refuses a
+   declaration whose covering unit does not exist on the branch, whose retired fact is not
+   on main, or whose fact is still present — and it refuses any pass where a fact's
+   sentence survives nowhere and nothing was declared. Every accepted retirement is
+   printed in the pull request, so a human sees exactly what left and what now covers it.
+   If you are not certain a fact is covered, choose (a) or (b): retiring is the one
+   decision here that removes knowledge.
 6. Propose the COMPLETE mapping to the user first — fact by fact: destination skill and
-   section, facts staying put, facts retired as duplicates, any new skill worth creating —
-   and WAIT for their approval before editing a single file.
+   section, facts staying put, facts retired as duplicates WITH the unit id that covers
+   each one, any new skill worth creating — and WAIT for their approval before editing a
+   single file. A retirement is a deletion: name its covering unit when you propose it, so
+   the user approves the removal and not merely the move.
 7. After the approved edits are applied, run `mneme classify finalize`. It migrates any
    remaining legacy facts, regenerates the knowledge-index, lints, scans, commits on the
    classify branch, and opens the pull request. If anything goes wrong, or the user calls

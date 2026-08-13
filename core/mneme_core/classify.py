@@ -456,15 +456,34 @@ def _is_integration_path(rel: str) -> bool:
 
 
 def _integration_text(repo: Path, changed: list[str]) -> str:
-    """One normalized blob of every skill file this pass touched — where facts go to live.
+    """One normalized blob of every skill file on the branch — where facts go to live.
 
-    Only files the pass CHANGED count: an integration is something this branch wrote, and
-    scanning the whole repo would let a fact be "accounted for" by a coincidence of
-    wording somewhere nobody edited.
+    This reads the whole skill tree, not only the files the pass changed. The narrower
+    form was defended on the grounds that "an integration is something this branch wrote",
+    and scanning everything would let a fact be accounted for by a coincidence of wording
+    somewhere nobody edited. Two things outweigh that. The match is a whole normalized
+    fact SENTENCE, not a phrase, so the coincidence is remote. And the question the gate
+    actually asks is "does this knowledge still exist in the repo?" — to which a sentence
+    sitting in an untouched skill is a plain yes. Refusing to let a librarian retire a
+    fact whose text is demonstrably still there taught them to keep dead duplicates, which
+    is the opposite of this pass's job.
+
+    `changed` is still taken because a file the pass DELETED must not count: it is read
+    from the working tree, so a deleted skill contributes nothing either way, and passing
+    the list keeps that explicit for the next reader.
     """
     parts: list[str] = []
-    for rel in changed:
-        if not _is_integration_path(rel):
+    seen: set[str] = set()
+    for path in sorted(repo.glob("skills/**/*.md")):
+        rel = path.relative_to(repo).as_posix()
+        if not _is_integration_path(rel) or not path.is_file():
+            continue
+        seen.add(rel)
+        text = _scannable_text(path)
+        if text is not None:
+            parts.append(_normalized(text))
+    for rel in changed:  # anything integration-shaped outside skills/, e.g. a moved file
+        if rel in seen or not _is_integration_path(rel):
             continue
         path = repo / rel
         if not path.is_file():
@@ -475,28 +494,122 @@ def _integration_text(repo: Path, changed: list[str]) -> str:
     return "\n".join(parts)
 
 
-def _preservation_gate(repo: Path, changed: list[str], kind: str) -> None:
-    """Knowledge on `main` may be moved or integrated by this pass — never dropped.
+_RETIRE_SEP = "="
 
-    A fact is accounted for when its sentence is still a bullet in some fact file, or
-    appears verbatim inside a skill file the pass changed. That is deliberately a floor
-    and not a judgement of the integration's quality: mneme cannot tell a faithful summary
-    from a lossy one, but it can tell that the original sentence still exists somewhere in
-    the repo — which is also the better provenance, and what the instructions ask for.
+
+def _parse_retirements(retire: list[str] | None) -> list[tuple[str, str]]:
+    """`<retired-unit-id>=<covering-unit-id>` pairs, as given on the command line.
+
+    `=` is the separator because a unit id is `skills/<name>` or `facts/<stem>#<key>` and
+    neither shape can contain one, so the split is unambiguous without quoting.
     """
+    pairs: list[tuple[str, str]] = []
+    for raw in retire or []:
+        retired, sep, covering = raw.partition(_RETIRE_SEP)
+        if not sep or not retired.strip() or not covering.strip():
+            raise MnemeError(
+                f"--retire expects <retired-unit-id>{_RETIRE_SEP}<covering-unit-id>,"
+                f" got {layout._safe(raw)!r}"
+            )
+        pairs.append((retired.strip(), covering.strip()))
+    return pairs
+
+
+def _branch_unit_ids(repo: Path) -> set[str]:
+    """Every unit id the branch still carries — the ids a retirement may point AT."""
+    ids = {
+        units.skill_unit_id(d.name)
+        for d in sorted((repo / "skills").glob("*"))
+        if d.is_dir() and (d / "SKILL.md").is_file()
+    }
+    for f in units.fact_files(repo):
+        try:
+            _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        except (MnemeError, OSError, UnicodeDecodeError):
+            continue
+        for n, line in enumerate(body.splitlines(), start=1):
+            if not line.startswith("- ["):
+                continue
+            try:
+                ids.add(units.fact_unit_id(f.stem, units.parse_bullet_line(line, n).text))
+            except MnemeError:
+                continue
+    return ids
+
+
+def _accept_retirements(
+    repo: Path, pairs: list[tuple[str, str]], main_ids: dict[str, str]
+) -> tuple[set[str], list[str]]:
+    """Validate every declaration; return the retired ids and the lines to report.
+
+    mneme cannot tell whether the covering unit really says the same thing — that is the
+    human's call at the pull request, which is why every accepted declaration is printed
+    there. What it CAN do is refuse a declaration whose parts are not real, so the claim a
+    reviewer reads is at least about two units that exist.
+    """
+    if not pairs:
+        return set(), []
+    on_branch_ids = _branch_unit_ids(repo)
+    on_branch_texts = _branch_fact_texts(repo)
+    retired: set[str] = set()
+    lines: list[str] = []
+    for retired_id, covering_id in pairs:
+        if retired_id == covering_id:
+            raise MnemeError(f"--retire {layout._safe(retired_id)}: a unit cannot cover itself")
+        if retired_id not in main_ids:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: not a fact on main — nothing to retire"
+                " (check the unit id against `mneme classify prepare`)"
+            )
+        if _normalized(main_ids[retired_id]) in on_branch_texts:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: that fact is still present on the"
+                " branch — declare a retirement only for a fact this pass removed"
+            )
+        if covering_id not in on_branch_ids:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: covering unit"
+                f" {layout._safe(covering_id)} does not exist on the branch — a retirement"
+                " must point at knowledge that survives this pass"
+            )
+        retired.add(retired_id)
+        lines.append(f"{layout._safe(retired_id)} — covered by {layout._safe(covering_id)}")
+    return retired, lines
+
+
+def _preservation_gate(
+    repo: Path, changed: list[str], kind: str, retired: set[str] | None = None
+) -> None:
+    """Knowledge on `main` may be moved or integrated by this pass — never dropped silently.
+
+    A fact is accounted for when its sentence is still a bullet in some fact file, appears
+    verbatim inside a skill on the branch, or has been explicitly RETIRED with a
+    declaration naming the unit that covers it. The first two are proof; the third is a
+    stated claim, checked for shape by `_accept_retirements` and for substance by the human
+    reading the pull request it is printed in.
+
+    That is deliberately a floor and not a judgement of the integration's quality: mneme
+    cannot tell a faithful summary from a lossy one, but it can tell that the original
+    sentence still exists somewhere — which is also the better provenance — and it can
+    refuse to let one vanish without anybody saying so.
+    """
+    retired = retired or set()
     on_branch = _branch_fact_texts(repo)
     integrated = _integration_text(repo, changed)
     lost = [
         f"{rel}: {text[:80]}"
         for rel, text in _main_fact_bullets(repo)
-        if _normalized(text) not in on_branch and _normalized(text) not in integrated
+        if _normalized(text) not in on_branch
+        and _normalized(text) not in integrated
+        and units.fact_unit_id(Path(rel).stem, text) not in retired
     ]
     if lost:
         raise MnemeError(
             f"{kind} would lose knowledge that is committed on main — "
             + "; ".join(lost)
-            + "; facts may move, but never vanish — integrate the content or leave the"
-            " fact in place"
+            + "; facts may move, but never vanish — integrate the content, leave the fact"
+            " in place, or retire it with"
+            " `--retire <unit-id>=<covering-unit-id>` naming the unit that already says it"
         )
 
 
@@ -526,7 +639,10 @@ def _commit(
     return gitops.head_sha(repo)
 
 
-def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest.HarvestResult:
+def _finalize(
+    home: Path, cwd: Path, kind: str, *, push: bool = True,
+    retire: list[str] | None = None,
+) -> harvest.HarvestResult:
     """Migrate, regenerate, gate, commit, and offer the branch's work as a PR.
 
     The rollback and index-regeneration behaviour is deliberately the harvest's own
@@ -573,7 +689,15 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
             raise MnemeError(f"{kind} fails repo lint: {details}")
         changed = _changed_files(repo)
         _scan_gate(repo, changed, kind)
-        _preservation_gate(repo, changed, kind)
+        # Parsed and validated INSIDE the guarded block: every rejection here rolls the
+        # branch back like any other gate failure, so a bad declaration never leaves a
+        # half-finished rail behind.
+        retired_ids, retired_lines = _accept_retirements(
+            repo, _parse_retirements(retire),
+            {units.fact_unit_id(Path(rel).stem, text): text
+             for rel, text in _main_fact_bullets(repo)},
+        )
+        _preservation_gate(repo, changed, kind, retired_ids)
     except MnemeError:
         harvest._abort(repo, branch, base_sha)
         raise
@@ -598,8 +722,13 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
     # straight back off that cliff: 117 KB for a 320-topic repo, with the notes inside
     # their 50 KB all along. One body, one bound.
     reported = [layout._safe(rel) for rel in changed]
+    # Retirements lead: they are the only lines that describe knowledge LEAVING the repo,
+    # and a reviewer skimming a forty-line body must meet them before the moves. Already
+    # `_safe`d by `_accept_retirements`, and inside the same one bound as everything else.
+    retired_section = [f"Retired: {line}" for line in retired_lines]
     result.units = layout.bound_body(
-        notes + [rel for rel in reported if not _named_in(rel, notes)], noun="change"
+        retired_section + notes + [rel for rel in reported if not _named_in(rel, notes)],
+        noun="change",
     )
 
     try:
@@ -642,14 +771,22 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
     return result
 
 
-def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
-    """Deliver the librarian's reorganization as a pull request."""
-    return _finalize(home, cwd, "classify", push=push)
+def finalize(
+    home: Path, cwd: Path, *, push: bool = True, retire: list[str] | None = None
+) -> harvest.HarvestResult:
+    """Deliver the librarian's reorganization as a pull request.
+
+    `retire` carries `<retired-unit-id>=<covering-unit-id>` declarations: the only way a
+    fact leaves the repo, and one that names what covers it in the pull request.
+    """
+    return _finalize(home, cwd, "classify", push=push, retire=retire)
 
 
-def review_finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
+def review_finalize(
+    home: Path, cwd: Path, *, push: bool = True, retire: list[str] | None = None
+) -> harvest.HarvestResult:
     """Deliver facts extracted from inbound pull requests as mneme's own pull request."""
-    return _finalize(home, cwd, "review", push=push)
+    return _finalize(home, cwd, "review", push=push, retire=retire)
 
 
 def migrate(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
