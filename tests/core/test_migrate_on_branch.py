@@ -158,9 +158,17 @@ def test_the_commit_body_carries_the_migration_notes_under_a_migrated_section(tm
     body = commit_body(target, result.branch)
     assert "Migrated:" in body
     assert f"- facts/deploys.md -> {CANON}/deploys.md" in body
-    # the section sits between the units and the trailers, so both survive it
-    assert f"- facts/sidecars#{units.normalize_topic_key(SIDECAR_TEXT)} (new fact)" in body
+    unit_line = f"- facts/sidecars#{units.normalize_topic_key(SIDECAR_TEXT)} (new fact)"
+    assert unit_line in body
     assert "Mneme-Source: demo@s1" in body
+    # ORDER, not just membership. Plan 05's commit_harvest contract closes the message with
+    # one blank line and the Mneme-Source trailers, because git only recognises a trailer
+    # paragraph at the very end — `git interpret-trailers` and `%(trailers)` stop seeing
+    # `Mneme-Source` the moment anything follows it. Appending the Migrated: section after
+    # the trailers instead of before them left the whole suite green.
+    assert body.index(unit_line) < body.index("Migrated:") < body.index("Mneme-Source:")
+    trailer_block = body.rstrip().rsplit("\n\n", 1)[-1]
+    assert all(l.startswith("Mneme-Source: ") for l in trailer_block.splitlines()), trailer_block
 
 
 def test_the_harvests_own_unit_lines_are_unaffected_by_the_migration(tmp_path):

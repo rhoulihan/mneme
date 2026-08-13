@@ -286,3 +286,107 @@ def test_cli_finalize_reports_branch_and_records_ledger(tmp_path, capsys):
     assert record["kind"] == "classify"
     assert record["target"] == "lib-kb"
     assert record["branch"].startswith("mneme/classify-")
+
+
+# --- `classify._named_in`: the dedup between the migration's notes and the changed-file
+# --- list. Mutation-verified as entirely unpinned before these — replacing the body with
+# --- `return False`, and with the substring form its own docstring rejects, both left the
+# --- full suite green while changing what lands in the commit body, PR body and ledger.
+
+
+def test_a_migrated_file_is_reported_once_in_the_classify_units(tmp_path):
+    """`return False` — the every-path-is-new mutation — must fail here.
+
+    A migrated file reaches `_changed_files` as well as the migration's own notes, so
+    without the dedup every migrated path appears TWICE in `result.units`: once as
+    `facts/x.md -> …` and again as a bare changed path. That list is the commit body, the
+    PR body and the ledger row, so a reviewer goes looking for a change that does not exist.
+    """
+    home, target = make_kb(tmp_path, legacy=True)
+    classify.begin(home, target)
+    skill_md = target / "skills" / "deploy-widget" / "SKILL.md"
+    skill_md.write_text(skill_md.read_text(encoding="utf-8") + "\n- a note\n", encoding="utf-8")
+
+    result = classify.finalize(home, target, push=False)
+
+    migrated = f"{units.FACTS_CANONICAL}/deploys.md"
+    named = [u for u in result.units if migrated in u.split()]
+    assert len(named) == 1, f"{migrated} reported {len(named)} times: {named}"
+    assert migrated not in result.units  # never also as a bare path of its own
+
+
+def test_a_note_about_one_path_never_suppresses_a_different_changed_path(tmp_path):
+    """The substring mutation — `any(rel in note ...)` — must fail here.
+
+    `_named_in`'s docstring rejects substring matching because a legacy `facts/README.md`
+    produces a note whose text CONTAINS `README.md`. Under a substring test a top-level
+    `README.md` the same pass edited silently vanishes from the commit body, the PR body
+    and the ledger while remaining in the diff.
+    """
+    home, target = make_kb(tmp_path, legacy=True)
+    (target / "facts" / "README.md").write_text(
+        "---\ntopic: readme-notes\n---\n"
+        "- [reference] Legacy readme note lives here #ref (verified: 2026-08-12)\n",
+        encoding="utf-8",
+    )
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "add a legacy facts/README.md")
+    classify.begin(home, target)
+    # the pass also edits the repo's OWN top-level README.md
+    (target / "README.md").write_text(
+        (target / "README.md").read_text(encoding="utf-8") + "\nA line the pass added.\n",
+        encoding="utf-8",
+    )
+
+    result = classify.finalize(home, target, push=False)
+
+    assert "README.md" in result.units, result.units
+
+
+def test_a_path_containing_whitespace_is_still_deduped(tmp_path):
+    """Whitespace in a filename is repo content this module's threat model already assumes.
+
+    `note.split()` tokenizes on whitespace, so `facts/my deploys.md` becomes two tokens
+    that match nothing and the file is reported twice — inside its note and again as a
+    bare changed path.
+    """
+    home, target = make_kb(tmp_path, legacy=True)
+    (target / "facts" / "my deploys.md").write_text(
+        "---\ntopic: my-deploys\n---\n"
+        "- [gotcha] A legacy topic whose filename has a space #ops (verified: 2026-08-12)\n",
+        encoding="utf-8",
+    )
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "add a spaced legacy fact file")
+    classify.begin(home, target)
+
+    result = classify.finalize(home, target, push=False)
+
+    spaced = f"{units.FACTS_CANONICAL}/my deploys.md"
+    named = [u for u in result.units if spaced in u]
+    assert len(named) == 1, f"reported {len(named)} times: {named}"
+
+
+def test_a_legacy_dir_holding_only_a_tracked_gitkeep_is_a_real_pass(tmp_path):
+    """The `migration.removed_dir` clause of the emptiness gate, which had no test.
+
+    Mutation-verified: dropping `or migration.removed_dir` from the gate left the whole
+    suite green. Without it a legacy `facts/` holding nothing but a tracked `.gitkeep` is
+    migrated and then hard-reset away by the "nothing to classify" error — the pass does
+    real work and then destroys it.
+    """
+    home, target = make_kb(tmp_path)  # canonical layout...
+    legacy = target / "facts"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / ".gitkeep").write_text("", encoding="utf-8")  # ...plus an empty legacy dir
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "add a tracked empty legacy facts/")
+    classify.begin(home, target)
+
+    result = classify.finalize(home, target, push=False)  # must not raise
+
+    assert result.branch.startswith("mneme/classify-")
+    tree = gitops.git(target, "ls-tree", "-r", "--name-only", result.branch)
+    assert not any(p.startswith("facts/") for p in tree.splitlines())
+    assert gitops.current_branch(target) == "main"
+    assert gitops.is_clean(target)

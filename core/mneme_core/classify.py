@@ -245,13 +245,26 @@ def _named_in(rel: str, notes: list[str]) -> bool:
     """Does one of the migration's own notes already name exactly this path?
 
     A moved or merged file reaches `_changed_files` as well, and reporting it twice in one
-    commit body invites a reviewer to look for a second change that does not exist. The
-    test is a whole-token match rather than a substring: the notes are prose in three
-    shapes (`a -> b`, `a merged into b (n bullets)`, `a: …`) that all separate paths with
-    whitespace, and a substring test would suppress a top-level `README.md` merely because
-    some note mentioned `facts/README.md`.
+    commit body invites a reviewer to look for a second change that does not exist. A bare
+    substring test would go wrong the other way and suppress a top-level `README.md` merely
+    because some note mentioned `facts/README.md` — the path would vanish from the commit
+    body, the PR body and the ledger while staying in the diff.
+
+    So the match is the WHOLE path with its boundaries checked, not a token. Splitting the
+    note on whitespace (the previous form) cannot see a path that contains a space, and
+    `facts/my deploys.md` is repo content this module's threat model already assumes: it
+    was reported twice, once inside its note and again as a bare changed path. The notes
+    are prose in three shapes — `a -> b`, `a merged into b (n bullets)`, `a: …` — so a path
+    ends at a space, a colon, or the end of the note, and begins at a space or the start.
     """
-    return any(rel in note.split() for note in notes)
+    for note in notes:
+        start = 0
+        while (i := note.find(rel, start)) >= 0:
+            j = i + len(rel)
+            if (i == 0 or note[i - 1] == " ") and (j == len(note) or note[j] in " :"):
+                return True
+            start = i + 1
+    return False
 
 
 def _changed_files(repo: Path) -> list[str]:
