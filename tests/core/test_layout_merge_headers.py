@@ -15,8 +15,17 @@ line one row lower still entered the header. These tests therefore assert the PR
 over a table of header shapes rather than pinning the two strings that were reported:
 
   1. the merged file parses,
-  2. every legacy line survives somewhere in it,
+  2. every legacy FRONTMATTER line survives somewhere in it,
   3. the index yields no fewer fact rows than before the merge.
+
+Property 2 says frontmatter deliberately, and it is narrower than it once was. The merge
+folds a legacy bullet away when a canonical bullet already says the same sentence: both
+files share a stem, so both renderings share a unit id, and `index_tree` never held more
+than one of them. That folded line leaves the working tree — it survives in the note, the
+pull request diff and git history, not in the file — so "every legacy line survives" is no
+longer true and stating it that way is how the next reader re-derives the wrong invariant.
+`_lost` in the module under test draws exactly this line, and `assert_merge_preserved`
+below matches it.
 """
 import subprocess
 
@@ -432,7 +441,14 @@ def test_the_one_thing_a_folded_duplicate_costs_is_paid_into_the_note(tmp_path):
     test pins BOTH halves — the bundle shrinks, and the rendering it lost is in the report.
     """
     repo = make_repo(tmp_path)
-    sentence = "the lb keeps stale targets"
+    # A long sentence on purpose: tags and the `(verified:)` stamp are the TAIL of a
+    # bullet, so a per-value cap removes precisely the fields this note exists to preserve.
+    # Pinning it with a short sentence let a 160-char cap pass while the property was false.
+    sentence = (
+        "the load balancer keeps stale targets in rotation for roughly ninety seconds "
+        "after a deploy finishes draining them"
+    )
+    assert len(sentence) > 100
     write(repo / CANON / "deploys.md", f"---\ntopic: deploys\n---\n- [gotcha] {sentence} #deploy (verified: 2026-08-12)\n")
     write(repo / "facts" / "deploys.md", f"---\ntopic: deploys\n---\n- [constraint] {sentence} #lb (verified: 2026-01-01)\n")
     git(repo, "add", "-A")
@@ -508,9 +524,15 @@ def test_past_the_cap_the_note_says_where_the_rest_are(tmp_path):
 
     note = " ".join(result.merged)
     assert "60 bullet(s)" in note
-    assert f"and {60 - layout._DUPLICATES_SHOWN} more" in note
     assert "as of the commit before this migration" in note
-    assert sum(1 for s in sentences if s in note) == layout._DUPLICATES_SHOWN
+    # Two caps guard this list — a count (`_DUPLICATES_SHOWN`) and a total-length budget —
+    # and which one bites depends on how long the bullets are. The property is that the
+    # count it reports and the lines it prints always add back up to the whole fold, so a
+    # reviewer is never told a truncated list is complete.
+    shown = sum(1 for s in sentences if s in note)
+    assert 0 < shown < len(sentences)
+    assert f"and {len(sentences) - shown} more" in note
+    assert len(note) < layout._NOTE_MAX
 
 
 def test_no_note_can_be_made_into_more_than_one_line(tmp_path):
@@ -554,24 +576,93 @@ def test_no_note_can_be_made_into_more_than_one_line(tmp_path):
 
 
 def test_a_note_cannot_be_made_enormous(tmp_path):
-    """A folded scalar is a valid `topic:`, and a note is not a place to put 100 KB of it.
+    """Bounded values are not a bounded note — the multiplicities are repo-controlled too.
 
-    Past the pull request body limit `gitops.open_pr` degrades to its no-PR fallback, so an
-    oversized note does not just look bad — it costs the review gate the migration exists
-    to feed.
+    An earlier version of this test used ONE vector, a 100 KB `topic:` scalar, which
+    `_safe` already capped — so it passed while the property in its own name was false. A
+    pair disagreeing on 1200 frontmatter keys assembled a 94 KB note out of 1200
+    individually-tiny capped values, and one bullet carrying 12,000 tags produced 85 KB.
+    Past ~65 KB `gitops.open_pr` silently returns its no-PR fallback (losing the review
+    gate); past ~128 KB `git commit -m` raises E2BIG, an OSError that reaches
+    `harvest._abort` and resets the pass's own work away.
+
+    The realistic vector matters as much as the adversarial ones: 36 wholesale-restamped
+    bullets with ordinary 95-character sentences — the exact shape the fold is built for —
+    also broke the old bound.
+    """
+    def keyed(n, value):
+        return "---\ntopic: t\n" + "".join(f"k{i}: {value}-{i}\n" for i in range(n)) + "---\n"
+
+    long_sentences = [
+        f"the {i:02d} service keeps stale targets around for a while after a deploy drains"
+        for i in range(36)
+    ]
+    vectors = {
+        "a 100 KB folded topic scalar": (
+            f"---\ntopic: {'x' * 100_000}\n---\n" + CANONICAL_BULLET,
+            "---\ntopic: t\n---\n" + LEGACY_BULLET,
+        ),
+        "1200 differing frontmatter keys": (
+            keyed(1200, "canonical-value") + CANONICAL_BULLET,
+            keyed(1200, "legacy-value") + LEGACY_BULLET,
+        ),
+        "4000 differing frontmatter keys": (
+            keyed(4000, "canonical-value") + CANONICAL_BULLET,
+            keyed(4000, "legacy-value") + LEGACY_BULLET,
+        ),
+        "1200 carried frontmatter keys": (
+            "---\ntopic: t\n---\n" + CANONICAL_BULLET,
+            keyed(1200, "legacy-value") + LEGACY_BULLET,
+        ),
+        "12000 tags on a lost row": (
+            "---\ntopic: alpha\n---\n" + CANONICAL_BULLET,
+            "---\ntopic: beta\n---\n- [constraint] legacy bullet arriving in the merge "
+            + " ".join(f"#t{i}" for i in range(12_000))
+            + " (verified: 2026-08-12)\n",
+        ),
+        "36 restamped bullets, ordinary sentences": (
+            "---\ntopic: t\n---\n"
+            + "".join(f"- [gotcha] {s} #deploy (verified: 2026-08-12)\n" for s in long_sentences),
+            "---\ntopic: t\n---\n"
+            + "".join(f"- [constraint] {s} #lb (verified: 2026-01-01)\n" for s in long_sentences),
+        ),
+    }
+    for label, (canonical, legacy) in vectors.items():
+        repo = make_repo(tmp_path / str(abs(hash(label))))
+        write(repo / CANON / "t.md", canonical)
+        write(repo / "facts" / "t.md", legacy)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-m", "fixtures")
+
+        result = layout.migrate_legacy_facts(repo)
+
+        assert result.lines, label
+        for line in result.lines:
+            assert len(line) <= layout._NOTE_MAX, f"{label}: note is {len(line)} chars"
+
+
+def test_the_body_is_bounded_even_when_every_single_note_is(tmp_path):
+    """Bounded notes are not a bounded body — one note per file, times many files.
+
+    A pre-0.5 repo with several hundred legacy topics reaches the same two cliffs a single
+    huge note did: `open_pr` falling back to no PR at all, and `git commit -m` raising
+    E2BIG into `harvest._abort`, which resets away the pass being recorded.
     """
     repo = make_repo(tmp_path)
-    huge = "x" * 100_000
-    write(repo / CANON / "t.md", f"---\ntopic: {huge}\n---\n" + CANONICAL_BULLET)
-    write(repo / "facts" / "t.md", "---\ntopic: t\n---\n" + LEGACY_BULLET)
+    for i in range(600):
+        write(repo / "facts" / f"topic-{i:03d}.md", f"---\ntopic: topic-{i:03d}\n---\n" + LEGACY_BULLET)
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "fixtures")
 
     result = layout.migrate_legacy_facts(repo)
 
-    assert result.lines
-    for line in result.lines:
-        assert len(line) < 4000, f"note is {len(line)} chars"
+    assert len(result.lines) == 600
+    body = result.body()
+    assert sum(len(line) + 1 for line in body) <= layout._BODY_MAX
+    # A small repo is never truncated, and a truncated one always says by how much.
+    assert len(result.body(budget=200)) < 600
+    assert "more migration note(s), omitted" in result.body(budget=200)[-1]
+    assert layout.MigrationResult(moved=["a", "b"]).body() == ["a", "b"]
 
 
 def test_a_colliding_file_that_is_not_utf8_is_set_aside_not_a_hard_error(tmp_path):

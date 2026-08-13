@@ -43,6 +43,10 @@ from .errors import MnemeError
 
 LEGACY_DIRNAME = "facts"
 
+# Every note together. A pull request body holds ~65 KB and `git commit -m` has a hard
+# argument limit; one note per file over a few hundred legacy files reaches both.
+_BODY_MAX = 50_000
+
 # How many folded duplicate renderings a merge note writes out before pointing at git. A
 # fact bullet is one line, and a note that names 25 of them is still shorter than the diff
 # a reviewer would otherwise have to read to find them.
@@ -75,7 +79,7 @@ def _guarded(rel: str, what: str) -> Iterator[None]:
     try:
         yield
     except OSError as e:
-        raise MnemeError(f"cannot migrate {rel}: {what} — {e.strerror or e}") from e
+        raise MnemeError(f"cannot migrate {_safe(rel)}: {what} — {e.strerror or e}") from e
 
 
 @dataclass
@@ -89,6 +93,36 @@ class MigrationResult:
     @property
     def lines(self) -> list[str]:
         return [*self.moved, *self.merged]
+
+    def body(self, budget: int = _BODY_MAX) -> list[str]:
+        """`lines`, bounded in TOTAL — what a caller should put in a commit or PR body.
+
+        Each note is bounded on its own (`_note`), which is not the same as the body being
+        bounded: one note per file times a pre-0.5 repo's several hundred legacy files
+        reaches the same two cliffs a single huge note did. Past ~65 KB `gitops.open_pr`
+        silently returns its no-PR fallback, which loses the review gate this migration
+        exists to feed; past the platform's argument limit `git commit -m` raises E2BIG, an
+        OSError that escapes into `harvest._abort` and resets away the very pass that was
+        being recorded.
+
+        The count of what was left out is always reported, and nothing is lost by leaving
+        it out: every note describes a change that is in the diff of the commit it
+        accompanies.
+        """
+        kept: list[str] = []
+        used = 0
+        for line in self.lines:
+            if used + len(line) + 1 > budget:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        if len(kept) < len(self.lines):
+            kept.append(
+                f"…and {len(self.lines) - len(kept)} more migration note(s), omitted to keep"
+                " this body inside the commit and pull request limits — every one of them"
+                " describes a change that is in this commit's diff"
+            )
+        return kept
 
 
 def migrate_legacy_facts(repo: Path) -> MigrationResult:
@@ -153,7 +187,7 @@ def _migrate_into(
             if name.endswith(".md") and src.is_file() and dest.is_file():
                 try:
                     result.merged.extend(
-                        _normalized(note)
+                        _note(note)
                         for note in _merge(repo, src, dest, rel_src, rel_dest)
                     )
                 except _MergeWouldBury as refused:
@@ -186,7 +220,7 @@ def _migrate_into(
                     )
                     stranded = _labelled([before]) - _labelled([after])
                     result.moved.append(
-                        _normalized(
+                        _note(
                             f"{_safe(rel_src)} -> {_safe(rel_aside)} (kept separate: merging"
                             f" into {_safe(rel_dest)} would have cost {len(refused.lost)}"
                             f" readable item(s) — {_describe_lost(refused.lost)} —"
@@ -221,7 +255,7 @@ def _migrate_into(
                 _drop_empty(src, rel_src)
                 continue
             raise MnemeError(
-                f"cannot migrate {rel_src}: {rel_dest} already exists —"
+                f"cannot migrate {_safe(rel_src)}: {_safe(rel_dest)} already exists —"
                 " move or merge it by hand, then run the migration again"
             )
         with _guarded(rel_src, f"cannot create {rel_canonical}/"):
@@ -251,7 +285,7 @@ def _aside(canonical: Path, name: str, rel_canonical: str, rel_src: str) -> tupl
         if not _occupied(path):
             return path, f"{rel_canonical}/{candidate}"
     raise MnemeError(
-        f"cannot migrate {rel_src}: {rel_canonical}/{stem}-legacy*.md are all taken —"
+        f"cannot migrate {_safe(rel_src)}: {rel_canonical}/{_safe(stem)}-legacy*.md are all taken —"
         " reconcile them by hand, then run the migration again"
     )
 
@@ -314,7 +348,7 @@ def _drop_empty(legacy: Path, rel: str) -> None:
     remaining = sorted(p.name for p in legacy.iterdir())
     if remaining:
         raise MnemeError(
-            f"{rel}/ still holds {', '.join(remaining)} after migration —"
+            f"{_safe(rel)}/ still holds {_join_capped(remaining, ', ', 400, cap=80)[0]} after migration —"
             " refusing to remove a directory that still carries knowledge"
         )
     with _guarded(f"{rel}/", "cannot remove the legacy directory"):
@@ -363,7 +397,7 @@ def _from_legacy(src: Path, rel_src: str) -> None:
     """
     if src.is_symlink():
         raise MnemeError(
-            f"cannot migrate {rel_src}: it is a symlink, and the file it points at is not"
+            f"cannot migrate {_safe(rel_src)}: it is a symlink, and the file it points at is not"
             " mneme's to move or delete — replace it with the file itself (or remove it),"
             " then run the migration again"
         )
@@ -385,10 +419,10 @@ def _contained(canonical: Path, name: str, rel_src: str) -> Path:
         resolved = dest.resolve()
         root = canonical.resolve()
     except OSError as e:
-        raise MnemeError(f"cannot migrate {rel_src}: {e.strerror or e}") from e
+        raise MnemeError(f"cannot migrate {_safe(rel_src)}: {e.strerror or e}") from e
     if not resolved.is_relative_to(root):
         raise MnemeError(
-            f"{rel_src} would land outside {units.FACTS_CANONICAL}/ — refusing to migrate it"
+            f"{_safe(rel_src)} would land outside {units.FACTS_CANONICAL}/ — refusing to migrate it"
         )
     return dest
 
@@ -443,8 +477,20 @@ def _normalized(line: str) -> str:
 # real path and a real fact sentence; short enough that a note stays a note.
 _NOTE_VALUE_MAX = 160
 
+# The whole of one note. A pull request body holds ~65 KB across every note the migration
+# emits, and `git commit -m` has a hard argument limit below that, so one note may not eat
+# the budget the rest need.
+_NOTE_MAX = 2000
 
-def _safe(value: object) -> str:
+# A folded duplicate's own rendering gets a larger allowance than an ordinary value: it is
+# the only remaining view of that line's tags and stamp outside the diff, and tags and the
+# `(verified:)` stamp sit at the END of a bullet, so a short cap removes exactly the part
+# the note exists to preserve.
+_DUPLICATE_LINE_MAX = 300
+_DUPLICATES_BUDGET = 1200
+
+
+def _safe(value: object, cap: int = _NOTE_VALUE_MAX) -> str:
     """A value read out of the repo, made fit to go into a commit body and a PR body.
 
     Every note this module returns is spliced into the commit body and, through
@@ -462,7 +508,53 @@ def _safe(value: object) -> str:
     degrades `open_pr` to its no-PR fallback and loses the review gate entirely.
     """
     text = _normalized(str(value))
-    return text if len(text) <= _NOTE_VALUE_MAX else text[: _NOTE_VALUE_MAX - 1] + "…"
+    return text if len(text) <= cap else text[: cap - 1] + "…"
+
+
+def _join_capped(
+    items: list, sep: str, budget: int, cap: int = _NOTE_VALUE_MAX, limit: int | None = None
+) -> tuple[str, int]:
+    """Join what fits in `budget` characters; return it and how many were left out.
+
+    Capping each VALUE is not the same as capping a NOTE, and the difference is a
+    multiplicity the repo controls: a legacy/canonical pair disagreeing on 1200 frontmatter
+    keys produced a 94 KB note out of 1200 individually-tiny values, and one bullet with
+    12,000 tags produced 85 KB. Past ~65 KB `gitops.open_pr` silently falls back to no PR
+    at all — losing the review gate this migration exists to feed — and past ~128 KB
+    `git commit -m` raises E2BIG, an OSError that reaches `harvest._abort` and resets the
+    pass's own work away. Both inputs are `facts/` content under this module's own declared
+    threat model, and both are also just what a large real repo looks like.
+    """
+    shown: list[str] = []
+    used = 0
+    for item in items:
+        text = _safe(item, cap)
+        if (limit is not None and len(shown) >= limit) or used + len(text) + len(sep) > budget:
+            break
+        shown.append(text)
+        used += len(text) + len(sep)
+    return sep.join(shown), len(items) - len(shown)
+
+
+def _differing_text(differing: list[str]) -> str:
+    """The "X (kept) vs Y" entries, bounded: one entry per key, and keys are repo content.
+
+    1200 disagreeing keys — every value individually tiny and already capped — assembled a
+    94 KB note. Reconciling that many by hand is not what this note is for; naming the
+    first few and the count is.
+    """
+    joined, omitted = _join_capped(differing, "; ", 600, cap=200)
+    return joined + (f"; and {omitted} more key(s)" if omitted else "")
+
+
+def _note(text: str) -> str:
+    """One note, guaranteed one line and guaranteed bounded — by construction, not review.
+
+    The per-list budgets above keep every note well under this; this is the backstop that
+    holds when a future note forgets one, because "every value is capped" has already been
+    true here while a note was 94 KB long.
+    """
+    return _safe(text, _NOTE_MAX)
 
 
 def _line_contents(text: str) -> list[str]:
@@ -633,8 +725,12 @@ def _dedup(files: list[_Readable]) -> dict[str, tuple]:
     cost is accepted rather than overlooked: Plan 12's constraint is topic-key dedup with
     the canonical file winning a collision, `units.fact_text_hash` already defines a fact's
     identity as its sentence alone (so declines and duplicate detection draw the same
-    line), and the fold is reported with the folded line written out in full, which is more
-    than the pre-migration duplicate ever got. What may NOT be lost is a row the index
+    line). The fold is reported with the folded line itself written into the note,
+    abbreviated only past `_DUPLICATE_LINE_MAX` — tags and the `(verified:)` stamp sit at
+    the END of a bullet, so a short cap removes exactly the part worth keeping — and the
+    deleted file is in the pull request diff either way.
+
+    What may NOT be lost is a row the index
     holds, a topic that labels facts, or a frontmatter line — those are `_lost`'s strict
     properties.
     """
@@ -702,7 +798,8 @@ def _render(row: tuple) -> str:
     topic, text, category, tags, verified = row
     rendered = f"“{_safe(text)}” [{_safe(category)}]"
     if tags:
-        rendered += " " + " ".join(f"#{_safe(t)}" for t in tags)
+        joined, omitted = _join_capped([f"#{t}" for t in tags], " ", 120, cap=40)
+        rendered += f" {joined}" + (f" (+{omitted} more tags)" if omitted else "")
     if verified:
         rendered += f" (verified: {_safe(verified)})"
     return f"{rendered} under topic “{_safe(topic)}”"
@@ -801,13 +898,15 @@ def _carry_meta(
             " in review if they were meant as metadata"
         )
     elif keys:
+        carried_text, omitted_keys = _join_capped(keys, ", ", 400, cap=60)
         notes.append(
-            f"{_safe(rel_src)}: frontmatter key(s) carried over: {', '.join(_safe(k) for k in keys)}"
+            f"{_safe(rel_src)}: frontmatter key(s) carried over: {carried_text}"
+            + (f" and {omitted_keys} more" if omitted_keys else "")
         )
     if differing:
         notes.append(
-            f"{_safe(rel_src)}: frontmatter differs from {_safe(rel_dest)} — {'; '.join(differing)}"
-            " — reconcile in review"
+            f"{_safe(rel_src)}: frontmatter differs from {_safe(rel_dest)} —"
+            f" {_differing_text(differing)} — reconcile in review"
         )
     return carried, body, notes
 
@@ -855,7 +954,7 @@ def _read_text(path: Path, rel: str) -> str:
     try:
         return path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as e:
-        raise MnemeError(f"cannot migrate {rel}: {e}") from e
+        raise MnemeError(f"cannot migrate {_safe(rel)}: {e}") from e
 
 
 def _decode(path: Path, rel: str) -> str | None:
@@ -877,7 +976,7 @@ def _decode(path: Path, rel: str) -> str | None:
     except UnicodeDecodeError:
         return None
     except OSError as e:
-        raise MnemeError(f"cannot migrate {rel}: {e}") from e
+        raise MnemeError(f"cannot migrate {_safe(rel)}: {e}") from e
 
 
 def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> list[str]:
@@ -988,7 +1087,8 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
                 # that do see both, and why losing this rendering from them is accepted).
                 # It can still differ in the columns a HUMAN reads, so the line itself goes
                 # into the note rather than a tally: a reviewer who wants this stamp or
-                # these tags back can see what they were without reading the diff.
+                # these tags back can see what they were without reading the diff, up to
+                # `_DUPLICATE_LINE_MAX` — past that the note abbreviates and says so.
                 duplicates.append(line.strip())
                 continue
             texts.add(text)
@@ -1034,11 +1134,14 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         # remaining view of a folded `#tag` or `verified:` stamp is this line. Truncating
         # at three bit hardest in the very shape this is for — a topic file copied and
         # re-verified wholesale, where every bullet folds and all but three vanish.
-        shown = "; ".join(_safe(d) for d in duplicates[:_DUPLICATES_SHOWN])
+        shown, omitted = _join_capped(
+            duplicates, "; ", _DUPLICATES_BUDGET,
+            cap=_DUPLICATE_LINE_MAX, limit=_DUPLICATES_SHOWN,
+        )
         more = (
-            f"; and {len(duplicates) - _DUPLICATES_SHOWN} more — the full set is in"
+            f"; and {omitted} more — the full set is in"
             f" {_safe(rel_src)} as of the commit before this migration"
-            if len(duplicates) > _DUPLICATES_SHOWN
+            if omitted
             else ""
         )
         notes.append(
