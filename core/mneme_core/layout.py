@@ -397,8 +397,12 @@ def _carry_meta(
             body.extend(block)
             continue
         if key in have:
-            if have[key] != _normalized(" ".join(block)):
-                differing.append(key)
+            legacy_value = _normalized(" ".join(block))
+            if have[key] != legacy_value:
+                # Both values are knowledge — the same rule that keeps two bullets sharing
+                # a topic key. The canonical one wins the file, but the loser is named in
+                # the note, or the only trace of it is a diff a reviewer has to go find.
+                differing.append(f"{have[key]} (kept) vs {legacy_value} (from {rel_src})")
             continue
         carried.extend(block)
         keys.append(key)
@@ -407,8 +411,8 @@ def _carry_meta(
         notes.append(f"{rel_src}: frontmatter key(s) carried over: {', '.join(keys)}")
     if differing:
         notes.append(
-            f"{rel_src}: frontmatter key(s) {', '.join(differing)} differ from {rel_dest}"
-            " — the canonical value kept, reconcile them in review"
+            f"{rel_src}: frontmatter differs from {rel_dest} — {'; '.join(differing)}"
+            " — reconcile in review"
         )
     return carried, body, notes
 
@@ -460,12 +464,30 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         # The canonical file has no header at all. Dropping the legacy keys into its body
         # would leave `topic:`/`owner:` sitting in the prose — nothing lost, but a file
         # structurally worse than the well-formed one this merge just consumed. The block
-        # is CREATED instead, holding the legacy header verbatim: still an insert, not one
-        # existing line rewritten, and the result parses where the original did not.
-        new_block = legacy_meta
-        meta_notes.append(
-            f"{rel_src}: {rel_dest} had no frontmatter — the legacy header became its block"
-        )
+        # is CREATED instead: still an insert, not one existing line rewritten.
+        #
+        # Only the lines the frontmatter grammar can KEY may enter it, on exactly the terms
+        # `_carry_meta` applies to the other branch. Copying the legacy header verbatim
+        # instead grafts any stray line into the new block, and a header the parser then
+        # rejects makes every bullet in the file unreadable to lint, the index, and search
+        # — a file that was retrievable a moment ago is not, which is the one outcome this
+        # module exists to prevent. Unkeyable lines travel with the body, where a line no
+        # parser can key costs nothing.
+        keyed: list[str] = []
+        unkeyable: list[str] = []
+        for key, block in _meta_blocks(legacy_meta):
+            (keyed if key else unkeyable).extend(block)
+        legacy_body = unkeyable + legacy_body
+        if keyed:
+            new_block = keyed
+            meta_notes.append(
+                f"{rel_src}: {rel_dest} had no frontmatter — the legacy header became its block"
+            )
+        if unkeyable:
+            meta_notes.append(
+                f"{rel_src}: {len(unkeyable)} legacy header line(s) the frontmatter grammar"
+                f" cannot key travelled into the body of {rel_dest}"
+            )
     elif canonical_meta is None:
         # An UNTERMINATED block (or a legacy file with no keys to carry). Nothing below the
         # opening delimiter can be proven to be metadata, so there is no block to insert a
