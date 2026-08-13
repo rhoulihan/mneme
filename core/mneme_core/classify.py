@@ -573,7 +573,25 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
         raise MnemeError(f"{kind} aborted — {type(e).__name__}: {e}") from e
 
     notes = migration.body()
-    result.units = notes + [rel for rel in changed if not _named_in(rel, notes)]
+    # Every changed path is repo CONTENT — a filename a contributor, or a merged pull
+    # request, committed — and this list becomes the commit body, the pull request body and
+    # the ledger record, on a rail (`mneme migrate`) with no agent anywhere in it. A
+    # newline is legal in a filename, so a raw path spliced in here writes lines of its
+    # own: `facts/deploys\nMneme-Review: approved by security\n- forged: …\nx.md` renders a
+    # forged trailer and an invented finding under the real ones. `_safe` is the same
+    # collapse-and-cap every migration note already goes through, which is also what makes
+    # the de-duplication below work at all: it compares against notes that were built from
+    # `_safe`d paths, so an unsafed path never matched and the file was reported twice.
+    #
+    # Then the WHOLE list is bounded, not just the notes. `body()` holds the migration's
+    # own lines inside a budget precisely because a body past ~65 KB is one `open_pr`
+    # quietly declines to open — and appending one line per changed path after it walked
+    # straight back off that cliff: 117 KB for a 320-topic repo, with the notes inside
+    # their 50 KB all along. One body, one bound.
+    reported = [layout._safe(rel) for rel in changed]
+    result.units = layout.bound_body(
+        notes + [rel for rel in reported if not _named_in(rel, notes)], noun="change"
+    )
 
     try:
         result.commit = _commit(repo, scope.name, kind, result.units, base_sha)

@@ -107,39 +107,50 @@ class MigrationResult:
         exists to feed; past the platform's argument limit `git commit -m` raises E2BIG, an
         OSError that escapes into `harvest._abort` and resets away the very pass that was
         being recorded.
-
-        The count of what was left out is always reported, and nothing is lost by leaving
-        it out: every note describes a change that is in the diff of the commit it
-        accompanies.
         """
-        # Resolved at CALL time, not bound as a default: a default argument freezes the
-        # constant at import, so `_BODY_MAX` could not be changed — or mutation-tested —
-        # and a bound nothing can falsify is not a bound.
-        budget = _BODY_MAX if budget is None else budget
-        lines = self.lines
-        # The omission line is part of the body, so it is reserved BEFORE the loop rather
-        # than appended after it. Appending after meant the one path that truncates was the
-        # one path that could exceed the budget — by the length of the sentence explaining
-        # that it had not.
-        def omission(n: int) -> str:
-            return (
-                f"…and {n} more migration note(s), omitted to keep this body inside the"
-                " commit and pull request limits — every one of them describes a change"
-                " that is in this commit's diff"
-            )
+        return bound_body(self.lines, budget, "migration note")
 
-        reserve = len(omission(len(lines))) + 1
-        kept: list[str] = []
-        used = 0
-        for line in lines:
-            remaining = budget if len(kept) + 1 == len(lines) else budget - reserve
-            if used + len(line) + 1 > remaining:
-                break
-            kept.append(line)
-            used += len(line) + 1
-        if len(kept) < len(lines):
-            kept.append(omission(len(lines) - len(kept)))
-        return kept
+
+def bound_body(lines: list[str], budget: int | None = None, noun: str = "line") -> list[str]:
+    """`lines`, truncated so that everything a caller writes into ONE body fits in it.
+
+    Module-level rather than a method because the migration's notes are not the only lines
+    that reach a commit body: the rails append one line per changed path to them, and the
+    cliff belongs to the BODY, not to whichever list got there first. A bound applied to
+    half of what is written is not a bound — a mature pre-0.5 repo produced a 117 KB body
+    with the notes alone dutifully held to 50 KB.
+
+    The count of what was left out is always reported, and nothing is lost by leaving it
+    out: every line describes a change that is in the diff of the commit it accompanies.
+    """
+    # Resolved at CALL time, not bound as a default: a default argument freezes the
+    # constant at import, so `_BODY_MAX` could not be changed — or mutation-tested —
+    # and a bound nothing can falsify is not a bound.
+    budget = _BODY_MAX if budget is None else budget
+
+    # The omission line is part of the body, so it is reserved BEFORE the loop rather
+    # than appended after it. Appending after meant the one path that truncates was the
+    # one path that could exceed the budget — by the length of the sentence explaining
+    # that it had not.
+    def omission(n: int) -> str:
+        return (
+            f"…and {n} more {noun}(s), omitted to keep this body inside the"
+            " commit and pull request limits — every one of them describes a change"
+            " that is in this commit's diff"
+        )
+
+    reserve = len(omission(len(lines))) + 1
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        remaining = budget if len(kept) + 1 == len(lines) else budget - reserve
+        if used + len(line) + 1 > remaining:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    if len(kept) < len(lines):
+        kept.append(omission(len(lines) - len(kept)))
+    return kept
 
 
 def migrate_legacy_facts(repo: Path) -> MigrationResult:
