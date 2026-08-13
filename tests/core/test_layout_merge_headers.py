@@ -301,8 +301,13 @@ def test_a_differing_topic_stays_searchable(tmp_path):
     assert {"deploy-runbook", "incident-response"} <= topics
 
 
-def test_the_report_pins_every_note_the_merge_can_emit(tmp_path):
-    """The note stream is the migration's whole account of itself in the PR body.
+def test_the_merge_paths_note_stream_is_pinned_exactly(tmp_path):
+    """The four notes a successful MERGE can emit, pinned by count as well as content.
+
+    Not every note the module can emit — the metadata notes belong to `_carry_meta` and the
+    demotion branch, and the refusal note replaces the whole stream when it fires; those
+    have their own tests above. This one exists because relaxing five exact-list assertions
+    to make room for a new note left the merge path unpinned past its first line.
 
     Relaxing the suite's exact-list assertions to make room for a new note left the stream
     unpinned past its first line — a spurious, duplicated or silently dropped note would be
@@ -331,6 +336,40 @@ def test_the_report_pins_every_note_the_merge_can_emit(tmp_path):
     assert "already said what a canonical bullet says" in notes  # the fold is reported
     assert "unparsed line(s) carried over verbatim" in notes
     assert len(result.merged) == 4, result.merged  # no note appears twice, none is missing
+
+
+def test_the_refusal_note_names_what_it_protected(tmp_path):
+    """A refusal is now the common outcome of two files disagreeing about a value.
+
+    `_carry_meta`'s "X (kept) vs Y" note is discarded along with the rest of the merge when
+    the refusal fires, so the refusal line has to carry that information or a reviewer gets
+    a bare count and has to diff to find out what the migration declined to decide.
+    """
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", "---\ntopic: t\nowner: platform\n---\n" + CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\ntopic: t\nowner: sre-oncall-team\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    note = " ".join(result.moved)
+    assert "owner" in note and "sre-oncall-team" in note  # the value that would have gone
+
+
+def test_the_demotion_note_explains_the_dropped_delimiters(tmp_path):
+    """The one clause added in an earlier round that no test asserted."""
+    repo = make_repo(tmp_path)
+    write(repo / CANON / "t.md", CANONICAL_BULLET)
+    write(repo / "facts" / "t.md", "---\nnot a key line\nalso not one\n---\n" + LEGACY_BULLET)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "fixtures")
+
+    result = layout.migrate_legacy_facts(repo)
+
+    notes = " ".join(result.merged)
+    assert "`---` delimiters are not carried" in notes
+    assert "read as a header on the next pass" in notes
 
 
 def test_the_refusal_note_warns_that_names_and_ids_move(tmp_path):

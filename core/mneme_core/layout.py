@@ -153,15 +153,22 @@ def _migrate_into(
                     # broken, so anything folded into it stops being retrievable. The file
                     # keeps its knowledge and its history under a free name beside it.
                     aside, rel_aside = _aside(canonical, name, rel_canonical, rel_src)
+                    pinned = _pin_stem_topic(src, Path(name).stem, rel_src)
                     _move(repo, src, aside, rel_src, rel_aside)
                     result.moved.append(
                         f"{rel_src} -> {rel_aside} (kept separate: merging into {rel_dest}"
-                        f" would have made {len(refused.lost)} readable item(s) unreadable —"
+                        f" would have made {len(refused.lost)} readable item(s) unreadable"
+                        f" — {_describe_lost(refused.lost)} —"
                         " fix the two by hand and merge them. Note the saved file's unit ids"
                         f" move with its name, from facts/{name[:-3]}#… to"
-                        f" facts/{rel_aside.rsplit('/', 1)[-1][:-3]}#…, and so does its topic"
-                        " if it has no `topic:` key of its own, since every reader falls back"
-                        " to the file stem)"
+                        f" facts/{rel_aside.rsplit('/', 1)[-1][:-3]}#…"
+                        + (
+                            f"; `topic: {Path(name).stem}` was written into it first, so the"
+                            " topic its old filename gave it survives the rename"
+                            if pinned
+                            else ""
+                        )
+                        + ")"
                     )
                 continue
             if src.is_dir() and dest.is_dir() and not dest.is_symlink():
@@ -199,6 +206,38 @@ def _aside(canonical: Path, name: str, rel_canonical: str, rel_src: str) -> tupl
         f"cannot migrate {rel_src}: {rel_canonical}/{stem}.legacy*.md are all taken —"
         " reconcile them by hand, then run the migration again"
     )
+
+
+def _pin_stem_topic(path: Path, stem: str, rel: str) -> bool:
+    """Write the topic a file was getting from its old filename, before the name changes.
+
+    Every reader resolves a fact file's topic as `meta.get("topic", stem)` — the index
+    `name` column, the router's routing table, the classify bundle — so the filename is a
+    value source, and renaming a file that has no `topic:` key of its own silently moves
+    every fact in it to a different topic. Renaming is exactly what the refusal path does,
+    so the implicit value is made explicit first: an insert, not a rewrite, and only when
+    the header the reader sees is one it can read (a file it already rejects has no
+    retrievable topic to preserve).
+    """
+    text = _read_text(path, rel)
+    try:
+        meta, _body = units.parse_frontmatter(text)
+    except MnemeError:
+        return False
+    if "topic" in meta:
+        return False
+    h = _harvest()
+    raw, bom = h._read_raw(path)
+    lines = h._lines_keepends(raw)
+    eol = h._dominant_eol(lines)
+    line = f"topic: {stem}" + eol
+    if _frontmatter_end([h._split_eol(l)[0] for l in lines]) is None:
+        lines[0:0] = ["---" + eol, line, "---" + eol]
+    else:
+        lines.insert(1, line)
+    with _guarded(rel, "cannot pin its topic before renaming it"):
+        path.write_text(bom + "".join(lines), encoding="utf-8", newline="")
+    return True
 
 
 def _drop_empty(legacy: Path, rel: str) -> None:
@@ -412,43 +451,44 @@ def _reader_accepts(meta_lines: list[str]) -> bool:
     return True
 
 
-def _retrievable(text: str) -> set[str]:
-    """Everything a READER can actually get out of `text`: fact sentences AND metadata keys.
+def _retrievable(path: Path, text: str) -> set[tuple]:
+    """Everything a READER gets out of this file, in the readers' own terms.
 
-    Not what the bytes contain — what `units.parse_frontmatter` plus the bullet grammar
-    yield, because that pair is what lint, the index build, search and the classify bundle
-    all walk. A file whose header the parser rejects yields nothing at all, however much is
-    sitting in it, which is why this set is the unit of measurement: knowledge lost is
-    knowledge that stopped being retrievable.
+    Five attempts at this check each measured something strictly smaller than the property
+    demanded — bullets only, then metadata keys, then metadata values — and each time a
+    real reader was still projecting something the check could not see. So the identity
+    here is the row `mneme_index.build._fact_rows` stores and `regenerate_index_skill`
+    routes on, field for field:
 
-    Metadata counts. Measuring only bullets left a legacy file that parses and carries
-    `topic:`/`owner:`/`sources:` but no parseable bullet free to be folded into a canonical
-    file the reader rejects and then deleted, with success reported — the same failure this
-    check exists to stop, one field type over. `_carry_meta` has always said as much: an
-    `owner:` key "is a line a human committed exactly as much as a bullet is".
+    * the TOPIC is `meta.get("topic", stem)` — the filename is a value source, so a file
+      with no `topic:` key still has a retrievable topic, and renaming it moves that topic;
+    * a bullet's CATEGORY, TAGS and VERIFIED stamp are columns, not decoration —
+      `list_facts(category=…, tag=…)` filters on them and the classify bundle prints them,
+      so folding a bullet away because another file has the same sentence loses them;
+    * metadata values are retrievable in their own right.
 
-    Keys AND their values. An earlier version measured key names only, on the argument that
-    a colliding key is "reconciled, not lost" because the key survives — true of the key and
-    false of the value, and the value is the retrievable thing: `topic:` is projected into
-    the index row, into `regenerate_index_skill`'s routing table and into the classify
-    bundle, so a differing `topic` demoted to prose makes a fact that `mneme search` found
-    before the migration unfindable after it, with the report saying "merged".
-
-    No key is special-cased. Every attempt in this series failed the same way — measuring
-    something strictly smaller than the property demanded — so the measurement is simply
-    everything the parser returns. A value that stops being returned is a loss, and the
-    merge is refused; the legacy file is kept whole beside the canonical one instead, which
-    reconciles the two without deciding which value a human meant to keep.
+    `path` matters as much as `text`: the same bytes under a different name are not the
+    same rows.
     """
     try:
         meta, body = units.parse_frontmatter(text)
     except MnemeError:
         return set()
-    found = {f"meta:{key}={_normalized(str(value))}" for key, value in meta.items()}
+    topic = str(meta.get("topic") or path.stem)
+    found: set[tuple] = {("meta", key, _normalized(str(value))) for key, value in meta.items()}
     for line in _line_contents(body):
         bullet = _bullet(line)
         if bullet is not None:
-            found.add(f"fact:{_normalized(bullet.text)}")
+            found.add(
+                (
+                    "fact",
+                    topic,
+                    _normalized(bullet.text),
+                    bullet.category,
+                    tuple(bullet.tags),
+                    bullet.verified or "",
+                )
+            )
     return found
 
 
@@ -553,6 +593,22 @@ class _MergeWouldBury(Exception):
         self.lost = lost
 
 
+def _describe_lost(lost: set[tuple]) -> str:
+    """Name what a refusal protected, in the terms a reviewer reconciles by.
+
+    A refusal is now the COMMON outcome of two files disagreeing about a metadata value, and
+    `_carry_meta`'s "X (kept) vs Y" note is discarded with the rest of the merge when it
+    fires — so without this the only line in the pull request would be a count, naming
+    neither the key nor either value, and a reviewer would have to diff to find out what
+    the migration declined to decide.
+    """
+    shown = []
+    for item in sorted(lost, key=str)[:3]:
+        shown.append(f"{item[1]}: {item[2]}" if item[0] == "meta" else f"“{item[2]}” [{item[3]}]")
+    more = f" and {len(lost) - len(shown)} more" if len(lost) > len(shown) else ""
+    return "; ".join(shown) + more
+
+
 def _bullet(line: str) -> units.FactBullet | None:
     """The parsed bullet this line is, or None when no reader can key it."""
     if not line.startswith("- ["):
@@ -597,7 +653,7 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
     src_text = _read_text(src, rel_src)
     # Measured on the way in, checked on the way out: the merge is allowed to move a fact
     # anywhere, and not allowed to make one stop being readable.
-    retrievable_before = _retrievable(dest_text) | _retrievable(src_text)
+    retrievable_before = _retrievable(dest, dest_text) | _retrievable(src, src_text)
     canonical_meta, canonical_body = _sections(dest_text)
     legacy_meta, legacy_body = _sections(src_text)
     carried_meta: list[str] = []
@@ -681,7 +737,7 @@ def _merge(repo: Path, src: Path, dest: Path, rel_src: str, rel_dest: str) -> li
         verbatim += 1
     if carried or carried_meta or new_block:
         _apply_merge(dest, carried_meta, carried, rel_dest, new_block)
-    lost = retrievable_before - _retrievable(_read_text(dest, rel_dest))
+    lost = retrievable_before - _retrievable(dest, _read_text(dest, rel_dest))
     if lost:
         # The one check that cannot be fooled by reasoning about either file's shape. Put
         # the destination back byte-for-byte and let the caller move the legacy file aside:

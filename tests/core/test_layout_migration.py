@@ -105,8 +105,15 @@ def test_a_topic_both_layouts_carry_is_merged_not_overwritten(tmp_path):
     assert gitops.git(repo, "ls-files", "--", "facts/deploys.md") == ""
 
 
-def test_a_restamped_retagged_copy_of_a_canonical_bullet_is_not_duplicated(tmp_path):
-    """Identity is the sentence: the same fact rendered differently is still the same fact."""
+def test_a_restamped_retagged_copy_of_a_canonical_bullet_keeps_both_renderings(tmp_path):
+    """A sentence is not the whole fact — category, tags and the verified stamp are columns.
+
+    Folding the legacy line away because another file has the same sentence used to delete
+    all three, from a file the merge then removed, while the report said "merged": readers
+    filter on `category=` and `tag=` and the classify bundle prints them, so those values
+    are retrievable knowledge. Two renderings of one sentence collide on unit id inside a
+    single file, so the only way to keep both is to keep both files.
+    """
     repo = make_repo(tmp_path)
     sentence = "the lb keeps stale targets"
     write(repo / CANON / "deploys.md", fact("deploys", bullet(sentence)))
@@ -117,9 +124,11 @@ def test_a_restamped_retagged_copy_of_a_canonical_bullet_is_not_duplicated(tmp_p
 
     result = layout.migrate_legacy_facts(repo)
 
-    text = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
-    assert text.count(sentence) == 1
-    assert result.merged[0] == f"facts/deploys.md merged into {CANON}/deploys.md (0 bullets)"
+    canonical = (repo / CANON / "deploys.md").read_text(encoding="utf-8")
+    aside = (repo / CANON / "deploys.legacy.md").read_text(encoding="utf-8")
+    assert "[gotcha]" in canonical and "#deploy" in canonical
+    assert "[constraint]" in aside and "#lb" in aside and "2026-01-01" in aside
+    assert any("kept separate" in line for line in result.moved)
 
 
 def test_two_sentences_sharing_a_topic_key_are_both_kept(tmp_path):
