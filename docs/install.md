@@ -73,12 +73,28 @@ inside it: `cd` into the knowledge repo and run `/mneme:classify`. The current d
 the argument — there is no plugin name to pass, and the command says so plainly if the
 directory is not a registered knowledge plugin. It reads every accumulated fact, proposes a
 complete mapping of fact → the skill whose work it belongs to, and **waits for your
-approval** before editing anything; then it migrates any legacy top-level `facts/` into
-`skills/knowledge-index/facts/` (the canonical location since 0.5.0 — repos still using the
-old one are read exactly as before, and nothing moves until you run this), regenerates the
-knowledge-index, and delivers the whole reorganization as its own `mneme/classify-*` branch
-and PR. No fact is ever deleted: each one either lands in a skill or stays a fact. Change
-your mind at any point and `mneme classify abort` puts the repo back as it was.
+approval** before editing anything, then regenerates the knowledge-index and delivers the
+whole reorganization as its own `mneme/classify-*` branch and PR. No fact is ever deleted:
+each one either lands in a skill or stays a fact. Change your mind at any point and
+`mneme classify abort` puts the repo back as it was.
+
+**Repos older than 0.5.0.** Facts live at `skills/knowledge-index/facts/`; a repo scaffolded
+before that carries a top-level `facts/` instead. It is read exactly as before — lint,
+verify, search and the index sweep both layouts — but nothing new is written there: every
+new topic goes to the canonical directory, and the next contribution of any kind (a harvest,
+a classify pass, a review extraction) moves the old files into it on that contribution's own
+branch, with history preserved and the moves listed in the pull request. There is nothing to
+opt into and no user action required. For a repo with nothing else pending — no staged
+candidates, nothing to classify — run the migration on its own:
+
+```bash
+cd path/to/knowledge/repo
+mneme migrate            # mneme/migrate-* branch + PR; --no-push leaves it local
+```
+
+`mneme status` lists the registered plugins that still need it
+(`legacy facts layout: <name> (run: mneme migrate in that repo)`), and says nothing when
+none do.
 
 When you maintain a repo other people contribute to, run `/mneme:review` from inside it (the
 current directory is the argument here too, and this is the one command that requires `gh`).

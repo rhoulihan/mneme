@@ -40,10 +40,13 @@ PR_LIST = json.dumps(
 
 
 def test_list_open_prs(tmp_path, monkeypatch):
+    # The second half of the answer is whether the listing filled its limit; a two-PR
+    # response to a request for a hundred did not (see tests/core/test_triage_accuracy.py).
     shim_gh(tmp_path, monkeypatch, PR_LIST, {})
-    prs = gitops.list_open_prs(tmp_path)
+    prs, truncated = gitops.list_open_prs(tmp_path)
     assert [p["number"] for p in prs] == [7, 9]
     assert prs[0]["author"] == "alice"
+    assert truncated is False
 
 
 def test_pr_diff(tmp_path, monkeypatch):

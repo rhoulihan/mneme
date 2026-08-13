@@ -100,3 +100,57 @@ def test_has_errors_ignores_warnings(tmp_path):
     issues = lint.lint_repo(tmp_path)
     assert codes(issues) == ["MN008"]
     assert not lint.has_errors(issues)
+
+
+def test_lint_reports_undecodable_files_instead_of_raising(tmp_path):
+    """Lint is a REPORTER: a file it cannot decode is a finding, not a crash.
+
+    `classify._finalize` calls `lint_repo` inside the try whose `except` runs
+    `harvest._abort`, so an escaping UnicodeDecodeError hard-reset the pass being
+    recorded — one undecodable byte anywhere in `facts/` destroying unrelated work.
+    `layout` also routes such a file into the canonical directory on the strength of
+    lint tolerating it, which was not true until this was fixed.
+    """
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "t.md").write_bytes(
+        b"---\ntopic: t\n---\n- [gotcha] caf\xe9 latin-1 byte here (verified: 2026-08-11)\n"
+    )
+
+    issues = lint.lint_repo(tmp_path)
+
+    assert codes(issues) == ["MN010"]
+    assert issues[0].message == "not valid UTF-8"  # not conflated with an I/O failure
+    assert lint.has_errors(issues)
+
+
+def test_a_byte_order_mark_does_not_hide_a_topic_from_lint(tmp_path):
+    """Every other reader of a fact file uses `utf-8-sig`; lint used plain `utf-8`.
+
+    With the BOM left in the text `parse_frontmatter` does not recognise the opening
+    `---`, so lint reported MN009 "missing topic" for a file whose topic the index, the
+    classify bundle and the router all read without trouble.
+    """
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    (facts / "t.md").write_bytes(
+        "﻿---\ntopic: t\n---\n- [gotcha] a bom leads this file (verified: 2026-08-11)\n".encode()
+    )
+
+    assert codes(lint.lint_repo(tmp_path)) == []
+
+
+def test_a_byte_order_mark_does_not_hide_a_skill_from_lint(tmp_path):
+    """The SKILL.md side of the same encoding fix, which had no test of its own.
+
+    Under plain `utf-8` a BOM stayed in the text, `parse_frontmatter` did not recognise the
+    opening `---`, and lint reported MN001 "missing frontmatter" for a skill that
+    `build._skill_rows` and `classify._skill_entries` both read without trouble.
+    """
+    skill = tmp_path / "skills" / "good-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_bytes(
+        "﻿---\nname: good-skill\ndescription: fine\n---\n".encode()
+    )
+
+    assert codes(lint.lint_repo(tmp_path)) == []

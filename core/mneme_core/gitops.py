@@ -9,6 +9,14 @@ from pathlib import Path
 
 from .errors import MnemeError
 
+# Fully qualified so no local branch or tag spelled `origin/main` can answer for the
+# remote-tracking ref this comparison is about.
+_ORIGIN_MAIN = "refs/remotes/origin/main"
+
+# How many open pull requests one triage reads. Everything past it is unseen work, which
+# is why `list_open_prs` reports a full page rather than pretending it was the whole queue.
+PR_LIST_LIMIT = 100
+
 
 def git_raw(repo: Path, *args: str) -> str:
     """Exactly what git wrote to stdout — nothing trimmed.
@@ -51,6 +59,21 @@ def has_remote(repo: Path) -> bool:
     return "origin" in git(repo, "remote").splitlines()
 
 
+def behind_origin_main(repo: Path) -> bool | None:
+    """Does `origin/main` carry commits this clone's HEAD does not — None if unknowable.
+
+    A local clone is a snapshot: every question mneme answers from it ("is this fact
+    already here?", "is this PR a duplicate?") is answered against whatever `main` this
+    machine last fetched. None is not "up to date" — it is "there is no remote ref to
+    compare against", which a reader must be told apart from a confirmed match.
+    """
+    try:
+        git(repo, "rev-parse", "--verify", "--quiet", _ORIGIN_MAIN)
+    except MnemeError:
+        return None
+    return int(git(repo, "rev-list", "--count", f"HEAD..{_ORIGIN_MAIN}")) > 0
+
+
 def sync_main(repo: Path) -> None:
     git(repo, "checkout", "main")
     if has_remote(repo):
@@ -75,15 +98,30 @@ def reset_hard(repo: Path, sha: str) -> None:
     git(repo, "reset", "--hard", sha)
 
 
-def commit_harvest(repo: Path, unit_lines: list[str], sources: list[str]) -> str:
+def commit_harvest(
+    repo: Path,
+    unit_lines: list[str],
+    sources: list[str],
+    migrated: list[str] | None = None,
+) -> str:
+    """Commit the harvest; record a layout migration that rode along in its own section.
+
+    `migrated` is deliberately NOT folded into `unit_lines`: the unit lines are what this
+    harvest contributed — the ledger, the pull request title's count, `mneme share view` —
+    while a migration note describes knowledge the repo already had, moved. A reviewer
+    reads the second list to check that a large diff moved facts rather than rewriting
+    them, and would have to guess at it if the two were one list.
+    """
     git(repo, "add", "-A")
     if git(repo, "status", "--porcelain") == "":
         raise MnemeError("nothing to commit for this harvest")
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     subject = f"knowledge: harvest {date} ({len(unit_lines)} units)"
-    body_lines = [f"- {line}" for line in unit_lines]
-    trailers = [f"Mneme-Source: {s}" for s in sorted(set(sources))]
-    message = subject + "\n\n" + "\n".join(body_lines) + "\n\n" + "\n".join(trailers) + "\n"
+    sections = ["\n".join(f"- {line}" for line in unit_lines)]
+    if migrated:
+        sections.append("Migrated:\n" + "\n".join(f"- {line}" for line in migrated))
+    sections.append("\n".join(f"Mneme-Source: {s}" for s in sorted(set(sources))))
+    message = subject + "\n\n" + "\n\n".join(sections) + "\n"
     git(repo, "commit", "-m", message)
     return git(repo, "rev-parse", "HEAD")
 
@@ -114,11 +152,17 @@ def _gh_read(repo: Path, *args: str) -> str:
     return result.stdout
 
 
-def list_open_prs(repo: Path) -> list[dict]:
-    """Open pull requests for `repo`, newest API shape flattened: author is its login string."""
+def list_open_prs(repo: Path, limit: int = PR_LIST_LIMIT) -> tuple[list[dict], bool]:
+    """`(open pull requests, truncated)` — author flattened to its login string.
+
+    `gh` answers a capped listing, so a repo with more open pull requests than the cap
+    silently loses the rest: triage read them as "all of them" and a maintainer could
+    close the queue on an incomplete picture. A full page is not proof more exist, but it
+    is exactly the case where they might — so the caller is told, and says so.
+    """
     out = _gh_read(
         repo, "pr", "list", "--state", "open",
-        "--json", "number,title,headRefName,author,url", "--limit", "50",
+        "--json", "number,title,headRefName,author,url", "--limit", str(int(limit)),
     )
     try:
         prs = json.loads(out or "[]")
@@ -129,7 +173,7 @@ def list_open_prs(repo: Path) -> list[dict]:
     for pr in prs:
         author = pr.get("author")
         pr["author"] = author.get("login", "") if isinstance(author, dict) else (author or "")
-    return prs
+    return prs, len(prs) >= limit
 
 
 def pr_diff(repo: Path, number: int) -> str:

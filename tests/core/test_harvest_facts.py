@@ -29,11 +29,24 @@ def test_apply_new_fact_creates_file(tmp_path):
 
 
 def test_apply_new_and_update_in_a_legacy_layout(tmp_path):
-    """A repo with a top-level `facts/` keeps it — and the unit id is identical."""
-    (tmp_path / "facts").mkdir()
+    """A topic a legacy repo already carries is edited in place — same unit id.
+
+    Appends and updates follow the file, wherever it lives, so one topic never becomes
+    two files with half the bullets in each. (A topic the repo does NOT yet carry is a
+    different case: that is a write, and writes are canonical — see the assertion at the
+    end and `tests/core/test_facts_write_dir.py`.)
+    """
+    legacy = tmp_path / "facts"
+    legacy.mkdir()
+    (legacy / "staging-env.md").write_text(
+        "---\ntopic: staging-env\n---\n"
+        "- [gotcha] v2 API truncates batch writes over 500 items #api (verified: 2026-08-11)\n",
+        encoding="utf-8",
+    )
     line = harvest.apply_fact(tmp_path, make_candidate(bullet()))
     assert line == "facts/staging-env#staging-db-resets-nightly-at-04 (new fact)"
-    assert not (tmp_path / units.FACTS_CANONICAL).exists()
+    assert not (tmp_path / units.FACTS_CANONICAL / "staging-env.md").exists()
+    assert "resets nightly" in (legacy / "staging-env.md").read_text(encoding="utf-8")
     updated = compose.render_fact_bullet(
         "constraint", "Staging DB resets nightly at 03:00 UTC now", ["staging"],
         verified="2026-08-12",
@@ -49,6 +62,16 @@ def test_apply_new_and_update_in_a_legacy_layout(tmp_path):
     text = (tmp_path / "facts" / "staging-env.md").read_text(encoding="utf-8")
     assert "03:00 UTC now" in text
     assert "04:00 UTC" not in text
+
+    # A topic this repo does not carry yet is created canonically, not beside the others.
+    harvest.apply_fact(
+        tmp_path,
+        make_candidate(
+            bullet(text="Nightly restores read from the 05:00 snapshot"), topic="restores"
+        ),
+    )
+    assert (tmp_path / units.FACTS_CANONICAL / "restores.md").exists()
+    assert not (legacy / "restores.md").exists()
 
 
 def test_apply_new_fact_appends_preserving_existing(tmp_path):

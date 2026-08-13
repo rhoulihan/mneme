@@ -370,8 +370,11 @@ adopting, and if it still says `(no scope statement)`, add the section by hand.
 
 Adopt differs from `new` in three ways: it needs the repo registered first, it writes a
 subset of the files (no `AGENTS.md`, `README.md` or `.gitignore`), and it takes sensitivity
-from the registry rather than a flag. A repo already using the legacy top-level `facts/`
-layout keeps it.
+from the registry rather than a flag. A repo still using the legacy top-level `facts/`
+layout keeps its files exactly where they are — adopt never moves or rewrites content — but
+it is seeded with the canonical `skills/knowledge-index/facts/` alongside them, and adopt
+says so: the next contribution migrates the old files into it (or run `mneme migrate` in the
+repo to do only that).
 
 ---
 

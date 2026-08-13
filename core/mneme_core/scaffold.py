@@ -122,11 +122,15 @@ def adopt(
         ),
         "skills/knowledge-index/SKILL.md": templates.render(templates.INDEX_SKILL_MD, **subs),
     }
-    # Adoption seeds the canonical facts location — unless this repo already files facts
-    # at the top level, which stays readable (both layouts resolve via `units.facts_dir`)
-    # and must not be shadowed by an empty canonical directory.
-    if not (target / "facts").is_dir():
-        candidates[f"{units.FACTS_CANONICAL}/.gitkeep"] = ""
+    # Adoption seeds the canonical facts location, unconditionally — including in a repo
+    # that still files facts at the top level. Skipping it there (Plan 10) left the adopted
+    # repo with nowhere canonical to write, so its very next fact re-confirmed the legacy
+    # layout: accommodation is what keeps a pre-0.5 repo legacy forever. The seeded
+    # directory is empty, so it shadows nothing — every reader sweeps both layouts
+    # (`units.fact_files`) until `layout.migrate_legacy_facts` runs on the next
+    # contribution. What adopt must not do is any of that migrating itself: it adds files
+    # that are missing and never rewrites, moves or deletes repo content.
+    candidates[f"{units.FACTS_CANONICAL}/.gitkeep"] = ""
     added: list[str] = []
     for rel, content in candidates.items():
         path = target / rel

@@ -35,16 +35,32 @@ def test_scaffold_has_no_top_level_facts(tmp_path):
     assert (target / units.FACTS_CANONICAL / ".gitkeep").exists()
 
 
-def test_apply_fact_respects_existing_layout(tmp_path):
-    legacy = make_layout(tmp_path / "legacy", canonical=False)
-    body = "- [constraint] Written into legacy layout #x (verified: 2026-08-12)"
-    cand = Candidate(
+def fact_cand(body, topic):
+    return Candidate(
         id=candidate_id("fact", "t", body), type="fact", edit="new",
-        target="t", body=body, topic="incoming",
+        target="t", body=body, topic=topic,
     )
-    harvest.apply_fact(legacy, cand)
-    assert (legacy / "facts" / "incoming.md").exists()
-    assert not (legacy / units.FACTS_CANONICAL).exists()
+
+
+def test_apply_fact_appends_in_place_but_writes_new_topics_canonically(tmp_path):
+    """A legacy repo is never forked mid-topic, and never grows a new legacy topic.
+
+    Appending to a topic the repo already carries at the top level stays in that file —
+    two files sharing one unit id would split the knowledge in half. A topic the repo
+    does NOT yet have is a write, and writes are canonical: following the legacy layout
+    here is what kept pre-0.5 repos legacy forever.
+    """
+    legacy = make_layout(tmp_path / "legacy", canonical=False)
+    body = "- [constraint] Appended to the legacy topic #x (verified: 2026-08-12)"
+    harvest.apply_fact(legacy, fact_cand(body, "layout"))
+    text = (legacy / "facts" / "layout.md").read_text(encoding="utf-8")
+    assert "Layout-agnostic fact" in text and "Appended to the legacy topic" in text
+    assert not (legacy / units.FACTS_CANONICAL / "layout.md").exists()
+
+    fresh = "- [constraint] A topic this repo did not have #x (verified: 2026-08-12)"
+    harvest.apply_fact(legacy, fact_cand(fresh, "incoming"))
+    assert (legacy / units.FACTS_CANONICAL / "incoming.md").exists()
+    assert not (legacy / "facts" / "incoming.md").exists()
 
 
 def test_legacy_repo_lints_clean(tmp_path):

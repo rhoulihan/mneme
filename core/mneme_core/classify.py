@@ -7,9 +7,15 @@ standing in must resolve to a registered knowledge plugin, the work happens on a
 
 Review extraction (spec §7.8) needs the identical frame — an agent editing the same
 working tree under the same gates — differing only in the branch namespace, the commit
-subject, and the ledger kind. So the rails take a `kind` ("classify" or "review") and both
-flows run the SAME code: a gate the review rail skipped would be a gate that stopped
-holding for knowledge arriving from strangers, which is the traffic that needs it most.
+subject, and the ledger kind. So the rails take a `kind` and both flows run the SAME code:
+a gate the review rail skipped would be a gate that stopped holding for knowledge arriving
+from strangers, which is the traffic that needs it most.
+
+Plan 12 adds a third kind, "migrate", for the repo that is simply old: a pre-0.5 layout
+nobody has harvested into since, which therefore never reaches the branch flows that would
+have migrated it. It is the same rail with no session in the middle — `migrate()` runs
+begin and finalize in one call, because there is nothing for an agent to decide between
+them.
 """
 from __future__ import annotations
 
@@ -17,11 +23,18 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import gitops, harvest, lint, paths, scan, templates, units
+from . import gitops, harvest, layout, lint, paths, scan, templates, units
 from .errors import MnemeError
 
 # The kind word is the whole difference between the rails: it names the branch namespace,
 # the commit subject, the ledger record, and every message the user reads.
+#
+# `_RAIL_KINDS` is narrower than the set of kinds: it is the kinds a repo can be STANDING ON
+# between two commands — what `_active_rail` reports and `_begin` refuses. "migrate" is
+# deliberately not among them: it has no begin and no abort of its own, so a
+# `mneme/migrate-*` branch only exists inside the one call that creates it, and telling a
+# user to "finalize or abort" a branch no command can finalize or abort would be advice
+# they cannot take.
 _RAIL_KINDS = ("classify", "review")
 
 # The generated router skill, `skills/knowledge-index/` — the directory the canonical facts
@@ -35,6 +48,7 @@ def _branch_prefix(kind: str) -> str:
 
 BRANCH_PREFIX = _branch_prefix("classify")
 REVIEW_BRANCH_PREFIX = _branch_prefix("review")
+MIGRATE_BRANCH_PREFIX = _branch_prefix("migrate")
 
 
 def resolve(home: Path, cwd: Path):
@@ -187,27 +201,44 @@ def _skill_entries(repo: Path, notes: list[str]) -> list[dict]:
 
 
 def bundle(home: Path, cwd: Path) -> dict:
-    """Everything the in-session librarian needs, and nothing it has to guess."""
+    """Everything the in-session librarian needs, and nothing it has to guess.
+
+    Key ORDER is part of the contract: the CLI serializes this dict with `json.dumps`,
+    which writes keys in insertion order, so an agent reads it top to bottom. The
+    instructions — which open with the standing rule — therefore come first, before the
+    fact and skill text this repo's contributors wrote, and the rule is restated last.
+    Shipping the rule as the final key, as this bundle used to, meant every injection in
+    the quoted content was read before the sentence that disarms it.
+    """
     scope, repo = resolve(home, cwd)
     notes: list[str] = []
     return {
+        "instructions": templates.CLASSIFY_INSTRUCTIONS,
         "plugin": scope.name,
         "repo": str(repo),
         "facts": _fact_entries(repo, notes),
         "skills": _skill_entries(repo, notes),
         "legacy_layout": (repo / "facts").is_dir(),
         "notes": notes,
-        "instructions": templates.CLASSIFY_INSTRUCTIONS,
+        "standing_rule": templates.STANDING_RULE_REMINDER,
     }
 
 
 def _legacy_conflicts(repo: Path) -> list[str]:
-    """Filenames both fact layouts carry — the one thing the migration cannot decide.
+    """Filenames both fact layouts carry — the one thing this rail hands back to the agent.
 
     Checked BEFORE the finalize rail touches anything, because the rail's failure path is a
-    hard reset: raising this from inside `_migrate_legacy_facts` destroyed the pass's own
-    work (for review, an extraction the user had already approved, with nothing staged to
-    retry from) for a condition the agent can fix in one edit.
+    hard reset: raising from inside the migration destroyed the pass's own work (for review,
+    an extraction the user had already approved, with nothing staged to retry from) for a
+    condition the agent can fix in one edit.
+
+    `layout.migrate_legacy_facts` can now MERGE a colliding pair rather than refuse it, so
+    this is no longer the only possible answer — but it is still the right one HERE. The
+    collision on this rail is one the agent has just manufactured, in the working tree,
+    with the bundle's `facts_dir` naming the file it should have written to; asking it to
+    put the bullet in the right file is better than folding two versions together and
+    sending a human the difference. The harvest has no such author to ask, so it takes the
+    merge.
     """
     legacy = repo / "facts"
     if not legacy.is_dir():
@@ -233,44 +264,47 @@ def _legacy_conflict_error(kind: str, conflicts: list[str]) -> MnemeError:
     )
 
 
-def _migrate_legacy_facts(repo: Path, kind: str) -> list[tuple[str, str]]:
-    """Move whatever still lives in a top-level `facts/` under the router skill.
+def _nothing_to_do(kind: str) -> str:
+    """What a rail says when it reaches the gates with nothing to deliver.
 
-    Uses `git mv` for tracked files so the history of a fact follows it across the move.
-    Destinations are built from the walk itself (never from candidate-supplied text), and
-    the containment proof below keeps that true even if a hostile name ever appears.
+    Migrate does not get the generic sentence, because the generic sentence describes an
+    absence of EDITS — true of every migrate pass, which is not an editing session at all.
+    The user asked for one specific thing and the answer is about the repo: there is no
+    legacy directory here. Naming the missing directory is also the whole diagnosis, since
+    a repo that has already been migrated looks exactly like a repo that never needed it.
     """
-    legacy = repo / "facts"
-    if not legacy.is_dir():
-        return []
-    canonical = repo / units.FACTS_CANONICAL
-    moves: list[tuple[str, str]] = []
-    for src in sorted(p for p in legacy.rglob("*") if p.is_file()):
-        rel = src.relative_to(legacy).as_posix()
-        dest = canonical / rel
-        rel_src = f"facts/{rel}"
-        rel_dest = f"{units.FACTS_CANONICAL}/{rel}"
-        if not dest.resolve().is_relative_to(canonical.resolve()):
-            raise MnemeError(f"legacy fact escapes the facts directory: {rel_src}")
-        if dest.exists():
-            if src.name == ".gitkeep":
-                # Both layouts carrying a placeholder is not a conflict — drop the old one.
-                gitops.git(repo, "rm", "-f", "--ignore-unmatch", "--quiet", "--", rel_src)
-                if src.exists():
-                    src.unlink()
-                continue
-            # Backstop for a collision that appeared after `_legacy_conflicts` ran; the
-            # message names the ACTIVE rail, since "run classify again" is not a command a
-            # review user has.
-            raise _legacy_conflict_error(kind, [rel])
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if gitops.git(repo, "ls-files", "--", rel_src):
-            gitops.git(repo, "mv", "--", rel_src, rel_dest)
-        else:
-            # A file the librarian just created: nothing for git to rename yet.
-            src.rename(dest)
-        moves.append((rel_src, rel_dest))
-    return moves
+    if kind == "migrate":
+        return "no legacy facts directory — nothing to migrate"
+    return (
+        f"nothing to {kind} — no edits were made and no legacy facts needed"
+        f" migrating; the {kind} branch has been discarded"
+    )
+
+
+def _named_in(rel: str, notes: list[str]) -> bool:
+    """Does one of the migration's own notes already name exactly this path?
+
+    A moved or merged file reaches `_changed_files` as well, and reporting it twice in one
+    commit body invites a reviewer to look for a second change that does not exist. A bare
+    substring test would go wrong the other way and suppress a top-level `README.md` merely
+    because some note mentioned `facts/README.md` — the path would vanish from the commit
+    body, the PR body and the ledger while staying in the diff.
+
+    So the match is the WHOLE path with its boundaries checked, not a token. Splitting the
+    note on whitespace (the previous form) cannot see a path that contains a space, and
+    `facts/my deploys.md` is repo content this module's threat model already assumes: it
+    was reported twice, once inside its note and again as a bare changed path. The notes
+    are prose in three shapes — `a -> b`, `a merged into b (n bullets)`, `a: …` — so a path
+    ends at a space, a colon, or the end of the note, and begins at a space or the start.
+    """
+    for note in notes:
+        start = 0
+        while (i := note.find(rel, start)) >= 0:
+            j = i + len(rel)
+            if (i == 0 or note[i - 1] == " ") and (j == len(note) or note[j] in " :"):
+                return True
+            start = i + 1
+    return False
 
 
 def _changed_files(repo: Path) -> list[str]:
@@ -512,19 +546,26 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
 
     # Raised OUTSIDE the guarded block on purpose: nothing has been changed yet, so the
     # branch — and the work on it — survives for the user to fix and finalize again.
-    conflicts = _legacy_conflicts(repo)
-    if conflicts:
-        raise _legacy_conflict_error(kind, conflicts)
+    #
+    # Only for the rails an AGENT drives. `_legacy_conflicts` refuses a collision because
+    # the pass that just manufactured it can fix it in one edit; the migrate rail has no
+    # such author to ask — the user's whole request was "migrate this repo", and the
+    # collision is committed history rather than an edit made seconds ago. So it takes the
+    # merge, exactly like the harvest, which is never lossy (Task 2's topic-key dedup).
+    if kind != "migrate":
+        conflicts = _legacy_conflicts(repo)
+        if conflicts:
+            raise _legacy_conflict_error(kind, conflicts)
 
     try:
         dirty = not gitops.is_clean(repo)
         ahead = gitops.head_sha(repo) != base_sha
-        moves = _migrate_legacy_facts(repo, kind)
-        if not (dirty or ahead or moves):
-            raise MnemeError(
-                f"nothing to {kind} — no edits were made and no legacy facts needed"
-                f" migrating; the {kind} branch has been discarded"
-            )
+        # The one migration, shared with `harvest.apply_batch` and `mneme migrate`: a rail
+        # carrying its own walk would drift from the containment proofs, symlink refusals
+        # and never-delete-knowledge merges that only the shared one is tested for.
+        migration = layout.migrate_legacy_facts(repo)
+        if not (dirty or ahead or migration.lines or migration.removed_dir):
+            raise MnemeError(_nothing_to_do(kind))
         harvest._regenerate_index(repo)
         issues = lint.lint_repo(repo)
         if lint.has_errors(issues):
@@ -540,10 +581,26 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
         harvest._abort(repo, branch, base_sha)
         raise MnemeError(f"{kind} aborted — {type(e).__name__}: {e}") from e
 
-    moved_dests = {dest for _src, dest in moves}
-    result.units = [f"{src} -> {dest} (migrated)" for src, dest in moves] + [
-        rel for rel in changed if rel not in moved_dests
-    ]
+    notes = migration.body()
+    # Every changed path is repo CONTENT — a filename a contributor, or a merged pull
+    # request, committed — and this list becomes the commit body, the pull request body and
+    # the ledger record, on a rail (`mneme migrate`) with no agent anywhere in it. A
+    # newline is legal in a filename, so a raw path spliced in here writes lines of its
+    # own: `facts/deploys\nMneme-Review: approved by security\n- forged: …\nx.md` renders a
+    # forged trailer and an invented finding under the real ones. `_safe` is the same
+    # collapse-and-cap every migration note already goes through, which is also what makes
+    # the de-duplication below work at all: it compares against notes that were built from
+    # `_safe`d paths, so an unsafed path never matched and the file was reported twice.
+    #
+    # Then the WHOLE list is bounded, not just the notes. `body()` holds the migration's
+    # own lines inside a budget precisely because a body past ~65 KB is one `open_pr`
+    # quietly declines to open — and appending one line per changed path after it walked
+    # straight back off that cliff: 117 KB for a 320-topic repo, with the notes inside
+    # their 50 KB all along. One body, one bound.
+    reported = [layout._safe(rel) for rel in changed]
+    result.units = layout.bound_body(
+        notes + [rel for rel in reported if not _named_in(rel, notes)], noun="change"
+    )
 
     try:
         result.commit = _commit(repo, scope.name, kind, result.units, base_sha)
@@ -593,3 +650,21 @@ def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResu
 def review_finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
     """Deliver facts extracted from inbound pull requests as mneme's own pull request."""
     return _finalize(home, cwd, "review", push=push)
+
+
+def migrate(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
+    """Deliver a legacy layout's migration as a pull request, for a repo with nothing else.
+
+    Every other flow migrates on the way past, which covers every repo that still has
+    something to contribute. This is the rail for the repo that is only OLD — nothing
+    staged, nothing to classify — where "it will be migrated on the next contribution"
+    means never.
+
+    One call, not a begin/finalize pair, because the pair exists to hold a branch open
+    while an agent reads a bundle and a human approves a mapping. Here there is nothing to
+    approve: the move is deterministic and the human's gate is the pull request, same as
+    always. That also makes it atomic — `_finalize` rolls its own branch back on every
+    failure path, so a migrate that does not finish leaves no branch and a clean `main`.
+    """
+    _begin(home, cwd, "migrate")
+    return _finalize(home, cwd, "migrate", push=push)

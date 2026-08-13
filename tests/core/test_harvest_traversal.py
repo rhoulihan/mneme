@@ -13,7 +13,7 @@ is wedged on the `is_clean` precondition.
 """
 import pytest
 
-from mneme_core import compose, gitops, harvest, paths, scaffold, staging
+from mneme_core import compose, gitops, harvest, paths, scaffold, staging, units
 from mneme_core.errors import MnemeError
 from mneme_core.staging import Candidate, candidate_id
 
@@ -188,4 +188,7 @@ def test_legitimate_names_still_apply(tmp_path):
     assert harvest.apply_fact(repo, fact_candidate(topic="staging-env")).startswith(
         "facts/staging-env#"
     )
-    assert (repo / "facts" / "staging-env.md").exists()
+    # The unit id is layout-independent; the file itself is written canonically, even
+    # though this repo carries a legacy top-level `facts/`.
+    assert (repo / units.FACTS_CANONICAL / "staging-env.md").exists()
+    assert not (repo / "facts" / "staging-env.md").exists()
