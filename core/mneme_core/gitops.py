@@ -1,6 +1,7 @@
 """Git side effects for harvest — subprocess-wrapped, never networked implicitly (spec §7.3, §8)."""
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -91,6 +92,49 @@ def push_branch(repo: Path, branch: str) -> None:
     if not has_remote(repo):
         raise MnemeError("no 'origin' remote to push to")
     git(repo, "push", "-u", "origin", branch)
+
+
+def _gh_read(repo: Path, *args: str) -> str:
+    """Run a READ-ONLY `gh` command in `repo`; `gh` is a hard requirement here.
+
+    Unlike `open_pr`, which degrades to a manual instruction when `gh` is missing, review
+    triage has nothing to fall back on — there is no other way to see the open PRs — so an
+    absent or failing `gh` is an error that names the requirement.
+    """
+    if shutil.which("gh") is None:
+        raise MnemeError(
+            f"gh (GitHub CLI) is required for 'gh {' '.join(args)}' — install it from"
+            " https://cli.github.com and run 'gh auth login'"
+        )
+    result = subprocess.run(
+        ["gh", *args], capture_output=True, text=True, cwd=str(repo),
+    )
+    if result.returncode != 0:
+        raise MnemeError(f"gh {' '.join(args)} failed: {result.stderr.strip()[:300]}")
+    return result.stdout
+
+
+def list_open_prs(repo: Path) -> list[dict]:
+    """Open pull requests for `repo`, newest API shape flattened: author is its login string."""
+    out = _gh_read(
+        repo, "pr", "list", "--state", "open",
+        "--json", "number,title,headRefName,author,url", "--limit", "50",
+    )
+    try:
+        prs = json.loads(out or "[]")
+    except json.JSONDecodeError as exc:
+        raise MnemeError(f"gh pr list returned unreadable JSON: {exc}") from exc
+    if not isinstance(prs, list):
+        raise MnemeError("gh pr list returned unreadable JSON: expected a list")
+    for pr in prs:
+        author = pr.get("author")
+        pr["author"] = author.get("login", "") if isinstance(author, dict) else (author or "")
+    return prs
+
+
+def pr_diff(repo: Path, number: int) -> str:
+    """The unified diff of pull request `number` — UNTRUSTED contributor text, read-only."""
+    return _gh_read(repo, "pr", "diff", str(int(number)))
 
 
 def open_pr(repo: Path, branch: str, title: str, body: str) -> str:

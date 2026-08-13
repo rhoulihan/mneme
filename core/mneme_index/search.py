@@ -14,11 +14,17 @@ from mneme_core.errors import MnemeError
 _TERM_RE = re.compile(r"\w+", re.UNICODE)
 
 
+# One OR-term per word, so the query grows with the caller's text — and callers include
+# annotation over pull-request bullets. Past a few dozen terms an OR query says nothing a
+# human meant anyway, while 200k terms took half a minute inside FTS.
+_MAX_TERMS = 128
+
+
 def fts_query(raw: str) -> str:
     terms = _TERM_RE.findall(raw)
     if not terms:
         raise MnemeError("search query has no searchable terms")
-    return " OR ".join(f'"{t}"' for t in terms)
+    return " OR ".join(f'"{t}"' for t in terms[:_MAX_TERMS])
 
 
 def search(
