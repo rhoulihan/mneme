@@ -74,8 +74,9 @@ the argument — there is no plugin name to pass, and the command says so plainl
 directory is not a registered knowledge plugin. It reads every accumulated fact, proposes a
 complete mapping of fact → the skill whose work it belongs to, and **waits for your
 approval** before editing anything, then regenerates the knowledge-index and delivers the
-whole reorganization as its own `mneme/classify-*` branch and PR. No fact is ever deleted:
-each one either lands in a skill or stays a fact. Change your mind at any point and
+whole reorganization as its own `mneme/classify-*` branch and PR. A fact either lands in a
+skill (sentence carried across verbatim), stays a fact, or is retired as a duplicate — and a
+retirement must name the unit that covers it, so nothing leaves silently. Change your mind at any point and
 `mneme classify abort` puts the repo back as it was.
 
 **Repos older than 0.5.0.** Facts live at `skills/knowledge-index/facts/`; a repo scaffolded

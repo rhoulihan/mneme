@@ -768,8 +768,12 @@ being edited in place.
 **`/mneme:classify`** — once a repo has taken on a few merged PRs' worth of facts, run this
 *from inside the repo* (the current directory is the argument). It reads every accumulated
 fact, proposes a complete mapping of fact → the skill whose work it belongs to, and waits for
-your approval before editing anything. No fact is ever deleted: each one either lands in a
-skill or stays a fact. Delivered as its own PR.
+your approval before editing anything. A fact has three possible endings and no others: it
+lands in a skill with its sentence carried across verbatim, it stays a fact, or it is
+*retired* as a duplicate — which requires naming the unit that already covers it
+(`--retire <retired-unit-id>=<covering-unit-id>`). A retirement is the only way knowledge
+leaves the repo, and every one is printed in the pull request so you approve the removal
+rather than just the reorganization. Delivered as its own PR.
 
 **`/mneme:review`** — for maintainers of a repo others contribute to. Run it from inside the
 repo (requires `gh`). It reads every open PR, annotates each fact each one adds as duplicate,
