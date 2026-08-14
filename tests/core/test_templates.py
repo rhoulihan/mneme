@@ -5,6 +5,7 @@ from mneme_core import templates
 
 SUBS = dict(
     name="acme-knowledge",
+    belongs="- Durable facts.",
     index_name="knowledge-index",
     description="Institutional knowledge for the Acme widget platform",
     owner="acme-maintainers",

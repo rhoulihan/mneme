@@ -113,6 +113,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_adopt.add_argument("name")
     p_adopt.add_argument("--description", default="")
     p_adopt.add_argument("--owner", default="maintainers")
+    # Tri-state on purpose: unset means "classify this repo", and the two flags are how a
+    # user overrides a classification that got it wrong in either direction.
+    p_adopt.add_argument("--as-plugin", dest="as_plugin", action="store_true", default=None)
+    p_adopt.add_argument("--plain", dest="as_plugin", action="store_false")
 
     # No plugin-name positional anywhere in the classify surface: the current directory
     # is the argument. `--cwd` exists so tests (and wrappers) can point at a directory
@@ -298,12 +302,15 @@ def main(argv: list[str] | None = None) -> int:
             from . import scaffold as scaffold_mod
             from . import units as units_mod
 
-            added = scaffold_mod.adopt(
-                home, args.name, description=args.description, owner=args.owner
+            adopted = scaffold_mod.adopt(
+                home, args.name, description=args.description, owner=args.owner,
+                as_plugin=args.as_plugin,
             )
-            for rel in added:
+            for note in adopted.notes:
+                print(note)
+            for rel in adopted.added:
                 print(f"added: {rel}")
-            if not added:
+            if not adopted.added:
                 print("nothing to add")
             plugin = registry_mod.get_plugin(home, args.name)
             # Adoption is where a pre-0.5 repo meets mneme, so it is where the user learns

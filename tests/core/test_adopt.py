@@ -31,7 +31,7 @@ def make_existing_plugin(tmp_path, home, name="existing-kb"):
 def test_adopt_adds_only_missing(tmp_path, capsys):
     home = tmp_path / "home"
     repo = make_existing_plugin(tmp_path, home)
-    added = scaffold.adopt(home, "existing-kb", owner="team-leads")
+    added = scaffold.adopt(home, "existing-kb", owner="team-leads").added
     assert "MNEME.md" in added
     assert ".claude-plugin/plugin.json" in added
     assert "skills/knowledge-index/SKILL.md" in added
@@ -74,7 +74,7 @@ def test_adopt_seeds_canonical_beside_an_existing_legacy_facts_dir(tmp_path, cap
     fact = legacy_facts(repo)
     before = fact.read_bytes()
 
-    added = scaffold.adopt(home, "existing-kb")
+    added = scaffold.adopt(home, "existing-kb").added
 
     assert f"{units.FACTS_CANONICAL}/.gitkeep" in added
     assert (repo / units.FACTS_CANONICAL / ".gitkeep").is_file()
@@ -116,14 +116,14 @@ def test_adopt_is_idempotent(tmp_path, capsys):
     home = tmp_path / "home"
     make_existing_plugin(tmp_path, home)
     scaffold.adopt(home, "existing-kb")
-    assert scaffold.adopt(home, "existing-kb") == []
+    assert scaffold.adopt(home, "existing-kb").added == []
 
 
 def test_adopt_never_touches_existing_mneme_md(tmp_path, capsys):
     home = tmp_path / "home"
     repo = make_existing_plugin(tmp_path, home)
     (repo / "MNEME.md").write_text("# custom scope\n", encoding="utf-8")
-    added = scaffold.adopt(home, "existing-kb")
+    added = scaffold.adopt(home, "existing-kb").added
     assert "MNEME.md" not in added
     assert (repo / "MNEME.md").read_text(encoding="utf-8") == "# custom scope\n"
 

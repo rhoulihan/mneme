@@ -88,7 +88,7 @@ root — and does **not** write `plugin.json`, `marketplace.json` or `release.ym
 `validate.yml` is offered, path-scoped to the knowledge root, never repo-wide. Manifests
 become an explicit opt-in (`--as-plugin`) rather than the default imposition.
 
-- [ ] **Steps:** failing test → implement → verify the adopted repo lints clean and a
+- [x] **Steps:** failing test → implement → verify the adopted repo lints clean and a
   harvest into it succeeds → commit.
 
 ---

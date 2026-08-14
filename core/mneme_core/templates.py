@@ -50,8 +50,7 @@ $description
 
 ## What belongs here
 
-- Hard-won procedures (skills): verified fixes, deployment paths, debugging golden paths — each with the failure pattern that made it non-obvious.
-- Durable facts: constraints, gotchas, decisions, runbook notes that stay true across tickets.
+$belongs
 
 ## What does NOT belong here
 
@@ -64,6 +63,15 @@ $description
 This scope statement is the routing prompt: mneme's distiller matches candidate knowledge
 against it. Keep it specific — name the products, systems, and processes this plugin covers.
 """
+
+# `$belongs` for a repo whose purpose IS knowledge, and for one that merely keeps some.
+# A plain repo has no skills mneme maintains, so telling its users to write them points at
+# files nothing will lint, index, or route.
+BELONGS_PLUGIN = """- Hard-won procedures (skills): verified fixes, deployment paths, debugging golden paths — each with the failure pattern that made it non-obvious.
+- Durable facts: constraints, gotchas, decisions, runbook notes that stay true across tickets."""
+
+BELONGS_PLAIN = """- Durable facts about THIS repo: constraints, gotchas, decisions and runbook notes that stay true across tickets — each with the failure pattern that made it non-obvious.
+- Knowledge a teammate would otherwise rediscover by repeating the same dead ends."""
 
 AGENTS_MD = """# $name
 
@@ -124,6 +132,46 @@ CODEOWNERS = """# Default reviewers for all knowledge in this plugin.
 * @$owner
 """
 
+# A plain repo's source is not mneme's to own. The rule covers the knowledge root and
+# stops there, so adopting a service does not route every pull request in it to the
+# people who agreed to review facts.
+CODEOWNERS_SCOPED = """# Reviewers for the knowledge mneme maintains in this repo.
+# The rest of the repo keeps whatever ownership it already had.
+/$knowledge_root/ @$owner
+"""
+
+CONTRIBUTING_PLAIN_MD = """# Contributing knowledge to $name
+
+This repo keeps durable facts about itself in `$knowledge_root/`, captured with
+[mneme](https://github.com/rhoulihan/mneme). Everything else in the repo is unaffected.
+
+Knowledge enters through pull requests — human-written or staged by mneme's curated
+harvest. Either way the same rules apply.
+
+## The promotion rule
+
+A contribution must carry:
+
+1. **Verified success** — the procedure or fact was actually exercised, not assumed.
+2. **A named failure pattern** — what went wrong before the fix; the dead ends eliminated.
+3. **Non-obviousness** — not derivable from this repo's own source or public documentation.
+
+## Format
+
+- One topic per file in `$knowledge_root/facts/`, typed bullets
+  (`decision | constraint | gotcha | runbook-note | reference`), tags, verified dates.
+- `$knowledge_root/SKILL.md` is the routing table and is regenerated mechanically —
+  never edit it by hand.
+- Delta edits only — never regenerate whole files.
+
+## Review policy
+
+- CODEOWNERS routes `$knowledge_root/` to its maintainers.
+- Review judges substance: is it true, is it durable, is it non-obvious.
+- CI (`mneme-validate.yml`) lints format and scans for secrets, and runs only when
+  `$knowledge_root/` changes.
+"""
+
 VALIDATE_YML = """name: validate
 on:
   pull_request:
@@ -150,6 +198,46 @@ jobs:
           done < <(find skills facts -name '*.md' -print0 2>/dev/null)
           exit $rc
 """
+
+def validate_yml(knowledge_root: str) -> str:
+    """CI for a repo mneme only keeps a corner of.
+
+    Two differences from `VALIDATE_YML`, both about not spending an application's CI
+    budget: the workflow triggers ONLY when the knowledge root changes, and the secret
+    scan walks that root rather than `skills facts`. The file is named `mneme-validate`
+    so it cannot collide with a `validate.yml` the repo already has.
+    """
+    return f"""name: mneme knowledge validate
+on:
+  pull_request:
+    paths:
+      - "{knowledge_root}/**"
+  push:
+    branches: [main]
+    paths:
+      - "{knowledge_root}/**"
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch mneme engine
+        run: git clone --depth 1 https://github.com/rhoulihan/mneme /tmp/mneme
+      - name: Lint knowledge units
+        run: /tmp/mneme/bin/mneme lint .
+      - name: Secret scan
+        run: |
+          set -e
+          rc=0
+          while IFS= read -r -d '' f; do
+            /tmp/mneme/bin/mneme scan "$f" || rc=$?
+          done < <(find {knowledge_root} -name '*.md' -print0 2>/dev/null)
+          exit $rc
+"""
+
 
 RELEASE_YML = """name: release
 on:
