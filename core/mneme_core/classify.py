@@ -510,14 +510,33 @@ def _parse_retirements(retire: list[str] | None) -> list[tuple[str, str]]:
     return pairs
 
 
+def _committable(repo: Path) -> set[str]:
+    """Repo-relative paths git will actually commit: tracked, plus untracked-not-ignored.
+
+    NOT a filesystem walk. A coverage proof that reads the working tree accepts a file
+    `.gitignore` keeps out of the commit — the fact is retired against a covering unit that
+    exists in no committed file, and the knowledge is gone. That defect was found in
+    `_integration_text`, fixed there, and then written straight back into this function,
+    which is why it is stated here rather than left to be re-derived: every proof in this
+    rail must ask git what the branch will carry, never the disk.
+    """
+    listing = gitops.git_raw(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    return {rel for rel in listing.split("\0") if rel}
+
+
 def _branch_unit_ids(repo: Path) -> set[str]:
-    """Every unit id the branch still carries — the ids a retirement may point AT."""
+    """Every unit id the branch will COMMIT — the ids a retirement may point AT."""
+    committable = _committable(repo)
     ids = {
         units.skill_unit_id(d.name)
         for d in sorted((repo / "skills").glob("*"))
-        if d.is_dir() and (d / "SKILL.md").is_file()
+        if d.is_dir()
+        and (d / "SKILL.md").is_file()
+        and (d / "SKILL.md").relative_to(repo).as_posix() in committable
     }
     for f in units.fact_files(repo):
+        if f.relative_to(repo).as_posix() not in committable:
+            continue
         try:
             _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
         except (MnemeError, OSError, UnicodeDecodeError):
@@ -533,8 +552,9 @@ def _branch_unit_ids(repo: Path) -> set[str]:
 
 
 def _accept_retirements(
-    repo: Path, pairs: list[tuple[str, str]], main_facts: dict[str, list[str]]
-) -> tuple[set[str], list[str]]:
+    repo: Path, pairs: list[tuple[str, str]],
+    main_facts: dict[str, list[tuple[str, str]]],
+) -> tuple[set[tuple[str, str]], list[str]]:
     """Validate every declaration; return the retired fact TEXTS and the lines to report.
 
     mneme cannot tell whether the covering unit really says the same thing — that is the
@@ -542,38 +562,41 @@ def _accept_retirements(
     there. What it CAN do is refuse a declaration whose parts are not real, so the claim a
     reviewer reads is at least about two units that exist.
 
-    Retired TEXTS, not ids, because a unit id does not identify a fact. `normalize_topic_key`
-    is the first six words of the sentence, so two bullets in one topic file — routine,
-    since every bullet in it is about the same subject — share an id. Excusing by id let a
-    single declaration retire every colliding bullet at once while naming only one of them
-    in the pull request: the rest left with nothing said about them, which is the whole
-    thing this gate exists to prevent. An ambiguous id is refused rather than guessed at.
+    Retired (FILE, TEXT) pairs, because neither half alone identifies a fact.
+    `normalize_topic_key` is the first six words of a sentence, so two bullets in one topic
+    file — routine, since every bullet in it shares a subject — collide on a unit id;
+    excusing by id let one declaration retire all of them while naming one in the pull
+    request. Switching to normalized TEXT only moved that defect: two fact FILES can carry
+    the same sentence, so a text-keyed excuse covered both deletions from one declaration.
+    The pair is what `_main_fact_bullets` actually yields, and it is exact. An ambiguous id
+    — one naming more than one pair on main — is refused rather than guessed at.
     """
     if not pairs:
         return set(), []
     on_branch_ids = _branch_unit_ids(repo)
     on_branch_texts = _branch_fact_texts(repo)
     declared = {retired_id for retired_id, _ in pairs}
-    retired_texts: set[str] = set()
+    retired_pairs: set[tuple[str, str]] = set()
     lines: list[str] = []
     for retired_id, covering_id in pairs:
         if retired_id == covering_id:
             raise MnemeError(f"--retire {layout._safe(retired_id)}: a unit cannot cover itself")
-        texts = main_facts.get(retired_id, [])
-        if not texts:
+        entries = main_facts.get(retired_id, [])
+        if not entries:
             raise MnemeError(
                 f"--retire {layout._safe(retired_id)}: not a fact on main — nothing to retire"
                 " (check the unit id against `mneme classify prepare`)"
             )
-        if len(texts) > 1:
+        if len(entries) > 1:
             raise MnemeError(
                 f"--retire {layout._safe(retired_id)}: that unit id names"
-                f" {len(texts)} different bullets on main, because a unit id is only the"
+                f" {len(entries)} different bullets on main, because a unit id is only the"
                 " first six words of a sentence — retiring by it would remove all of them"
                 " while naming one. Reword or split the bullets so their ids differ, or"
                 " keep them"
             )
-        if _normalized(texts[0]) in on_branch_texts:
+        rel, text = entries[0]
+        if _normalized(text) in on_branch_texts:
             raise MnemeError(
                 f"--retire {layout._safe(retired_id)}: that fact is still present on the"
                 " branch — declare a retirement only for a fact this pass removed"
@@ -590,13 +613,14 @@ def _accept_retirements(
                 f" {layout._safe(covering_id)} does not exist on the branch — a retirement"
                 " must point at knowledge that survives this pass"
             )
-        retired_texts.add(_normalized(texts[0]))
+        retired_pairs.add((rel, _normalized(text)))
         lines.append(f"{layout._safe(retired_id)} — covered by {layout._safe(covering_id)}")
-    return retired_texts, lines
+    return retired_pairs, lines
 
 
 def _preservation_gate(
-    repo: Path, changed: list[str], kind: str, retired: set[str] | None = None
+    repo: Path, changed: list[str], kind: str,
+    retired: set[tuple[str, str]] | None = None,
 ) -> None:
     """Knowledge on `main` may be moved or integrated by this pass — never dropped silently.
 
@@ -611,7 +635,7 @@ def _preservation_gate(
     sentence still exists somewhere — which is also the better provenance — and it can
     refuse to let one vanish without anybody saying so.
     """
-    retired = retired or set()  # normalized TEXTS, not ids — see `_accept_retirements`
+    retired = retired or set()  # (file, normalized text) pairs — see `_accept_retirements`
     on_branch = _branch_fact_texts(repo)
     integrated = _integration_text(repo, changed)
     lost = [
@@ -619,7 +643,7 @@ def _preservation_gate(
         for rel, text in _main_fact_bullets(repo)
         if _normalized(text) not in on_branch
         and _normalized(text) not in integrated
-        and _normalized(text) not in retired
+        and (rel, _normalized(text)) not in retired
     ]
     if lost:
         raise MnemeError(
@@ -701,10 +725,10 @@ def _finalize(
     # Every check reads `main` and the tree as the librarian left it, and the migration
     # below moves fact files without changing a bullet's text or its stem, so nothing here
     # needs the post-migration state.
-    main_facts: dict[str, list[str]] = {}
+    main_facts: dict[str, list[tuple[str, str]]] = {}
     for rel, text in _main_fact_bullets(repo):
-        main_facts.setdefault(units.fact_unit_id(Path(rel).stem, text), []).append(text)
-    retired_texts, retired_lines = _accept_retirements(
+        main_facts.setdefault(units.fact_unit_id(Path(rel).stem, text), []).append((rel, text))
+    retired_pairs, retired_lines = _accept_retirements(
         repo, _parse_retirements(retire), main_facts
     )
     # Checked HERE, not where the body is assembled: that point is past the guarded block,
@@ -735,7 +759,7 @@ def _finalize(
             raise MnemeError(f"{kind} fails repo lint: {details}")
         changed = _changed_files(repo)
         _scan_gate(repo, changed, kind)
-        _preservation_gate(repo, changed, kind, retired_texts)
+        _preservation_gate(repo, changed, kind, retired_pairs)
     except MnemeError:
         harvest._abort(repo, branch, base_sha)
         raise

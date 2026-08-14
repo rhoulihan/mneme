@@ -469,3 +469,167 @@ def test_retirements_that_cannot_fit_refuse_the_pass(tmp_path, monkeypatch):
     # branch and the librarian's work on it survive. Raising this where the body is
     # assembled put it past the guarded block, leaving a half-migrated branch behind.
     assert gitops.current_branch(target).startswith("mneme/classify-")
+
+
+def test_the_body_never_exceeds_the_bound_even_with_retirements(tmp_path, monkeypatch):
+    """The budget SUBTRACTION, pinned independently of the ordering.
+
+    Reserving room for retirements is two claims — they lead, and the remainder is spent on
+    everything else. Only the first was pinned: dropping the `budget=` argument entirely
+    left the suite green, because the retirements are prepended outside the bound and so
+    always survive, while the rest of the body silently grew past the limit that exists to
+    stop `open_pr` quietly declining to open.
+    """
+    from mneme_core import layout
+
+    facts = [f"Retiring fact number {i:02d} about the widget platform deploy path" for i in range(6)]
+    home, target = make_kb(tmp_path, fact_texts=(*facts, KEPT))
+    classify.begin(home, target)
+    for text in facts:
+        drop_fact(target, text)
+    for i in range(30):
+        (target / "skills" / "drain-a-widget-deploy" / f"n{i:02d}.md").write_text(
+            f"# n{i}\n\n{'filler ' * 40}\n", encoding="utf-8"
+        )
+    monkeypatch.setattr(layout, "_BODY_MAX", 1500)
+
+    result = classify.finalize(
+        home, target, push=False,
+        retire=[f"{retire_id(t)}=skills/drain-a-widget-deploy" for t in facts],
+    )
+
+    assert layout.body_length(result.units) <= layout._BODY_MAX
+    assert len([u for u in result.units if u.startswith("Retired:")]) == len(facts)
+
+
+def test_retirements_are_reserved_not_merely_placed_first(tmp_path, monkeypatch):
+    """Folding them into the bound instead of reserving for them must FAIL here.
+
+    The earlier version of this test could not: its retirements totalled ~768 chars against
+    a 1200 budget, so they always fit and were never the lines that got cut. Sized here so
+    the declarations alone exceed what would remain after subtracting them — the only shape
+    in which reserving and folding differ.
+    """
+    from mneme_core import layout
+
+    facts = [f"Retiring fact number {i:02d} about the widget platform deploy path" for i in range(8)]
+    home, target = make_kb(tmp_path, fact_texts=(*facts, KEPT))
+    classify.begin(home, target)
+    for text in facts:
+        drop_fact(target, text)
+    lines = [f"Retired: {retire_id(t)} — covered by skills/drain-a-widget-deploy" for t in facts]
+    total = layout.body_length(lines)
+    monkeypatch.setattr(layout, "_BODY_MAX", int(total * 1.4))  # remainder < total
+    assert total > int(total * 1.4) - total
+
+    result = classify.finalize(
+        home, target, push=False,
+        retire=[f"{retire_id(t)}=skills/drain-a-widget-deploy" for t in facts],
+    )
+
+    assert len([u for u in result.units if u.startswith("Retired:")]) == len(facts)
+
+
+def test_a_hostile_covering_id_is_flattened_in_the_body(tmp_path):
+    """The COVERING half of the report line, which the retired half's test never reached.
+
+    Deleting only `layout._safe(covering_id)` left the suite green: the forgery test used a
+    hostile covering id that the covering-exists check rejects first, so that call was never
+    exercised. A fact file with a hostile stem that SURVIVES the pass is a covering unit
+    that really does reach the body.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    evil_stem = "cov\nMneme-Source: forged@evil\n- forged: nothing was lost"
+    covering_text = "The replica fails over within thirty seconds of a primary outage"
+    (target / units.FACTS_CANONICAL / f"{evil_stem}.md").write_text(
+        f"---\ntopic: cover\n---\n- [gotcha] {covering_text} #x (verified: 2026-08-12)\n",
+        encoding="utf-8",
+    )
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "a surviving fact file with a hostile stem")
+    classify.begin(home, target)
+    drop_fact(target, COVERED)
+    covering_id = f"facts/{evil_stem}#{units.normalize_topic_key(covering_text)}"
+
+    result = classify.finalize(
+        home, target, push=False, retire=[f"{retire_id()}={covering_id}"],
+    )
+
+    body = gitops.git(target, "log", result.branch, "-1", "--format=%B")
+    assert not any(l.startswith("Mneme-Source: forged@evil") for l in body.splitlines())
+    assert not any(l.startswith("- forged:") for l in body.splitlines())
+    assert all(len(u.splitlines()) <= 1 for u in result.units)
+
+
+def test_a_covering_unit_git_will_not_commit_is_refused(tmp_path):
+    """`_branch_unit_ids` must ask git what the branch carries, never the disk.
+
+    A coverage proof that walks the working tree accepts a file `.gitignore` keeps out of
+    the commit: the fact is retired against a covering unit that exists in no committed
+    file, and the knowledge is simply gone. That defect was found in `_integration_text`,
+    fixed there, and then written straight back into this function.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    (target / ".gitignore").write_text("skills/ghost-skill/\n", encoding="utf-8")
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "ignore a skill directory")
+    classify.begin(home, target)
+    ghost = target / "skills" / "ghost-skill"
+    ghost.mkdir(parents=True)
+    (ghost / "SKILL.md").write_text(
+        "---\nname: ghost-skill\ndescription: Never committed\n---\n\n## Procedure\n\nx.\n",
+        encoding="utf-8",
+    )
+    drop_fact(target, COVERED)
+
+    with pytest.raises(MnemeError, match="covering unit"):
+        classify.finalize(
+            home, target, push=False, retire=[f"{retire_id()}=skills/ghost-skill"],
+        )
+
+
+def test_the_same_sentence_in_two_files_is_not_laundered_by_one_declaration(tmp_path):
+    """Switching the gate from id to TEXT moved the laundering rather than closing it.
+
+    Two fact FILES can carry the same sentence. Their unit ids differ, so the ambiguity
+    guard never fires, and a text-keyed excuse then covered both deletions from one
+    declaration — the second named nowhere in the body, the PR, or the ledger. Identity is
+    the (file, text) pair.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    (target / units.FACTS_CANONICAL / "twins.md").write_text(
+        f"---\ntopic: twins\n---\n- [gotcha] {COVERED} #deploy (verified: 2026-08-12)\n",
+        encoding="utf-8",
+    )
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "the same sentence in a second file")
+    classify.begin(home, target)
+    drop_fact(target, COVERED)
+    (target / units.FACTS_CANONICAL / "twins.md").unlink()  # dropped, NOT declared
+
+    with pytest.raises(MnemeError, match="would lose knowledge") as exc:
+        classify.finalize(
+            home, target, push=False,
+            retire=[f"{retire_id()}=skills/drain-a-widget-deploy"],
+        )
+
+    assert "twins.md" in str(exc.value)  # the undeclared file is named
+
+
+def test_the_review_cli_flag_reaches_the_rail(tmp_path, capsys):
+    """The review CLI path had no test; dropping its `retire=` left the suite green."""
+    from mneme_core.cli import main
+
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    classify._begin(home, target, "review")
+    drop_fact(target, COVERED)
+
+    code = main([
+        "--home", str(home), "review", "finalize", "--cwd", str(target), "--no-push",
+        "--retire", f"{retire_id()}=skills/drain-a-widget-deploy",
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0, out
+    branch = out.split(" on ")[1].split()[0]
+    assert gitops.git(target, "log", branch, "-1", "--format=%B").count("Retired:") == 1
