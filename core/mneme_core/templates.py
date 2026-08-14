@@ -325,6 +325,36 @@ STANDING_RULE_REMINDER = (
     + "\n=== END STANDING RULE ==="
 )
 
+ADOPT_INSTRUCTIONS = f"""You are drafting the SCOPE STATEMENT for a repo about to be
+adopted by mneme.
+
+{STANDING_RULE_BLOCK}
+
+The scope statement is the routing prompt: mneme matches every candidate fact against it
+to decide which registered repo the knowledge belongs to. It is not a description of the
+product. Describe WHAT KNOWLEDGE BELONGS HERE — the systems, failure modes, and operational
+surfaces someone working in this repo learns the hard way. A README is marketing, and
+marketing prose used as a routing prompt matches everything and steals candidates from
+every sibling scope.
+
+Rules:
+1. DRAFT FIRST, then ask. The sources below are the evidence; propose a scope statement
+   built from them and name which source each claim came from. Asking a user to invent a
+   scope cold is how vague scopes get written.
+2. Say where the scope ENDS. If `siblings` is non-empty, state explicitly which kinds of
+   knowledge go to each sibling instead — that boundary is the part a user can actually
+   correct, and the part they cannot supply unprompted.
+3. Ask only what the sources cannot answer: the exclusions (what must never be captured
+   here), the sensitivity, and any boundary you could not settle yourself. Do not
+   re-ask anything already visible below.
+4. Name the systems, services and products specifically. "Backend knowledge" routes
+   nothing; "settlement, refunds and chargeback handling in the payments service" does.
+5. When the user has corrected the draft, run
+   `mneme adopt <name> --description "<the agreed scope>" --owner "<their team>"`.
+
+{STANDING_RULE_REMINDER}
+"""
+
 CLASSIFY_INSTRUCTIONS = f"""You are the mneme LIBRARIAN for this knowledge plugin.
 
 {STANDING_RULE_BLOCK}

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import lint, paths, registry, templates, units
+from . import gitops, lint, paths, registry, templates, units
 from .errors import MnemeError
 from .units import KEBAB_RE
 
@@ -96,6 +97,192 @@ def create(
         ),
     )
     return target
+
+
+# Everything `describe` reads is repo content: a contributor chose its length, its
+# encoding and whether it parses. Each reader is bounded and each failure is an absent
+# source rather than an exception, because this bundle exists to be shown to a user who is
+# adopting a repo — not to audit it.
+_README_CHARS = 1000
+_TREE_ENTRIES = 40
+_SUBJECTS = 15
+_SUBJECT_CHARS = 120
+_SIBLING_SCOPE_CHARS = 400
+_MANIFEST_CHARS = 200_000
+
+# Name/description live under different keys in each ecosystem's manifest; anything not
+# listed here simply contributes no manifest source.
+_MANIFESTS = (
+    ("package.json", "json", ("name",), ("description",)),
+    ("composer.json", "json", ("name",), ("description",)),
+    ("pyproject.toml", "toml", ("project", "name"), ("project", "description")),
+    ("Cargo.toml", "toml", ("package", "name"), ("package", "description")),
+)
+
+
+def _text(path: Path, limit: int) -> str:
+    """At most `limit` characters of a file, or "" for anything that will not read.
+
+    `read(limit)` rather than read-then-slice: a contributor picks the file's size, and
+    slicing after the fact still pulls the whole thing into memory first. `errors="replace"`
+    because a source mneme cannot decode is a source it does without, not a crash — this
+    bundle reads a repo it did not write and does not get to fail it.
+    """
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as fh:
+            return fh.read(limit)
+    except OSError:
+        return ""
+
+
+def _first_paragraph(repo: Path) -> str:
+    """The README's first real paragraph — its one-line answer to "what is this".
+
+    Headings and badge lines are skipped: a title repeats the repo name the bundle already
+    carries, and a row of shields.io links is not a description of anything.
+    """
+    for name in ("README.md", "README.rst", "README.txt", "README"):
+        raw = _text(repo / name, 20_000)
+        if not raw:
+            continue
+        para: list[str] = []
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                if para:
+                    break
+                continue
+            if stripped.startswith("#") or stripped.startswith("[!["):
+                continue
+            para.append(stripped)
+        if para:
+            return " ".join(para)[:_README_CHARS]
+    return ""
+
+
+def _nested(data: object, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        if not isinstance(data, dict):
+            return ""
+        data = data.get(key)
+    return str(data) if isinstance(data, str) else ""
+
+
+def _manifests(repo: Path) -> list[dict]:
+    found: list[dict] = []
+    for name, fmt, name_keys, desc_keys in _MANIFESTS:
+        raw = _text(repo / name, _MANIFEST_CHARS)
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw) if fmt == "json" else tomllib.loads(raw)
+        except (json.JSONDecodeError, tomllib.TOMLDecodeError, ValueError):
+            # A manifest that will not parse is not a source. It is also not an error:
+            # adoption reads a repo it did not write and does not get to fail it.
+            continue
+        entry = {
+            "file": name,
+            "name": _nested(data, name_keys),
+            "description": _nested(data, desc_keys),
+        }
+        if entry["name"] or entry["description"]:
+            found.append(entry)
+    return found
+
+
+def _shape(repo: Path) -> tuple[list[str], dict[str, int]]:
+    """(top-level entries, extension histogram) from what git tracks.
+
+    Tracked files, not a directory walk: `node_modules` and `.venv` are not this repo's
+    shape, and a walk through them is unbounded work on somebody else's dependency tree.
+    """
+    try:
+        listing = gitops.git_raw(repo, "ls-files", "-z")
+    except MnemeError:
+        return [], {}
+    tops: list[str] = []
+    langs: dict[str, int] = {}
+    seen: set[str] = set()
+    for rel in listing.split("\0"):
+        if not rel:
+            continue
+        head = rel.split("/", 1)[0]
+        if head not in seen and len(tops) < _TREE_ENTRIES:
+            seen.add(head)
+            tops.append(head)
+        ext = rel.rsplit(".", 1)[-1] if "." in rel.rsplit("/", 1)[-1] else ""
+        if ext:
+            langs[ext] = langs.get(ext, 0) + 1
+    return sorted(tops), dict(sorted(langs.items(), key=lambda kv: (-kv[1], kv[0]))[:12])
+
+
+def _subjects(repo: Path) -> list[str]:
+    """Recent commit subjects — what this repo has actually been busy with."""
+    try:
+        out = gitops.git_raw(repo, "log", "-n", str(_SUBJECTS), "--format=%s")
+    except MnemeError:
+        return []
+    return [line.strip()[:_SUBJECT_CHARS] for line in out.splitlines() if line.strip()]
+
+
+def _siblings(home: Path, exclude: str) -> list[dict]:
+    """Every OTHER registered scope, so the draft can say where this one ends."""
+    from . import routing
+
+    out: list[dict] = []
+    for plugin in registry.load_registry(home):
+        if plugin.name == exclude:
+            continue
+        scope = routing.read_scope_statement(Path(plugin.path) / "MNEME.md")
+        out.append({"name": plugin.name, "scope": " ".join(scope.split())[:_SIBLING_SCOPE_CHARS]})
+    return out
+
+
+def describe(home: Path, name: str) -> dict:
+    """The raw material for a scope statement, for an agent to draft FROM.
+
+    "What should this repo's scope be?" is a question almost nobody can answer cold, and
+    the answer is the routing prompt every candidate fact is matched against — so a vague
+    one quietly steals candidates from every sibling scope. Adoption proposes and the user
+    corrects instead, and this is what the proposal is built from.
+
+    Key ORDER is part of the contract, as it is for the classify and review bundles: the
+    CLI serializes with `json.dumps`, which writes keys in insertion order, so the standing
+    rule opens the document and closes it with every line of repo content in between.
+    """
+    plugin = registry.get_plugin(home, name)
+    if plugin is None:
+        raise MnemeError(f"plugin not registered: {name}")
+    target = Path(plugin.path)
+    if not target.is_dir():
+        raise MnemeError(f"local clone missing: {target}")
+    mode, why = _adopt_mode(target, None)
+    tops, langs = _shape(target)
+    agent_docs = [
+        f for f in ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "MNEME.md")
+        if (target / f).is_file()
+    ]
+    return {
+        "instructions": templates.ADOPT_INSTRUCTIONS,
+        "repo": {
+            "name": name,
+            "path": str(target),
+            "mode": mode,
+            "why": why,
+            "knowledge_root": units.PLUGIN_ROOT if mode == "plugin" else units.PLAIN_ROOT,
+            "sensitivity": plugin.sensitivity,
+        },
+        "sources": {
+            "readme": _first_paragraph(target),
+            "manifests": _manifests(target),
+            "tree": tops,
+            "languages": langs,
+            "recent_subjects": _subjects(target),
+            "agent_docs": agent_docs,
+        },
+        "siblings": _siblings(home, name),
+        "standing_rule": templates.STANDING_RULE_REMINDER,
+    }
 
 
 @dataclass

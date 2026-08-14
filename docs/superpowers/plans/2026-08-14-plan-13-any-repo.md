@@ -109,7 +109,7 @@ The composer must describe *what knowledge belongs here*, not what the product i
 is marketing, and marketing prose as a routing prompt steals candidates from every sibling
 scope.
 
-- [ ] **Steps:** the skill contract first, then a test that the CLI helper surfaces every
+- [x] **Steps:** the skill contract first, then a test that the CLI helper surfaces every
   input the skill claims to read → commit.
 
 ---

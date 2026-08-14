@@ -117,6 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # user overrides a classification that got it wrong in either direction.
     p_adopt.add_argument("--as-plugin", dest="as_plugin", action="store_true", default=None)
     p_adopt.add_argument("--plain", dest="as_plugin", action="store_false")
+    p_adopt.add_argument("--describe", action="store_true")
 
     # No plugin-name positional anywhere in the classify surface: the current directory
     # is the argument. `--cwd` exists so tests (and wrappers) can point at a directory
@@ -302,6 +303,13 @@ def main(argv: list[str] | None = None) -> int:
             from . import scaffold as scaffold_mod
             from . import units as units_mod
 
+            if args.describe:
+                # Reads and reports; adopts nothing. The scope statement it feeds is the
+                # routing prompt, so it is drafted and agreed BEFORE any file is written.
+                import json as json_mod
+
+                print(json_mod.dumps(scaffold_mod.describe(home, args.name)))
+                return 0
             adopted = scaffold_mod.adopt(
                 home, args.name, description=args.description, owner=args.owner,
                 as_plugin=args.as_plugin,
