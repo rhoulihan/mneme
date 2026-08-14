@@ -352,78 +352,131 @@ def _changed_files(repo: Path) -> list[str]:
 _SCAN_CODECS = ("utf-8-sig", "utf-32", "utf-16")
 
 
-def _scannable_text(path: Path) -> str | None:
-    """Best-effort text for the secret scan — an odd encoding is never a free pass.
+def _decodings(raw: bytes) -> list[str]:
+    """Every plausible reading of these bytes — a scanner may not have to guess right.
 
-    The last resort is a lossy UTF-8 decode: undecodable bytes become replacement
+    The old ladder returned the FIRST codec that did not raise, and `utf-8-sig` does not
+    raise on BOM-less UTF-16LE: it yields NUL-interleaved mojibake that the rules match
+    nothing in, so an AWS key in a UTF-16 file passed the gate at the tip with no history
+    trick at all. Guessing an encoding is a reasonable thing for a reader to do and the
+    wrong thing for a gate — so every decoding that succeeds is scanned, and a blocker in
+    ANY of them refuses. A few extra decodes per blob is nothing against delivering a key.
+
+    The lossy pass is last and always present: undecodable bytes become replacement
     characters and any ASCII credential sitting among them still reaches the rules.
-    Only a file that cannot be read at all yields None.
+    """
+    seen: list[str] = []
+    for codec in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le"):
+        try:
+            text = raw.decode(codec)
+        except (UnicodeDecodeError, ValueError, LookupError):
+            continue
+        if text not in seen:
+            seen.append(text)
+    lossy = raw.decode("utf-8", errors="replace")
+    if lossy not in seen:
+        seen.append(lossy)
+    return seen
+
+
+def _scannable_text(path: Path) -> str | None:
+    """Best-effort text for readers that want one string — never a free pass.
+
+    The secret scan does NOT use this: it takes bytes and scans every decoding
+    (`_decodings`), because picking one is exactly how a UTF-16 credential got through.
     """
     try:
         raw = path.read_bytes()
     except OSError:
         return None
-    for codec in _SCAN_CODECS:
-        try:
-            return raw.decode(codec)
-        except (UnicodeDecodeError, ValueError):
-            continue
-    return raw.decode("utf-8", errors="replace")
+    return _decodings(raw)[0]
+
+
+def _push_range(repo: Path) -> str:
+    """The commit range the PUSH will actually ship.
+
+    `main..HEAD` is the range a local reader cares about; it is not what leaves the
+    machine. `push_branch` runs `push -u origin <branch>`, which ships everything the
+    remote does not have — so when local `main` is ahead of `origin/main`, those commits
+    ride along inside the pushed branch and `main..HEAD` never looked at them.
+    """
+    try:
+        gitops.git(repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+    except MnemeError:
+        return "main..HEAD"
+    return "origin/main..HEAD"
 
 
 def _branch_blobs(repo: Path) -> list[tuple[str, str]]:
-    """(label, text) for every file version the branch adds that `main` does not have.
+    """(label, bytes) for every blob the push ships that the remote does not already have.
 
-    What leaves the machine is the BRANCH, not the working tree — `push_branch` pushes
-    every commit on it and the pull request carries them all. A librarian committing their
-    reorganisation as they go is a supported pass (`_commit` says so explicitly), so a
-    secret can be committed here and then removed from the worktree, leaving a clean tip
-    over a history nobody scanned.
+    `rev-list --objects` over the push range, then one `cat-file --batch`. Two subprocesses
+    for the whole branch, deduplicated by object id.
 
-    `--diff-filter=AM` because only content this branch ADDS or MODIFIES can leak
-    something `main` does not already have; a deletion introduces no bytes.
+    This replaces a per-commit `diff-tree --diff-filter=AM` walk, which was the right idea
+    against the wrong set and leaked five ways. Enumerating OBJECTS rather than diffs
+    dissolves all of them at once: there is no filter to omit `T` (a symlink replaced by a
+    real file smuggled a whole blob past `AM`), no per-commit diff to come back empty for a
+    MERGE (`diff-tree` prints nothing for two parents without `-m`/`--cc`, so a secret
+    introduced in a conflict resolution was invisible — and `git log -S` cannot see it
+    either, so the test written for that class was blind to it), and no per-commit refetch
+    of the same blob. It was also 1 + C + C x F subprocesses: 1051 of them for a 50-commit
+    pass, 80 seconds on a drvfs mount.
     """
+    listing = gitops.git_bytes(repo, "rev-list", "--objects", _push_range(repo))
+    named: dict[str, str] = {}
+    for line in listing.decode("utf-8", "replace").splitlines():
+        sha, _, path = line.partition(" ")
+        if path:  # commits carry no path; trees and blobs do
+            named.setdefault(sha, path)
+    if not named:
+        return []
+    out = gitops.git_bytes(
+        repo, "cat-file", "--batch", stdin=("\n".join(named) + "\n").encode()
+    )
     blobs: list[tuple[str, str]] = []
-    for sha in gitops.git(repo, "rev-list", "main..HEAD").split():
-        listing = gitops.git_raw(
-            repo, "diff-tree", "-r", "-z", "--no-commit-id", "--name-only",
-            "--diff-filter=AM", sha,
-        )
-        for rel in listing.split("\0"):
-            if not rel:
-                continue
-            try:
-                blobs.append((f"{rel} (in commit {sha[:8]})", gitops.git_raw(repo, "show", f"{sha}:{rel}")))
-            except MnemeError:
-                continue  # unreadable blob: lint owns shape, the scan owns text
+    pos = 0
+    while pos < len(out):
+        nl = out.find(b"\n", pos)
+        if nl < 0:
+            break
+        header = out[pos:nl].decode("utf-8", "replace").split()
+        pos = nl + 1
+        if len(header) < 3:  # "<sha> missing" — nothing to read
+            continue
+        sha, kind, size = header[0], header[1], int(header[2])
+        content, pos = out[pos : pos + size], pos + size + 1
+        if kind == "blob":
+            blobs.append((named.get(sha, sha), content))
     return blobs
 
 
 def _scan_gate(repo: Path, changed: list[str], kind: str) -> None:
-    """Refuse to deliver a secret — in the working tree OR anywhere in the branch.
+    """Refuse to deliver a secret — in the working tree OR anywhere the push carries.
 
-    Scanning only `changed` off the disk read the wrong thing twice over: a file the pass
-    committed and then DELETED was skipped entirely ("nothing left to leak" is true of the
-    worktree and false of the history), and one committed and then cleaned in place was
-    read at its innocent version. Both were pushed with the secret inside an earlier commit
-    and `git log -S` found it in the delivered branch.
+    Both halves read BYTES and are decoded by the same ladder, because the two used to
+    disagree: the worktree half tried several codecs while the history half took whatever
+    `text=True` gave it, so a UTF-16 blob in a commit was scanned as mojibake and a PNG
+    raised UnicodeDecodeError — a type no gate expected, which escaped into `harvest._abort`
+    and deleted the librarian's branch.
     """
-    scannable: list[tuple[str, str]] = []
+    scannable: list[tuple[str, bytes]] = []
     for rel in changed:
         path = repo / rel
         if not path.is_file():
-            continue  # gone from the worktree — the branch history below still covers it
-        text = _scannable_text(path)
-        if text is None:
+            continue  # gone from the worktree — the push range below still covers it
+        try:
+            scannable.append((rel, path.read_bytes()))
+        except OSError:
             continue  # unreadable: lint owns shape, the scan owns text
-        scannable.append((rel, text))
     scannable.extend(_branch_blobs(repo))
 
-    for label, text in scannable:
-        findings = scan.scan_text(text)
-        if scan.has_blockers(findings):
-            rules = ", ".join(sorted({f.rule for f in findings if f.severity == scan.BLOCK}))
-            raise MnemeError(f"{kind} fails the secret scan: {label} ({rules})")
+    for label, raw in scannable:
+        for text in _decodings(raw):
+            findings = scan.scan_text(text)
+            if scan.has_blockers(findings):
+                rules = ", ".join(sorted({f.rule for f in findings if f.severity == scan.BLOCK}))
+                raise MnemeError(f"{kind} fails the secret scan: {label} ({rules})")
 
 
 def _normalized(text: str) -> str:
