@@ -142,15 +142,23 @@ in-repo context for a teammate without mneme).
 
 - [x] **Steps:** implement → capture real transcripts → commit → release.
 
-## Verification
+## Verification — all six done 2026-08-14
 
-1. A plain repo: register → capture → share → PR → merge, end to end, with `main` never
-   written by mneme.
-2. The same repo lints clean, indexes, and is searchable.
-3. `classify` declines with a message that names the reason and the alternatives.
-4. `review` accepts a PR into a plain repo and extracts its facts.
-5. A plugin repo behaves exactly as it does today — every Plan 12 test still green.
-6. Every gate (secret scan over the push range, preservation, lint) runs in both modes.
+1. ✅ Run against a real service repo with a bare remote: register → adopt → capture →
+   branch pushed → merge. `main` sat at `429416d` through the whole harvest; the branch
+   carried the provenance trailer and `Mneme-Source`.
+2. ✅ Lints clean, `index rebuild` reports `1 skills, 1 facts, 0 skipped`, `search
+   "chargeback webhook"` returns the bullet, `verify` sweeps it.
+3. ✅ `tests/core/test_classify_plain_repo.py` — refused at `begin`, `bundle` and
+   `finalize`, with `share`/`review`/`migrate`/`--as-plugin` named in the message.
+4. ✅ `tests/core/test_plain_repo_gates.py` — extraction end to end, including that the
+   regenerated router routes the extracted topic.
+5. ✅ 852 tests green; the plugin path is unchanged and its fixtures now carry the
+   manifest they always implied.
+6. ✅ Asserted to FIRE in plain mode, not assumed to: preservation, secret scan, lint,
+   quarantine refusal, rollback. **This is where the plan earned its keep** — item 6 found
+   that the preservation gate could not see a plain repo's facts at all, because four
+   call sites each carried their own copy of "facts live in exactly two places".
 
 ## Out of scope
 
