@@ -464,3 +464,8 @@ def test_retirements_that_cannot_fit_refuse_the_pass(tmp_path, monkeypatch):
             home, target, push=False,
             retire=[f"{retire_id(t)}=skills/drain-a-widget-deploy" for t in facts],
         )
+
+    # Refused BEFORE anything is touched, like every other declaration refusal — the
+    # branch and the librarian's work on it survive. Raising this where the body is
+    # assembled put it past the guarded block, leaving a half-migrated branch behind.
+    assert gitops.current_branch(target).startswith("mneme/classify-")

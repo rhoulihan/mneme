@@ -707,6 +707,17 @@ def _finalize(
     retired_texts, retired_lines = _accept_retirements(
         repo, _parse_retirements(retire), main_facts
     )
+    # Checked HERE, not where the body is assembled: that point is past the guarded block,
+    # so raising there left a half-migrated branch with no rollback. It is knowable now —
+    # the declarations are already parsed — and it is the same class as every other
+    # declaration refusal, which leaves the librarian's work intact to correct.
+    retired_section = [f"Retired: {line}" for line in retired_lines]
+    if layout.body_length(retired_section) > layout._BODY_MAX:
+        raise MnemeError(
+            f"{kind}: {len(retired_section)} retirements do not fit in one pull request"
+            " body, and a retirement that is not reported is a fact deleted in silence —"
+            " split this pass into smaller ones"
+        )
 
     try:
         dirty = not gitops.is_clean(repo)
@@ -758,13 +769,6 @@ def _finalize(
     # body and the ledger record, which stores this same bounded list. The one line saying
     # knowledge left is the one line that must survive, so the budget is spent on
     # retirements first and the pass is refused outright if they alone cannot fit.
-    retired_section = [f"Retired: {line}" for line in retired_lines]
-    if layout.body_length(retired_section) > layout._BODY_MAX:
-        raise MnemeError(
-            f"{kind}: {len(retired_section)} retirements do not fit in one pull request"
-            " body, and a retirement that is not reported is a fact deleted in silence —"
-            " split this pass into smaller ones"
-        )
     result.units = retired_section + layout.bound_body(
         notes + [rel for rel in reported if not _named_in(rel, notes)],
         noun="change",
