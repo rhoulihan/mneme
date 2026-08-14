@@ -253,23 +253,46 @@ class HarvestResult:
     pr: str = ""
 
 
-def _regenerate_index(repo: Path) -> None:
+def _regenerate_index(repo: Path, name: str = "", description: str = "") -> None:
+    """Rewrite the router skill for whatever knowledge root this repo uses.
+
+    ALWAYS, in either mode. This used to return early when there was no plugin manifest,
+    which made a plain repo unusable rather than unsupported: the fact write created the
+    knowledge root, nothing wrote the `SKILL.md` inside it, `lint_repo` then failed MN001
+    on a directory mneme had just made itself, and the whole harvest rolled back. A repo
+    with facts and no routing table is knowledge no agent is ever told exists — so the
+    router is not an optional extra keyed on a manifest, it is part of writing a fact.
+    """
     manifest = repo / ".claude-plugin" / "plugin.json"
-    if not manifest.exists():
-        return
-    # A hand-edited or adopted repo can carry a manifest that is not valid JSON. That is
-    # a repo problem the harvest must report (and roll back from), never a ValueError
-    # escaping into a traceback.
-    try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise MnemeError(f"{manifest} is not valid JSON: {e}") from e
-    if not isinstance(data, dict):
-        raise MnemeError(f"{manifest} must contain a JSON object")
-    (repo / "skills" / "knowledge-index").mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if manifest.is_file():
+        # A hand-edited or adopted repo can carry a manifest that is not valid JSON. That
+        # is a repo problem the harvest must report (and roll back from), never a
+        # ValueError escaping into a traceback.
+        try:
+            loaded = json.loads(manifest.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise MnemeError(f"{manifest} is not valid JSON: {e}") from e
+        if not isinstance(loaded, dict):
+            raise MnemeError(f"{manifest} must contain a JSON object")
+        data = loaded
+    # Identity comes from the repo's own declaration first, the caller's registration
+    # second, the checkout directory last. That order matters because the description IS
+    # the routing prompt: a plain repo has no manifest, and falling straight to the
+    # directory name published "durable facts from app" as the reason to consult a
+    # payments knowledge base — a routing surface naming nothing an agent could match on.
     scaffold_mod.regenerate_index_skill(
-        repo, str(data.get("name", repo.name)), str(data.get("description", ""))
+        repo,
+        str(data.get("name") or name or repo.name),
+        str(data.get("description") or description or _scope_statement(repo)),
     )
+
+
+def _scope_statement(repo: Path) -> str:
+    """The repo's own `MNEME.md` scope statement, when it has one."""
+    from . import routing
+
+    return routing.read_scope_statement(repo / "MNEME.md")
 
 
 def _abort(repo: Path, branch: str, base_sha: str) -> None:
@@ -334,7 +357,7 @@ def apply_batch(
                 result.units.append(apply_skill(repo, cand))
             else:
                 result.units.append(apply_fact(repo, cand))
-        _regenerate_index(repo)
+        _regenerate_index(repo, plugin.name)
         issues = lint.lint_repo(repo)
         if lint.has_errors(issues):
             details = "; ".join(

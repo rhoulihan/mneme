@@ -187,7 +187,7 @@ __pycache__/
 """
 
 INDEX_SKILL_MD = """---
-name: knowledge-index
+name: $index_name
 description: Consult when you need durable facts from $name — constraints, gotchas, decisions, and runbook notes. $description
 ---
 

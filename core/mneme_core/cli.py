@@ -314,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"legacy facts layout: {layout_mod.LEGACY_DIRNAME}/ is left as it is —"
                     f" the next contribution migrates it into"
-                    f" {units_mod.FACTS_CANONICAL}/ (or run: mneme migrate here)"
+                    f" {units_mod.facts_write_rel(Path(plugin.path))}/ (or run: mneme migrate here)"
                 )
             issues = lint_mod.lint_repo(Path(plugin.path))
             errors = [i for i in issues if i.severity == "error"]

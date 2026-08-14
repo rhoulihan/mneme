@@ -180,6 +180,10 @@ def test_legitimate_names_still_apply(tmp_path):
     repo = tmp_path / "kb-a"
     (repo / "skills").mkdir(parents=True)
     (repo / "facts").mkdir(parents=True)
+    (repo / ".claude-plugin").mkdir(parents=True)
+    (repo / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
 
     line = harvest.apply_skill(repo, skill_candidate(skill_body("deploy-widget-2")))
     assert line == "skills/deploy-widget-2 (new skill)"

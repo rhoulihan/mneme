@@ -7,6 +7,12 @@ FACT_FILE = "---\ntopic: layout\n---\n" + BULLET
 
 
 def make_layout(root, canonical):
+    # A knowledge repo is a plugin in either layout: the manifest is what makes
+    # `skills/knowledge-index/facts` its canonical directory rather than `mneme-index/`.
+    (root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
     d = (root / units.FACTS_CANONICAL) if canonical else (root / "facts")
     d.mkdir(parents=True)
     (d / "layout.md").write_text(FACT_FILE, encoding="utf-8")

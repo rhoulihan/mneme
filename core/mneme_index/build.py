@@ -112,10 +112,9 @@ def index_tree(
 
 def _skill_rows(plugin: str, root: Path, skipped: list[str]) -> list[tuple]:
     rows: list[tuple] = []
-    skills_dir = root / "skills"
-    if not skills_dir.is_dir():
-        return rows
-    for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+    # `readable_skill_dirs`, not `skill_dirs`: the index ingests every skill it can
+    # read, including ones in a repo mneme does not maintain the format of.
+    for d in units.readable_skill_dirs(root):
         skill_md = d / "SKILL.md"
         rel = str(skill_md.relative_to(root))
         if not skill_md.exists():

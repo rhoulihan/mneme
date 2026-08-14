@@ -80,6 +80,13 @@ def make_repo(tmp_path):
     repo = tmp_path / "kb"
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    # A knowledge repo is a plugin, so its canonical facts live under the router skill.
+    # `units.facts_write_dir` reads the manifest to decide that; without one this fixture
+    # would be a plain repo and migrate into `mneme-index/` instead.
+    (repo / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (repo / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
     (repo / "README.md").write_text("kb\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "seed")

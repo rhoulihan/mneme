@@ -329,59 +329,158 @@ def fact_unit_id(topic_file_stem: str, bullet_text: str) -> str:
 
 
 # Facts live *inside* the router skill, so the index and the files it routes to travel as
-# one self-contained directory. Repos scaffolded before this change keep a top-level
-# `facts/`; both layouts stay readable and unit ids (`facts/<stem>#<key>`) never move with
-# the physical path.
-FACTS_CANONICAL = "skills/knowledge-index/facts"
+# one self-contained directory. Where that router sits depends on what kind of repo this is
+# — see `knowledge_root`. Repos scaffolded before 0.5 keep a top-level `facts/`; every
+# layout stays readable and unit ids (`facts/<stem>#<key>`) never move with the physical
+# path.
+PLUGIN_ROOT = "skills/knowledge-index"
+PLAIN_ROOT = "mneme-index"
+FACTS_CANONICAL = f"{PLUGIN_ROOT}/facts"
+FACTS_PLAIN = f"{PLAIN_ROOT}/facts"
+
+# Every layout a reader must accept, and the only ones. Order is the tie-break when a repo
+# carries more than one; `_ordered` puts the repo's own mode first.
+KNOWLEDGE_ROOTS = (PLUGIN_ROOT, PLAIN_ROOT)
+FACTS_LAYOUTS = (FACTS_CANONICAL, FACTS_PLAIN, "facts")
+
+
+def is_plugin(root: Path) -> bool:
+    """Is this repo a Claude Code plugin?
+
+    The manifest, not the directory tree: `skills/` is a name an ordinary application is
+    entitled to use for its own code, and reading it as evidence let mneme fail an app's
+    lint over files it does not own.
+    """
+    return (root / ".claude-plugin" / "plugin.json").is_file()
+
+
+def knowledge_root(root: Path) -> Path:
+    """The directory mneme keeps this repo's router skill and facts in.
+
+    A plugin gets `skills/knowledge-index/`, where Claude Code already discovers skills. An
+    ordinary repo gets `mneme-index/` at the top level: a plugin's `skills/` tree means
+    something to the harness, an app's does not, and writing into a directory whose meaning
+    belongs to the app is how mneme ends up failing lint on a game's combat skills.
+
+    This decides WRITES only. Every reader accepts every layout (`facts_dirs`,
+    `fact_files`, `find_fact_file`, `skill_dirs`), so a repo that gains or loses a manifest
+    keeps all of its knowledge visible across the change.
+    """
+    return root / (PLUGIN_ROOT if is_plugin(root) else PLAIN_ROOT)
 
 
 def facts_write_dir(root: Path) -> Path:
-    """Where a NEW fact topic is written: ALWAYS the canonical directory.
+    """Where a NEW fact topic is written: ALWAYS this repo's canonical directory.
 
-    Deliberately not a resolution — it looks at nothing on disk. When the destination
-    followed the repo's existing layout, a repo scaffolded before the canonical location
-    existed kept receiving new facts at its root forever: every contribution re-confirmed
-    the legacy layout instead of retiring it. Writes are canonical and a legacy layout is
-    migrated (`layout.migrate_legacy_facts`), never accommodated.
+    Reads what kind of repo this is and nothing else — never which layouts happen to exist.
+    When the destination followed the repo's existing layout, a repo scaffolded before the
+    canonical location existed kept receiving new facts at its root forever: every
+    contribution re-confirmed the legacy layout instead of retiring it. Writes are canonical
+    and a legacy layout is migrated (`layout.migrate_legacy_facts`), never accommodated.
 
-    Reads are a different question and keep tolerating both layouts — see `facts_dir`,
+    Reads are a different question and keep tolerating every layout — see `facts_dir`,
     `facts_dirs`, `fact_files`, `find_fact_file` — so an unmigrated repo stays fully
     readable by lint, verify, index, search, and the classify/review bundles.
     """
-    return root / FACTS_CANONICAL
+    return knowledge_root(root) / "facts"
+
+
+def facts_write_rel(root: Path) -> str:
+    """`facts_write_dir` as a repo-relative posix path — the form a git command takes.
+
+    Its own function because the two forms drifted apart once already: `layout` resolved
+    the destination through `facts_write_dir` and then handed `git mv` the hard-coded
+    string, so every rename targeted a directory the migration was not writing to.
+    """
+    return facts_write_dir(root).relative_to(root).as_posix()
+
+
+def _ordered(own: Path, root: Path, layouts: tuple[str, ...]) -> list[Path]:
+    """`layouts` as paths under `root`, with the repo's own location first."""
+    return [own, *(root / rel for rel in layouts if root / rel != own)]
 
 
 def facts_dir(root: Path) -> Path:
-    """READ resolution for a repo's facts: canonical, else legacy, else canonical.
+    """READ resolution for a repo's facts: its own layout, else another, else its own.
 
     "Which single directory does this repo keep its facts in" — used to describe a repo,
     not to place a write. `facts_write_dir` is where a new fact goes.
     """
-    canonical = root / FACTS_CANONICAL
-    if canonical.is_dir():
-        return canonical
-    legacy = root / "facts"
-    if legacy.is_dir():
-        return legacy
-    return canonical
+    for d in _ordered(facts_write_dir(root), root, FACTS_LAYOUTS):
+        if d.is_dir():
+            return d
+    return facts_write_dir(root)
 
 
 def facts_dirs(root: Path) -> list[Path]:
-    """Every directory that currently holds facts, canonical first.
+    """Every directory that currently holds facts, this repo's own layout first.
 
     `facts_write_dir` answers "where does the next NEW topic go" — one directory, so
     writes never fork a repo's layout. Readers must answer a different question: "where IS
-    the knowledge". A repo carrying BOTH layouts is ordinary, not exotic — a 0.5 scaffold
-    ships the canonical dir, and a contributor can still add a top-level `facts/` file by
-    hand — and resolving to one directory there makes real, committed facts invisible to
-    lint, verify, index, and search until a classify pass migrates them. Every reader
-    sweeps this list instead.
+    the knowledge". A repo carrying MORE THAN ONE layout is ordinary, not exotic — a 0.5
+    scaffold ships the canonical dir, a contributor can still add a top-level `facts/` file
+    by hand, and a repo that gained a plugin manifest last week has last month's facts in
+    the other root — and resolving to one directory there makes real, committed facts
+    invisible to lint, verify, index, and search until a classify pass migrates them. Every
+    reader sweeps this list instead.
     """
-    return [d for d in (root / FACTS_CANONICAL, root / "facts") if d.is_dir()]
+    return [d for d in _ordered(facts_write_dir(root), root, FACTS_LAYOUTS) if d.is_dir()]
+
+
+def skill_dirs(root: Path) -> list[Path]:
+    """Every directory whose `SKILL.md` mneme MAINTAINS — what lint enforces against.
+
+    In a plugin that is the whole of `skills/`: the repo exists to ship them, and a
+    subdirectory with no `SKILL.md` in it is a real defect worth reporting. In a plain repo
+    it is the knowledge root alone, because `skills/` there belongs to the application —
+    mneme did not write those files, cannot fix them, and must never fail a harvest over
+    them. That failure is not hypothetical: an empty `skills/knowledge-index/`, created by
+    the fact write and left routerless, is precisely what MN001 fired on.
+
+    The repo's own root is walked whenever it exists, so a missing router there is still
+    reported. The OTHER mode's root is walked only when it actually carries a router,
+    because a bare directory left behind by a repo that changed mode is debris, not a
+    defect. Its facts stay visible either way — `facts_dirs` sweeps every layout.
+
+    `readable_skill_dirs` answers the different question the index asks.
+    """
+    dirs: list[Path] = []
+    if is_plugin(root):
+        skills = root / "skills"
+        if skills.is_dir():
+            dirs.extend(sorted(p for p in skills.iterdir() if p.is_dir()))
+    own = knowledge_root(root)
+    for d in _ordered(own, root, KNOWLEDGE_ROOTS):
+        if d in dirs or not d.is_dir():
+            continue
+        if d == own or (d / "SKILL.md").is_file():
+            dirs.append(d)
+    return dirs
+
+
+def readable_skill_dirs(root: Path) -> list[Path]:
+    """Every directory that HOLDS a skill mneme can read — what the index ingests.
+
+    Wider than `skill_dirs` on purpose, and the asymmetry is the point. Linting a file
+    mneme does not maintain can BRICK a repo: one MN003 in an app's own `skills/` aborts
+    the harvest and rolls it back. Indexing one costs a row in a search table. So the
+    enforcing reader is narrow and the ingesting reader is generous, and a hand-built
+    knowledge repo that never grew a plugin manifest keeps every skill it has searchable
+    instead of silently vanishing from results.
+
+    A directory holds a skill when it contains a `SKILL.md` — the shape is the evidence.
+    """
+    dirs = list(skill_dirs(root))
+    skills = root / "skills"
+    if skills.is_dir():
+        for d in sorted(p for p in skills.iterdir() if p.is_dir()):
+            if d not in dirs and (d / "SKILL.md").is_file():
+                dirs.append(d)
+    return dirs
 
 
 def fact_files(root: Path) -> list[Path]:
-    """Every fact file in the repo, canonical layout first, sorted within each layout."""
+    """Every fact file in the repo, this repo's own layout first, sorted within each."""
     return [f for d in facts_dirs(root) for f in sorted(d.glob("*.md"))]
 
 

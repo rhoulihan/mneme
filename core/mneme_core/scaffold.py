@@ -55,7 +55,9 @@ def create(
         ".github/workflows/validate.yml": templates.VALIDATE_YML,
         ".github/workflows/release.yml": templates.RELEASE_YML,
         ".gitignore": templates.GITIGNORE,
-        "skills/knowledge-index/SKILL.md": templates.render(templates.INDEX_SKILL_MD, **subs),
+        "skills/knowledge-index/SKILL.md": templates.render(
+            templates.INDEX_SKILL_MD, index_name="knowledge-index", **subs
+        ),
     }
     # Manifests are the one machine-parsed artifact lint_repo never sees; verify them
     # here so a broken manifest can never reach disk, the first commit, or the registry.
@@ -120,7 +122,9 @@ def adopt(
         ".claude-plugin/marketplace.json": templates.render_json(
             templates.MARKETPLACE_JSON, **subs
         ),
-        "skills/knowledge-index/SKILL.md": templates.render(templates.INDEX_SKILL_MD, **subs),
+        "skills/knowledge-index/SKILL.md": templates.render(
+            templates.INDEX_SKILL_MD, index_name="knowledge-index", **subs
+        ),
     }
     # Adoption seeds the canonical facts location, unconditionally — including in a repo
     # that still files facts at the top level. Skipping it there (Plan 10) left the adopted
@@ -185,6 +189,12 @@ def _fit(text: str, budget: int) -> str:
 
 
 def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
+    # Where the router goes is the repo's mode, not a constant: a plugin's belongs in
+    # `skills/knowledge-index/` where Claude Code discovers it, a plain repo's in
+    # `mneme-index/` where it collides with nothing the application owns. The skill is
+    # named for the directory it lands in because MN003 requires exactly that.
+    root = units.knowledge_root(target)
+    index_name = root.name
     entries: list[tuple[str, str, int]] = []
     # Every fact file, in both layouts: the index skill IS the routing surface, so a topic
     # missing from this table is a topic no agent is told exists.
@@ -215,11 +225,12 @@ def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
     # Measured, not estimated: the boilerplate varies with the plugin name, so the room
     # left for the caller's scope statement is whatever the template does not already use.
     empty = templates.render(
-        templates.INDEX_SKILL_MD, name=name, description="", owner="", sensitivity="",
+        templates.INDEX_SKILL_MD, name=name, index_name=index_name,
+        description="", owner="", sensitivity="",
     )
     fixed = len(str(units.parse_frontmatter(empty)[0]["description"])) + len(tail)
     text = templates.render(
-        templates.INDEX_SKILL_MD, name=name,
+        templates.INDEX_SKILL_MD, name=name, index_name=index_name,
         description=_fit(scope, units.MAX_DESCRIPTION - fixed),
         owner="", sensitivity="",
     )
@@ -229,6 +240,7 @@ def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
     meta["description"] = (str(meta["description"]) + tail)[: units.MAX_DESCRIPTION]
     rows = "".join(f"| {t} | {p} | {c} |\n" for t, p, c in entries)
     out = units.serialize_frontmatter(meta, body + rows)
-    path = target / "skills" / "knowledge-index" / "SKILL.md"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "SKILL.md"
     path.write_text(out, encoding="utf-8")
     return path

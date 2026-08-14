@@ -5,6 +5,15 @@ from mneme_core.errors import MnemeError
 from mneme_core.staging import Candidate, candidate_id
 
 
+def as_plugin(root):
+    """Make `root` a plugin repo — `facts_write_dir` reads the manifest to pick a layout."""
+    (root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
+    return root
+
+
 def bullet(text="Staging DB resets nightly at 04:00 UTC", category="constraint"):
     return compose.render_fact_bullet(category, text, ["staging"], verified="2026-08-11")
 
@@ -18,6 +27,7 @@ def make_candidate(body, topic="staging-env", edit="new", target_unit=""):
 
 
 def test_apply_new_fact_creates_file(tmp_path):
+    as_plugin(tmp_path)
     line = harvest.apply_fact(tmp_path, make_candidate(bullet()))
     # A repo with neither layout on disk gets the canonical one.
     assert (tmp_path / units.FACTS_CANONICAL / "staging-env.md").exists()
@@ -36,6 +46,7 @@ def test_apply_new_and_update_in_a_legacy_layout(tmp_path):
     different case: that is a write, and writes are canonical — see the assertion at the
     end and `tests/core/test_facts_write_dir.py`.)
     """
+    as_plugin(tmp_path)
     legacy = tmp_path / "facts"
     legacy.mkdir()
     (legacy / "staging-env.md").write_text(

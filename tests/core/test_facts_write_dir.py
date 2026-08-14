@@ -3,6 +3,15 @@ from mneme_core.staging import Candidate, candidate_id
 
 BULLET = "- [gotcha] A brand new topic bullet #new (verified: 2026-08-12)"
 
+def as_plugin(root):
+    """Make `root` a plugin repo — `facts_write_dir` reads the manifest to pick a layout."""
+    (root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
+    return root
+
+
 
 def cand(topic):
     return Candidate(
@@ -12,6 +21,7 @@ def cand(topic):
 
 
 def test_write_dir_is_always_canonical(tmp_path):
+    as_plugin(tmp_path)
     assert units.facts_write_dir(tmp_path) == tmp_path / units.FACTS_CANONICAL
     (tmp_path / "facts").mkdir()
     assert units.facts_write_dir(tmp_path) == tmp_path / units.FACTS_CANONICAL
@@ -20,6 +30,7 @@ def test_write_dir_is_always_canonical(tmp_path):
 
 
 def test_new_topic_lands_canonical_even_in_a_legacy_repo(tmp_path):
+    as_plugin(tmp_path)
     legacy = tmp_path / "facts"
     legacy.mkdir()
     (legacy / "existing.md").write_text(

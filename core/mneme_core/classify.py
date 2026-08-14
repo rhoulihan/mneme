@@ -910,7 +910,7 @@ def _finalize(
         migration = layout.migrate_legacy_facts(repo)
         if not (dirty or ahead or migration.lines or migration.removed_dir):
             raise MnemeError(_nothing_to_do(kind))
-        harvest._regenerate_index(repo)
+        harvest._regenerate_index(repo, scope.name)
         issues = lint.lint_repo(repo)
         if lint.has_errors(issues):
             details = "; ".join(f"{i.code} {i.message}" for i in issues if i.severity == "error")

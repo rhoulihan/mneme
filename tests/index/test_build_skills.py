@@ -5,6 +5,12 @@ from mneme_index import build, db
 
 
 def make_tree(root):
+    # A knowledge repo is a plugin: the manifest is what tells mneme these `skills/` are
+    # its own to lint, rather than an application's directory it must keep its hands off.
+    (root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
     d = root / "skills" / "deploy-widget"
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(
@@ -76,6 +82,10 @@ def test_plugins_row_upserted(conn, tmp_path):
 
 def test_skipped_entries(conn, tmp_path):
     tree = tmp_path / "tree"
+    (tree / ".claude-plugin").mkdir(parents=True)
+    (tree / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
     (tree / "skills" / "no-skill-md").mkdir(parents=True)
     (tree / "skills" / "bad-frontmatter").mkdir()
     (tree / "skills" / "bad-frontmatter" / "SKILL.md").write_text(
