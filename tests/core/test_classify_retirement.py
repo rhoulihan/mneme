@@ -81,8 +81,9 @@ def test_an_undeclared_deletion_is_still_refused(tmp_path):
     with pytest.raises(MnemeError, match="would lose knowledge"):
         classify.finalize(home, target, push=False)
 
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
+    # Refused before anything is touched, so the branch and the librarian's edits survive
+    # and the message's advice — integrate it, keep it, or retire it — can be acted on.
+    assert gitops.current_branch(target).startswith("mneme/classify-")
 
 
 def test_a_covering_unit_that_does_not_exist_is_refused(tmp_path):
@@ -208,16 +209,10 @@ def test_a_fact_duplicating_an_untouched_skill_still_needs_a_declaration(tmp_pat
     with pytest.raises(MnemeError, match="would lose knowledge"):
         classify.finalize(home, target, push=False)
 
-    # That IS a gate failure, so the branch rolls back — unlike a rejected declaration,
-    # which is caught before anything is touched.
-    assert gitops.current_branch(target) == "main"
+    # The branch and the librarian's edits SURVIVE, which is what makes the message's
+    # advice actionable: the same pass can simply be finalized again with a declaration.
+    assert gitops.current_branch(target).startswith("mneme/classify-")
 
-    # ...and the declaration is what makes the same pass legitimate.
-    classify.begin(home, target)
-    drop_fact(target, COVERED)
-    (target / "README.md").write_text(
-        (target / "README.md").read_text(encoding="utf-8") + "\nA line.\n", encoding="utf-8"
-    )
     result = classify.finalize(
         home, target, push=False,
         retire=[f"{retire_id()}=skills/drain-a-widget-deploy"],
@@ -633,3 +628,74 @@ def test_the_review_cli_flag_reaches_the_rail(tmp_path, capsys):
     assert code == 0, out
     branch = out.split(" on ")[1].split()[0]
     assert gitops.git(target, "log", branch, "-1", "--format=%B").count("Retired:") == 1
+
+
+def test_a_fact_moved_into_an_ignored_file_is_not_preserved(tmp_path):
+    """The gate's THIRD proof — the one nobody looked at because it was not new code.
+
+    `_preservation_gate` rests on three: the integration prose, the covering unit ids, and
+    the branch's own fact bullets. The first was caught reading the disk instead of git in
+    round 1 and fixed; the second was caught the same way in round 2 and fixed, with the
+    rule written into `_committable`. `_branch_fact_texts` was the third, eighty lines from
+    that docstring and called on the line beneath it, and it still walked the filesystem —
+    so a bullet moved into a `.gitignore`d fact file satisfied the gate with no declaration
+    at all, and existed in no file of the committed branch.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    (target / ".gitignore").write_text(
+        f"{units.FACTS_CANONICAL}/hidden.md\n", encoding="utf-8"
+    )
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "ignore a fact path")
+    classify.begin(home, target)
+    (target / units.FACTS_CANONICAL / "hidden.md").write_text(
+        f"---\ntopic: hidden\n---\n- [gotcha] {COVERED} #deploy (verified: 2026-08-12)\n",
+        encoding="utf-8",
+    )
+    drop_fact(target, COVERED)
+
+    with pytest.raises(MnemeError, match="would lose knowledge"):
+        classify.finalize(home, target, push=False)
+
+
+def test_the_generated_index_can_never_cover_a_retirement(tmp_path):
+    """`skills/knowledge-index` is regenerated from the fact files by this very finalize.
+
+    It exists in every mneme repo, so accepting it as a covering unit was a universal
+    rubber stamp: any retirement at all, with the retired sentence living in no file. Its
+    two sibling functions both excluded that directory with docstrings arguing why; this
+    one re-derived the question and got it wrong, which is why the rule is now one
+    predicate (`_carries_knowledge`) rather than three.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    classify.begin(home, target)
+    drop_fact(target, COVERED)
+
+    with pytest.raises(MnemeError, match="covering unit"):
+        classify.finalize(
+            home, target, push=False, retire=[f"{retire_id()}=skills/knowledge-index"],
+        )
+
+
+def test_the_gate_still_catches_a_loss_introduced_after_the_migration(tmp_path):
+    """The post-migration gate, pinned at the function it guards with.
+
+    No end-to-end path reaches that call: `layout._merge` measures its own result and keeps
+    a file aside rather than drop a bullet, so a migration cannot lose one. Deleting the
+    call therefore survives the suite. Rather than leave the branch unexplained or delete a
+    cheap backstop, its behaviour is pinned here directly — if `layout`'s guard is ever
+    weakened, this is the net, and this test says what the net does.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    classify.begin(home, target)
+    drop_fact(target, COVERED)
+
+    with pytest.raises(MnemeError, match="would lose knowledge"):
+        classify._preservation_gate(target, classify._changed_files(target), "classify", set())
+
+    # ...and it accepts the same state once the fact is declared retired.
+    rel = f"{units.FACTS_CANONICAL}/deploys.md"
+    classify._preservation_gate(
+        target, classify._changed_files(target), "classify",
+        {(rel, classify._normalized(COVERED))},
+    )

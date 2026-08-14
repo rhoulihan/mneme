@@ -94,12 +94,16 @@ def test_deleting_a_fact_without_integrating_it_is_refused(tmp_path):
     assert QUEUE_FACT[:80] in message  # the lost bullet is named
     assert DEPLOY_FACT not in message  # the preserved one is not
     assert message.endswith(LOSS_SENTENCE)
-    # the existing rollback: clean main, branch gone, the fact back where it was
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
+    # The BRANCH SURVIVES a preservation refusal, and `main` is untouched. This gate is the
+    # only place mneme tells a librarian to retry with `--retire`; aborting here destroyed
+    # the edits that retry needs, so the advice could never be taken. It now refuses before
+    # anything is touched, like every other declaration-shaped refusal.
+    assert gitops.current_branch(target).startswith("mneme/")
     assert gitops.git(target, "rev-parse", "main") == main_before
-    assert gitops.git(target, "branch", "--list", branch) == ""
-    assert (target / units.FACTS_CANONICAL / "queues.md").is_file()
+    assert gitops.git(target, "branch", "--list", branch) != ""  # the branch is still there
+    # ...and so is the librarian's work: the refusal happens before anything is touched, so
+    # there is nothing to undo. The deletion they made is still theirs to correct.
+    assert not (target / units.FACTS_CANONICAL / "queues.md").is_file()
 
 
 def test_reworded_integration_still_fails_the_floor(tmp_path):
@@ -113,8 +117,7 @@ def test_reworded_integration_still_fails_the_floor(tmp_path):
         classify.finalize(home, target, push=False)
 
     assert DEPLOY_FACT in str(exc.value)
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
+    assert gitops.current_branch(target).startswith("mneme/")  # branch survives
 
 
 def test_a_fact_that_only_moves_is_preserved(tmp_path):
@@ -160,11 +163,11 @@ def test_de_bulleting_a_fact_in_place_is_refused(tmp_path):
     message = str(exc.value)
     assert DEPLOY_FACT[:80] in message
     assert message.endswith(LOSS_SENTENCE)
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
-    assert gitops.git(target, "branch", "--list", branch) == ""
-    # rolled back to the bullet main carries, not the prose
-    text = (target / units.FACTS_CANONICAL / "deploys.md").read_text(encoding="utf-8")
+    assert gitops.current_branch(target).startswith("mneme/")  # branch survives
+    assert gitops.git(target, "branch", "--list", branch) != ""  # the branch is still there
+    # The librarian's prose rewrite is left in place for them to fix — `main` still carries
+    # the bullet, which is what the refusal is protecting.
+    text = gitops.git(target, "show", f"main:{units.FACTS_CANONICAL}/deploys.md")
     assert f"- [gotcha] {DEPLOY_FACT}" in text
 
 
@@ -184,9 +187,11 @@ def test_moving_a_fact_into_a_facts_subdirectory_is_refused(tmp_path):
         classify.finalize(home, target, push=False)
 
     assert DEPLOY_FACT[:80] in str(exc.value)
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
-    assert not (facts / "archive").exists()
+    assert gitops.current_branch(target).startswith("mneme/")  # branch survives
+    # The move the librarian made is still on the branch — refused, not reverted — while
+    # `main` keeps the bullet the gate exists to protect.
+    assert (facts / "archive").exists()
+    assert DEPLOY_FACT in gitops.git(target, "show", f"main:{units.FACTS_CANONICAL}/deploys.md")
 
 
 def test_the_legacy_migration_cannot_launder_a_hidden_fact(tmp_path):
@@ -208,9 +213,11 @@ def test_the_legacy_migration_cannot_launder_a_hidden_fact(tmp_path):
         classify.finalize(home, target, push=False)
 
     assert DEPLOY_FACT[:80] in str(exc.value)
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
-    assert (legacy / "deploys.md").is_file()
+    assert gitops.current_branch(target).startswith("mneme/")  # branch survives
+    # Refused before the migration ran, so the librarian's move is still where they left it
+    # and `main` still carries the bullet the gate is protecting.
+    assert (legacy / "archive" / "deploys.md").is_file()
+    assert DEPLOY_FACT in gitops.git(target, "show", "main:facts/deploys.md")
 
 
 def test_review_finalize_refuses_a_de_bulleted_fact_too(tmp_path):
@@ -225,8 +232,7 @@ def test_review_finalize_refuses_a_de_bulleted_fact_too(tmp_path):
         classify.review_finalize(home, target, push=False)
 
     assert QUEUE_FACT[:80] in str(exc.value)
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
+    assert gitops.current_branch(target).startswith("mneme/")  # branch survives
 
 
 def test_instructions_never_ask_for_a_pass_finalize_would_refuse():
@@ -259,8 +265,7 @@ def test_review_finalize_carries_the_same_gate(tmp_path):
     message = str(exc.value)
     assert DEPLOY_FACT in message
     assert message.endswith(LOSS_SENTENCE)
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
-    assert gitops.git(target, "branch", "--list", branch) == ""
-    assert (target / units.FACTS_CANONICAL / "deploys.md").is_file()
-    assert not (target / units.FACTS_CANONICAL / "sidecars.md").exists()
+    assert gitops.current_branch(target).startswith("mneme/")  # branch survives
+    assert gitops.git(target, "branch", "--list", branch) != ""
+    # `main` is what the gate protects, and it is untouched.
+    assert DEPLOY_FACT in gitops.git(target, "show", f"main:{units.FACTS_CANONICAL}/deploys.md")

@@ -423,9 +423,22 @@ def _main_fact_bullets(repo: Path) -> list[tuple[str, str]]:
 
 
 def _branch_fact_texts(repo: Path) -> set[str]:
-    """Normalized text of every fact bullet the branch's working tree still carries."""
+    """Normalized text of every fact bullet the branch will COMMIT.
+
+    The third of the gate's three proofs, and the last to be fixed. `_integration_text` and
+    `_branch_unit_ids` were each caught reading the disk instead of git — a fact "survived"
+    inside a file `.gitignore` keeps out of the commit — and each was fixed on its own,
+    while this one was never looked at because it was not new code. A fact bullet moved
+    into an ignored fact file passed the gate with no declaration at all and existed in no
+    committed file.
+
+    All three now ask `_committable`. If a fourth proof is ever added here, it asks it too.
+    """
+    committable = _committable(repo)
     texts: set[str] = set()
     for f in units.fact_files(repo):
+        if f.relative_to(repo).as_posix() not in committable:
+            continue
         try:
             _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
         except (MnemeError, OSError, UnicodeDecodeError):
@@ -451,6 +464,21 @@ def _is_integration_path(rel: str) -> bool:
     "accounted for" while every reader — lint, the index build, search, the classify
     bundle — had lost it. The rest of the router skill is generated from the fact files, so
     it is no destination either.
+    """
+    return _carries_knowledge(rel)
+
+
+def _carries_knowledge(rel: str) -> bool:
+    """Can a unit at this path hold knowledge a fact could be integrated into or covered by?
+
+    ONE predicate, because this question was being answered independently at three call
+    sites and the third got it wrong: `_branch_unit_ids` accepted `skills/knowledge-index`
+    as a covering unit. That skill is REGENERATED from the fact files by the very finalize
+    being gated, and it exists in every mneme repo — so it was a universal rubber stamp,
+    accepting any retirement while the retired sentence lived in no file at all.
+
+    Its two siblings both excluded that directory with docstrings arguing why. Stating the
+    rule once is the only way there is no fourth site to get wrong.
     """
     return rel.startswith("skills/") and not rel.startswith(_INDEX_SKILL_DIR)
 
@@ -532,6 +560,7 @@ def _branch_unit_ids(repo: Path) -> set[str]:
         for d in sorted((repo / "skills").glob("*"))
         if d.is_dir()
         and (d / "SKILL.md").is_file()
+        and _carries_knowledge(f"skills/{d.name}/SKILL.md")
         and (d / "SKILL.md").relative_to(repo).as_posix() in committable
     }
     for f in units.fact_files(repo):
@@ -743,6 +772,19 @@ def _finalize(
             " split this pass into smaller ones"
         )
 
+    # The preservation gate runs BEFORE the guarded block, for the reason its own message
+    # gives: it is the only place mneme ever tells a librarian to retry with `--retire`, and
+    # from inside the guard that advice was self-defeating — `harvest._abort` hard-resets to
+    # the branch point and deletes the branch, so the edits the retry needs are gone by the
+    # time the message is printed. Round 1 hoisted declaration typos out for exactly this
+    # reason and left in the gate that motivates the declaration.
+    #
+    # Its inputs do not need the migration that follows: it compares `main`'s bullets against
+    # the branch's fact texts and the prose of changed SKILL files, and
+    # `layout.migrate_legacy_facts` moves fact files without changing a bullet's text, while
+    # the index regeneration only rewrites the one skill `_carries_knowledge` excludes.
+    _preservation_gate(repo, _changed_files(repo), kind, retired_pairs)
+
     try:
         dirty = not gitops.is_clean(repo)
         ahead = gitops.head_sha(repo) != base_sha
@@ -759,6 +801,18 @@ def _finalize(
             raise MnemeError(f"{kind} fails repo lint: {details}")
         changed = _changed_files(repo)
         _scan_gate(repo, changed, kind)
+        # And AGAIN after the migration, because the two would catch different losses. The
+        # pass above catches what the LIBRARIAN did, before anything is touched, so its
+        # advice ("retire it with --retire…") is actionable — the branch and their edits
+        # survive. This one would catch what the MIGRATION did, which is nobody's edit to
+        # correct, so it aborts like any other rail failure.
+        #
+        # Stated plainly: no end-to-end path reaches this today. `layout._merge` measures
+        # its own result and keeps a file aside rather than fold a bullet away, so a
+        # migration cannot lose one for this to find — a mutation deleting this call
+        # survives the suite, and that is the honest state of it, not an oversight. It is
+        # kept as defense in depth for the day `layout`'s guard changes, and the unit test
+        # below pins the function's behaviour on a post-migration state directly.
         _preservation_gate(repo, changed, kind, retired_pairs)
     except MnemeError:
         harvest._abort(repo, branch, base_sha)
