@@ -371,18 +371,59 @@ def _scannable_text(path: Path) -> str | None:
     return raw.decode("utf-8", errors="replace")
 
 
+def _branch_blobs(repo: Path) -> list[tuple[str, str]]:
+    """(label, text) for every file version the branch adds that `main` does not have.
+
+    What leaves the machine is the BRANCH, not the working tree — `push_branch` pushes
+    every commit on it and the pull request carries them all. A librarian committing their
+    reorganisation as they go is a supported pass (`_commit` says so explicitly), so a
+    secret can be committed here and then removed from the worktree, leaving a clean tip
+    over a history nobody scanned.
+
+    `--diff-filter=AM` because only content this branch ADDS or MODIFIES can leak
+    something `main` does not already have; a deletion introduces no bytes.
+    """
+    blobs: list[tuple[str, str]] = []
+    for sha in gitops.git(repo, "rev-list", "main..HEAD").split():
+        listing = gitops.git_raw(
+            repo, "diff-tree", "-r", "-z", "--no-commit-id", "--name-only",
+            "--diff-filter=AM", sha,
+        )
+        for rel in listing.split("\0"):
+            if not rel:
+                continue
+            try:
+                blobs.append((f"{rel} (in commit {sha[:8]})", gitops.git_raw(repo, "show", f"{sha}:{rel}")))
+            except MnemeError:
+                continue  # unreadable blob: lint owns shape, the scan owns text
+    return blobs
+
+
 def _scan_gate(repo: Path, changed: list[str], kind: str) -> None:
+    """Refuse to deliver a secret — in the working tree OR anywhere in the branch.
+
+    Scanning only `changed` off the disk read the wrong thing twice over: a file the pass
+    committed and then DELETED was skipped entirely ("nothing left to leak" is true of the
+    worktree and false of the history), and one committed and then cleaned in place was
+    read at its innocent version. Both were pushed with the secret inside an earlier commit
+    and `git log -S` found it in the delivered branch.
+    """
+    scannable: list[tuple[str, str]] = []
     for rel in changed:
         path = repo / rel
         if not path.is_file():
-            continue  # deleted or renamed away — nothing left to leak
+            continue  # gone from the worktree — the branch history below still covers it
         text = _scannable_text(path)
         if text is None:
             continue  # unreadable: lint owns shape, the scan owns text
+        scannable.append((rel, text))
+    scannable.extend(_branch_blobs(repo))
+
+    for label, text in scannable:
         findings = scan.scan_text(text)
         if scan.has_blockers(findings):
             rules = ", ".join(sorted({f.rule for f in findings if f.severity == scan.BLOCK}))
-            raise MnemeError(f"{kind} fails the secret scan: {rel} ({rules})")
+            raise MnemeError(f"{kind} fails the secret scan: {label} ({rules})")
 
 
 def _normalized(text: str) -> str:
