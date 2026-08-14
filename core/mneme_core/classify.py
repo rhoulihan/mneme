@@ -112,7 +112,37 @@ def _abort(home: Path, cwd: Path, kind: str) -> None:
     gitops.git(repo, "branch", "-D", branch)
 
 
+def _require_destinations(repo: Path) -> None:
+    """Refuse the librarian pass in a repo that has nowhere to file anything.
+
+    Classify exists to move loose facts INTO destination skills. A plain repo has none:
+    mneme keeps to `mneme-index/`, and the repo's own `skills/` — if it has one — belongs
+    to the application. Run anyway and the pass either does nothing or starts filing
+    knowledge into somebody's source tree.
+
+    Declining is what makes the other rails safe to run on a repo mneme does not own, so
+    the message names them. A user who reads "not supported" and nothing else has no idea
+    they can still capture, ship and review.
+
+    The escape hatch Rick asked for — classify becoming available once a user supplies
+    tooling that defines destinations — needs a place for those destinations to live that
+    is mneme's and not the application's. That layout is deliberately not invented here:
+    a half-built destination directory nothing lints is worse than a clean refusal.
+    """
+    if units.is_plugin(repo):
+        return
+    raise MnemeError(
+        f"{repo} is not a knowledge plugin, so it has no destination skills to file facts"
+        " into — classify has nowhere to put anything. What does work here: `mneme share`"
+        " captures facts into mneme-index/, `mneme review` accepts a pull request and the"
+        " facts inside it, and `mneme migrate` moves a legacy facts/ directory. To make"
+        " this repo a plugin instead, run: mneme adopt <name> --as-plugin"
+    )
+
+
 def begin(home: Path, cwd: Path) -> str:
+    _scope, repo = resolve(home, cwd)
+    _require_destinations(repo)
     return _begin(home, cwd, "classify")
 
 
@@ -211,6 +241,7 @@ def bundle(home: Path, cwd: Path) -> dict:
     the quoted content was read before the sentence that disarms it.
     """
     scope, repo = resolve(home, cwd)
+    _require_destinations(repo)
     notes: list[str] = []
     return {
         "instructions": templates.CLASSIFY_INSTRUCTIONS,
@@ -1017,6 +1048,10 @@ def finalize(
     `retire` carries `<retired-unit-id>=<covering-unit-id>` declarations: the only way a
     fact leaves the repo, and one that names what covers it in the pull request.
     """
+    # Guarded here and not in `_finalize`, which review shares. `abort` is deliberately
+    # left open: a branch that got made anyway must stay possible to unmake.
+    _scope, repo = resolve(home, cwd)
+    _require_destinations(repo)
     return _finalize(home, cwd, "classify", push=push, retire=retire)
 
 

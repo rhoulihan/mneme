@@ -124,7 +124,7 @@ there are no destination skills to file facts into — and pointing at `review` 
 which do work. `review` is unaffected in both modes. `migrate` stays available (a plain
 repo can still carry a legacy `facts/`).
 
-- [ ] **Steps:** failing test → implement → confirm `review`/`share`/`migrate` still work
+- [x] **Steps:** failing test → implement → confirm `review`/`share`/`migrate` still work
   on a plain repo → commit.
 
 ---
