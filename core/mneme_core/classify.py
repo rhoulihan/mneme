@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import gitops, harvest, layout, lint, paths, scan, templates, units
 from .errors import MnemeError
@@ -549,7 +549,29 @@ def _committable(repo: Path) -> set[str]:
     rail must ask git what the branch will carry, never the disk.
     """
     listing = gitops.git_raw(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    return {rel for rel in listing.split("\0") if rel}
+    return {rel for rel in listing.split("\0") if rel and _real_file(repo, rel)}
+
+
+def _real_file(repo: Path, rel: str) -> bool:
+    """Is `rel` a regular file whose BYTES are the bytes git will store?
+
+    Asking git which paths it will commit is only half the claim, and three rounds of
+    fixes all stopped at that half. A symlink separates the two: git commits the path —
+    storing the link's TARGET STRING as the blob — while the proof reads through it and
+    sees whatever the target holds. A fact bullet moved into a symlinked file was
+    "preserved" by every one of the gate's three proofs while the committed tree contained
+    only `/tmp/somewhere/elsewhere.md` and the sentence lived in no file of the repo.
+
+    So no segment may be a link, not just the leaf: a symlinked DIRECTORY does the same
+    thing one level up. `layout` has always refused links at both ends of the migration
+    for exactly this reason; this is the same rule, finally stated for the gate too.
+    """
+    walked = repo
+    for part in PurePosixPath(rel).parts:
+        walked = walked / part
+        if walked.is_symlink():
+            return False
+    return walked.is_file()
 
 
 def _branch_unit_ids(repo: Path) -> set[str]:

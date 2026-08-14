@@ -699,3 +699,50 @@ def test_the_gate_still_catches_a_loss_introduced_after_the_migration(tmp_path):
         target, classify._changed_files(target), "classify",
         {(rel, classify._normalized(COVERED))},
     )
+
+
+@pytest.mark.parametrize("shape", ["file", "directory", "covering-unit"])
+def test_a_symlink_cannot_stand_in_for_committed_content(tmp_path, shape):
+    """Asking git WHICH PATHS it will commit is only half the claim.
+
+    Three rounds of fixes all stopped at that half. A symlink separates the path from the
+    bytes: git stores the link's TARGET STRING as the blob, while every proof read through
+    the link and saw whatever the target held. A fact moved into a symlinked file was
+    "preserved" by all three proofs while the committed tree contained only
+    `/tmp/somewhere/elsewhere.md` and the sentence existed in no file of the repo.
+
+    All three shapes matter and one rule closes them: no segment of the path may be a
+    link, and the leaf must be a regular file — which is what `layout` has always required
+    at both ends of the migration.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    classify.begin(home, target)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    if shape == "file":
+        (outside / "moved.md").write_text(
+            f"---\ntopic: moved\n---\n- [gotcha] {COVERED} #deploy (verified: 2026-08-12)\n",
+            encoding="utf-8",
+        )
+        (target / units.FACTS_CANONICAL / "moved.md").symlink_to(outside / "moved.md")
+        retire = None
+    elif shape == "directory":
+        (outside / "moved.md").write_text(
+            f"---\ntopic: moved\n---\n- [gotcha] {COVERED} #deploy (verified: 2026-08-12)\n",
+            encoding="utf-8",
+        )
+        (target / "skills" / "linked").symlink_to(outside)
+        retire = None
+    else:
+        (outside / "SKILL.md").write_text(
+            "---\nname: ghost\ndescription: Not really here\n---\n\n## Procedure\n\nx.\n",
+            encoding="utf-8",
+        )
+        (target / "skills" / "ghost").symlink_to(outside)
+        retire = [f"{retire_id()}=skills/ghost"]
+
+    drop_fact(target, COVERED)
+
+    with pytest.raises(MnemeError):
+        classify.finalize(home, target, push=False, retire=retire)
