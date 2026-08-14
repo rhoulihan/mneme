@@ -16,18 +16,16 @@ from pathlib import Path
 from . import gitops, paths, staging, templates, units
 from .errors import MnemeError
 
-# Facts live in exactly two places (`units.facts_dirs`), each a FLAT directory of topic
-# files. Matching the whole path against those two shapes — rather than sniffing for a
-# "facts" segment anywhere — is what makes traversal (`facts/../../etc/x.md`) and nested
-# lookalikes (`vendor/facts/x.md`) non-matches instead of special cases.
-_FACT_PATH_RES = (
-    re.compile(r"^" + re.escape(units.FACTS_CANONICAL) + r"/(?P<stem>[^/]+)\.md$"),
-    re.compile(r"^facts/(?P<stem>[^/]+)\.md$"),
+# Every facts layout `units` knows about (`units.FACTS_LAYOUTS`), each a FLAT directory of
+# topic files. Built from that tuple rather than restated here, because restating it is how
+# a third layout arrived and left this module blind to it. Matching the whole path against
+# these shapes — rather than sniffing for a "facts" segment anywhere — is what makes
+# traversal (`facts/../../etc/x.md`) and nested lookalikes (`vendor/facts/x.md`) non-matches
+# instead of special cases.
+_FACT_PATH_RES = tuple(
+    re.compile(r"^" + re.escape(d) + r"/(?P<stem>[^/]+)\.md$") for d in units.FACTS_LAYOUTS
 )
 _SKILL_PATH_RE = re.compile(r"^skills/(?P<name>[^/]+)/SKILL\.md$")
-# `skills/knowledge-index` — the generated router skill, and the directory the canonical
-# facts live inside. Never evidence of an integration (see `_integrated_texts`).
-_INDEX_SKILL_DIR = units.FACTS_CANONICAL.rsplit("/", 1)[0]
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
 
 _SKIP_REASON_CAP = 200
@@ -359,9 +357,8 @@ def _integrated_texts(repo: Path) -> set[str]:
     that cannot be decoded costs its own evidence and nothing else: triage stays total.
     """
     texts: set[str] = set()
-    index_dir = repo / _INDEX_SKILL_DIR
     for path in sorted((repo / "skills").rglob("SKILL.md")):
-        if index_dir in path.parents:
+        if units.in_knowledge_root(path.relative_to(repo).as_posix()):
             continue
         try:
             texts.add(_normalized(path.read_text(encoding="utf-8-sig")))

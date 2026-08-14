@@ -343,6 +343,35 @@ FACTS_PLAIN = f"{PLAIN_ROOT}/facts"
 KNOWLEDGE_ROOTS = (PLUGIN_ROOT, PLAIN_ROOT)
 FACTS_LAYOUTS = (FACTS_CANONICAL, FACTS_PLAIN, "facts")
 
+# The same two facts as PATH PREFIXES, for the gates that reason about repo-relative
+# strings rather than directories on disk. They live here because four call sites each
+# encoded "facts live in exactly two places" and "the router is at skills/knowledge-index"
+# in their own literal, and adding a third layout made all four silently wrong at once —
+# the preservation gate stopped SEEING a plain repo's facts, so a fact committed on main
+# could be deleted on the branch and the finalize passed.
+FACTS_PREFIXES = tuple(f"{d}/" for d in FACTS_LAYOUTS)
+KNOWLEDGE_ROOT_PREFIXES = tuple(f"{r}/" for r in KNOWLEDGE_ROOTS)
+
+
+def is_fact_path(rel: str) -> bool:
+    """Is `rel` a fact file — a `*.md` directly inside one of the facts layouts?
+
+    Whole-path, never a "facts" segment sniffed out of the middle: that is what makes
+    `facts/../../etc/x.md` and `vendor/facts/x.md` non-matches rather than special cases.
+    """
+    if not rel.endswith(".md"):
+        return False
+    return any(rel.startswith(p) and "/" not in rel[len(p) :] for p in FACTS_PREFIXES)
+
+
+def in_knowledge_root(rel: str) -> bool:
+    """Is `rel` inside a directory mneme GENERATES — either mode's router skill?
+
+    The router is regenerated from the fact files, and the facts live inside it, so nothing
+    under it is ever evidence that a fact was integrated somewhere.
+    """
+    return any(rel.startswith(p) for p in KNOWLEDGE_ROOT_PREFIXES)
+
 
 def is_plugin(root: Path) -> bool:
     """Is this repo a Claude Code plugin?

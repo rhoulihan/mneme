@@ -37,11 +37,6 @@ from .errors import MnemeError
 # they cannot take.
 _RAIL_KINDS = ("classify", "review")
 
-# The generated router skill, `skills/knowledge-index/` — the directory the canonical facts
-# live inside. Never an integration destination (see `_is_integration_path`).
-_INDEX_SKILL_DIR = units.FACTS_CANONICAL.rsplit("/", 1)[0] + "/"
-
-
 def _branch_prefix(kind: str) -> str:
     return f"mneme/{kind}-"
 
@@ -523,13 +518,10 @@ def _main_fact_bullets(repo: Path) -> list[tuple[str, str]]:
     either facts layout, canonical first. A bullet `main` already carries malformed is
     skipped; the branch cannot be blamed for damage it did not do.
     """
-    prefixes = (f"{units.FACTS_CANONICAL}/", "facts/")
     bullets: list[tuple[str, str]] = []
     listing = gitops.git_raw(repo, "ls-tree", "-r", "-z", "--name-only", "main")
     for rel in listing.split("\0"):
-        if not rel.endswith(".md"):
-            continue
-        if not any(rel.startswith(p) and "/" not in rel[len(p) :] for p in prefixes):
+        if not units.is_fact_path(rel):
             continue
         try:
             _meta, body = units.parse_frontmatter(gitops.git_raw(repo, "show", f"main:{rel}"))
@@ -578,7 +570,7 @@ def _branch_fact_texts(repo: Path) -> set[str]:
     return texts
 
 
-def _is_integration_path(rel: str) -> bool:
+def _is_integration_path(repo: Path, rel: str) -> bool:
     """Is this changed path skill PROSE a fact could have been integrated into?
 
     "Under `skills/`" is not the test, because the canonical facts directory lives under
@@ -590,10 +582,10 @@ def _is_integration_path(rel: str) -> bool:
     bundle — had lost it. The rest of the router skill is generated from the fact files, so
     it is no destination either.
     """
-    return _carries_knowledge(rel)
+    return _carries_knowledge(repo, rel)
 
 
-def _carries_knowledge(rel: str) -> bool:
+def _carries_knowledge(repo: Path, rel: str) -> bool:
     """Can a unit at this path hold knowledge a fact could be integrated into or covered by?
 
     ONE predicate, because this question was being answered independently at three call
@@ -604,8 +596,22 @@ def _carries_knowledge(rel: str) -> bool:
 
     Its two siblings both excluded that directory with docstrings arguing why. Stating the
     rule once is the only way there is no fourth site to get wrong.
+
+    WHICH directory is generated is `units.in_knowledge_root`, not a literal here: a plain
+    repo's router lives at `mneme-index/`, and a predicate that knew only about
+    `skills/knowledge-index/` would hand back the same universal rubber stamp in the other
+    mode.
+
+    In a plain repo NOTHING carries knowledge. `skills/` there is the application's, so a
+    fact's sentence appearing in it is the app's own source coinciding with a fact — and
+    accepting that as an integration would let a deleted fact be "accounted for" by a file
+    mneme did not write and does not maintain.
     """
-    return rel.startswith("skills/") and not rel.startswith(_INDEX_SKILL_DIR)
+    return (
+        rel.startswith("skills/")
+        and units.is_plugin(repo)
+        and not units.in_knowledge_root(rel)
+    )
 
 
 def _integration_text(repo: Path, changed: list[str]) -> str:
@@ -631,7 +637,7 @@ def _integration_text(repo: Path, changed: list[str]) -> str:
     """
     parts: list[str] = []
     for rel in changed:
-        if not _is_integration_path(rel):
+        if not _is_integration_path(repo, rel):
             continue
         path = repo / rel
         if not path.is_file():
@@ -707,7 +713,7 @@ def _branch_unit_ids(repo: Path) -> set[str]:
         for d in sorted((repo / "skills").glob("*"))
         if d.is_dir()
         and (d / "SKILL.md").is_file()
-        and _carries_knowledge(f"skills/{d.name}/SKILL.md")
+        and _carries_knowledge(repo, f"skills/{d.name}/SKILL.md")
         and (d / "SKILL.md").relative_to(repo).as_posix() in committable
     }
     for f in units.fact_files(repo):
