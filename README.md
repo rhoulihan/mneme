@@ -125,7 +125,7 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 |---|---|
 | `/mneme:new <name>` | Interview for scope, then scaffold a governed knowledge plugin — repo, manifests, CI, routing scope statement |
 | `/mneme:register <name> <url>` | Register an existing repo you have access to (clones it for you); asks only for sensitivity — contributions are PR-only — and offers governance retrofit |
-| `/mneme:adopt <name>` | Retrofit mneme governance onto an existing repo — adds only what's missing, never overwrites |
+| `/mneme:adopt <name>` | Retrofit mneme onto an existing repo — drafts its scope from what the repo already says about itself, then adds only what's missing, never overwriting. Works on an app or service repo too: that keeps its knowledge in `mneme-index/` at the root and is never turned into a plugin |
 | `/mneme:capture <note>` | Flag hard-won knowledge the moment it happens — one line, distilled in the background later |
 | `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then harvest onto a `mneme/harvest-*` branch and open the PR |
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |

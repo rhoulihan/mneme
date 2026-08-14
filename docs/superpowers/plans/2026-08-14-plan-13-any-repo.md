@@ -140,7 +140,7 @@ getting-started guide gains a plain-repo path with real transcripts, and says pl
 plain mode does NOT give you (no marketplace distribution, no classify, no automatic
 in-repo context for a teammate without mneme).
 
-- [ ] **Steps:** implement → capture real transcripts → commit → release.
+- [x] **Steps:** implement → capture real transcripts → commit → release.
 
 ## Verification
 

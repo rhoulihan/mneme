@@ -61,11 +61,15 @@ only in what you already have:
 | Nothing yet | **[Path A — create](#3-path-a--create-a-new-knowledge-plugin)** `/mneme:new` | Scaffolds a complete governed repo: plugin manifest, marketplace, CI, CODEOWNERS, scope statement |
 | A knowledge repo already (yours or your team's) | **[Path B — register](#4-path-b--register-a-repo-you-already-have)** `/mneme:register` | Points mneme at it so it becomes searchable and can receive harvests |
 | A repo that predates mneme — **register it first** | **[Path C — adopt](#5-path-c--adopt-governance-onto-an-existing-repo)** `/mneme:adopt` | Adds the missing governance files, never overwriting what is there |
+| An app, service or infra repo — not a knowledge repo at all | **[Path D — adopt a plain repo](#5b-path-d--adopt-an-app-or-service-repo)** `/mneme:adopt` | Adds `mneme-index/` at the root and takes nothing else over |
 
-Paths B and C compose, and the order matters: adopt requires the repo to be registered
-already, so an existing repo goes through Path B and then Path C. You can register **any
-number** of plugins — personal, team, per-product — and mneme routes each piece of captured
-knowledge to the right one.
+Paths B, C and D compose, and the order matters: adopt requires the repo to be registered
+already, so an existing repo goes through Path B and then Path C or D. You can register
+**any number** of plugins — personal, team, per-product, per-service — and mneme routes each
+piece of captured knowledge to the right one.
+
+Paths C and D are the same command. `/mneme:adopt` classifies the repo and tells you which
+one it picked, so you do not have to choose in advance.
 
 ---
 
@@ -320,6 +324,7 @@ mneme adopt team-kb --description "Team knowledge for the shared platform." --ow
 ```
 
 ```
+mode: plugin — the repo already carries skills/<name>/SKILL.md
 added: MNEME.md
 added: CONTRIBUTING.md
 added: CODEOWNERS
@@ -368,6 +373,13 @@ with just a title and no `## Scope statement` section — adopt leaves it alone,
 still has no scope statement and still cannot be routed to. Check with `mneme context` after
 adopting, and if it still says `(no scope statement)`, add the section by hand.
 
+**The first line is the mode**, and it decides everything below it. Adopt picks `plugin`
+when the repo already has a `.claude-plugin/plugin.json` **or** already carries a
+`skills/<name>/SKILL.md` — a hand-built knowledge repo that never got packaged is still a
+knowledge repo. Anything else is somebody's application and gets
+[Path D](#5b-path-d--adopt-an-app-or-service-repo) instead. Override with `--as-plugin` or
+`--plain` if it guessed wrong for your repo.
+
 Adopt differs from `new` in three ways: it needs the repo registered first, it writes a
 subset of the files (no `AGENTS.md`, `README.md` or `.gitignore`), and it takes sensitivity
 from the registry rather than a flag. A repo still using the legacy top-level `facts/`
@@ -375,6 +387,207 @@ layout keeps its files exactly where they are — adopt never moves or rewrites 
 it is seeded with the canonical `skills/knowledge-index/facts/` alongside them, and adopt
 says so: the next contribution migrates the old files into it (or run `mneme migrate` in the
 repo to do only that).
+
+---
+
+## 5b. Path D — adopt an app or service repo
+
+Most knowledge is learned inside a repo that is not about knowledge at all. You spend a week
+finding out that the chargeback webhook replays events for 72 hours, and the place that fact
+belongs is the payments service — not a separate knowledge repo somebody has to remember to
+open.
+
+`/mneme:adopt` handles that repo too. It does **not** turn it into a Claude Code plugin. It
+adds one directory, `mneme-index/`, at the root, and takes nothing else over.
+
+### Register it first, same as Path C
+
+```bash
+mneme registry add payments-service \
+  --repo git@github.com:acme/payments-service.git \
+  --path ~/code/payments-service
+```
+
+```
+registered payments-service
+```
+
+`mneme status` now names the mode of every registered repo:
+
+```
+plugins: 1 registered
+- payments-service [internal] (plain)
+```
+
+### Adopt reads the repo before it asks you anything
+
+The scope statement is the routing prompt — mneme matches every candidate fact against it to
+decide which repo the knowledge belongs to — so a vague one quietly steals candidates from
+every other scope you have registered. Asking you to write one cold is how vague ones get
+written. So `/mneme:adopt` reads what the repo already says about itself first:
+
+```bash
+mneme adopt payments-service --describe
+```
+
+```json
+{
+  "repo": {
+    "name": "payments-service",
+    "mode": "plain",
+    "why": "the repo is not a knowledge plugin, so mneme keeps to one directory",
+    "knowledge_root": "mneme-index"
+  },
+  "sources": {
+    "readme": "Settles card payments and issues refunds for the widget platform.",
+    "manifests": [
+      {"file": "pyproject.toml", "name": "payments-service",
+       "description": "Card settlement and refunds"}
+    ],
+    "tree": ["CHANGELOG", "CONTRIBUTING.md", "README.md", "infra", "pyproject.toml", "src", "tests"],
+    "languages": {"py": 3, "md": 2, "tf": 1, "toml": 1},
+    "recent_subjects": [
+      "fix: chargeback webhook replays are not idempotent",
+      "fix: retry settlement on gateway 429",
+      "initial import"
+    ],
+    "agent_docs": ["CONTRIBUTING.md"]
+  },
+  "siblings": []
+}
+```
+
+It reads and reports; it adopts nothing. The skill drafts a scope from those sources, names
+which source each claim came from, and asks you only what they cannot answer — the
+exclusions, the sensitivity, and where this scope **ends** relative to the ones you already
+have. `siblings` is what makes that last question answerable: if you already have a `team-kb`
+covering the widget platform, the draft has to say which knowledge goes there instead.
+
+The shape comes from what **git tracks**, so a vendored `node_modules` is neither counted as
+your language mix nor walked at all.
+
+### Then it adopts
+
+```bash
+mneme adopt payments-service \
+  --description "Operational knowledge about running the payments-service: card settlement, refunds, chargeback webhook handling, and the RDS ledger cluster. Gateway error codes and retry behaviour. Excludes anything about the wider widget platform." \
+  --owner pay-team
+```
+
+```
+mode: plain — the repo is not a knowledge plugin, so mneme keeps to one directory
+added: MNEME.md
+added: mneme-index/SKILL.md
+added: mneme-index/CONTRIBUTING.md
+added: .github/workflows/mneme-validate.yml
+added: CODEOWNERS
+added: mneme-index/facts/.gitkeep
+review and commit these files through your repo's normal process
+```
+
+### What it deliberately does not do
+
+Compare that list against Path C's. Everything absent is absent on purpose:
+
+| Not written | Why |
+|---|---|
+| `.claude-plugin/plugin.json`, `marketplace.json` | The repo is not being published as a plugin. Writing a manifest would make it one. |
+| `.github/workflows/release.yml` | It bumps a version inside a manifest that will not exist. |
+| Root `CONTRIBUTING.md` | The repo has its own, about its own code. mneme's goes in `mneme-index/CONTRIBUTING.md`, inside the directory it governs. |
+| Anything under `skills/` | In a plain repo, `skills/` is the application's — mneme does not lint it, write to it, or fail a harvest over it. |
+
+Two more differences worth seeing:
+
+**CODEOWNERS is scoped.** Adopting a service must not route every pull request in it to the
+people who agreed to review facts:
+
+```
+# Reviewers for the knowledge mneme maintains in this repo.
+# The rest of the repo keeps whatever ownership it already had.
+/mneme-index/ @pay-team
+```
+
+If the repo already has a CODEOWNERS, adopt **does not touch it** — it prints the line for
+you to add by hand, because a file that routes code review is the last place for a tool to
+make a silent edit.
+
+**CI is path-scoped and cannot collide.** It lands as `mneme-validate.yml`, not
+`validate.yml`, and every trigger is filtered:
+
+```yaml
+name: mneme knowledge validate
+on:
+  pull_request:
+    paths:
+      - "mneme-index/**"
+  push:
+    branches: [main]
+    paths:
+      - "mneme-index/**"
+```
+
+Your CI budget is not mneme's to spend on pull requests that do not touch a fact.
+
+### The loop is the same
+
+Everything in [section 6](#6-the-loop-sharing-what-you-learn) works exactly as it does for a
+knowledge plugin. Flag, distil, review, approve — and the harvest lands on a branch:
+
+```
+harvested payments-service: 1 units on mneme/harvest-20260814-160249
+pr: no remote — branch left local; merge it or add a remote and push
+```
+
+```bash
+git diff --stat main..mneme/harvest-20260814-160249
+```
+
+```
+ mneme-index/SKILL.md             | 3 ++-
+ mneme-index/facts/chargebacks.md | 4 ++++
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+```
+
+```bash
+git show mneme/harvest-20260814-160249:mneme-index/facts/chargebacks.md
+```
+
+```
+---
+topic: chargebacks
+---
+- [gotcha] The chargeback webhook replays events for up to 72 hours, so the handler must key on event_id and not on transaction_id #chargebacks (verified: 2026-08-14)
+```
+
+`main` is never written, in either mode. Two files changed, both inside `mneme-index/`, and
+nothing else in the service was touched.
+
+### What plain mode does not give you
+
+Three things, stated plainly so you can decide before you adopt:
+
+**No `/mneme:classify`.** The librarian pass files loose facts *into* destination skills, and
+a plain repo has none. It refuses rather than guessing:
+
+```
+mneme: …/payments-service is not a knowledge plugin, so it has no destination skills to
+file facts into — classify has nowhere to put anything. What does work here: `mneme share`
+captures facts into mneme-index/, `mneme review` accepts a pull request and the facts inside
+it, and `mneme migrate` moves a legacy facts/ directory. To make this repo a plugin instead,
+run: mneme adopt <name> --as-plugin
+```
+
+**No marketplace distribution.** Without a plugin manifest there is nothing for another
+person to `/plugin install`. They get the knowledge by cloning the repo, or by registering it
+with their own mneme.
+
+**No automatic in-repo context.** Claude Code discovers skills in `.claude/skills/`; a
+top-level `mneme-index/` is inert to it. A teammate with mneme finds the knowledge through
+`mneme search` like any other registered scope. A teammate without mneme finds it by reading
+the files — which is why the router table in `mneme-index/SKILL.md` lists every topic.
+
+If you want the other three, `mneme adopt <name> --as-plugin` gives you Path C's full
+scaffold instead.
 
 ---
 
@@ -765,8 +978,10 @@ A unit with no verified date is always stale. The command then helps you re-veri
 and corrections flow back through the normal flag → distill → share pipeline rather than
 being edited in place.
 
-**`/mneme:classify`** — once a repo has taken on a few merged PRs' worth of facts, run this
-*from inside the repo* (the current directory is the argument). It reads every accumulated
+**`/mneme:classify`** — for **plugin** repos only; a plain repo has no destination skills to
+file facts into and the command refuses, naming what does work there. Once a repo has taken
+on a few merged PRs' worth of facts, run this *from inside the repo* (the current directory
+is the argument). It reads every accumulated
 fact, proposes a complete mapping of fact → the skill whose work it belongs to, and waits for
 your approval before editing anything. A fact has three possible endings and no others: it
 lands in a skill with its sentence carried across verbatim, it stays a fact, or it is

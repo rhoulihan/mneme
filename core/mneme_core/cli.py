@@ -381,6 +381,21 @@ def _legacy_layout_plugins(plugins) -> list[str]:
     return names
 
 
+def _mode_label(plugin) -> str:
+    """"plugin", "plain", or why neither can be said.
+
+    A missing clone is reported, never guessed: `units.is_plugin` on a directory that is
+    not there is False, and printing "plain" for a repo nobody can read is a claim mneme
+    has no evidence for — and the one a user would act on.
+    """
+    from . import units as units_mod
+
+    path = Path(plugin.path)
+    if not path.is_dir():
+        return "no local clone"
+    return "plugin" if units_mod.is_plugin(path) else "plain"
+
+
 def _status_cmd(home: Path) -> int:
     import json as json_mod
 
@@ -395,7 +410,7 @@ def _status_cmd(home: Path) -> int:
     plugins = registry_mod.load_registry(home)
     print(f"plugins: {len(plugins)} registered")
     for p in plugins:
-        print(f"- {p.name} [{p.sensitivity}]")
+        print(f"- {p.name} [{p.sensitivity}] ({_mode_label(p)})")
     for name in _legacy_layout_plugins(plugins):
         print(f"legacy facts layout: {name} (run: mneme migrate in that repo)")
     flag_records, bad_flags = flags_mod._read_flag_lines(home)
@@ -495,7 +510,7 @@ def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
         return 0
     if args.registry_command == "list":
         for p in registry.load_registry(home):
-            print(f"{p.name}  {p.sensitivity}  {p.repo}")
+            print(f"{p.name}  {p.sensitivity}  {_mode_label(p)}  {p.repo}")
         return 0
     if args.registry_command == "remove":
         registry.remove_plugin(home, args.name)
