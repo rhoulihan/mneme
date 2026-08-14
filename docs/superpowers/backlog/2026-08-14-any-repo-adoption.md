@@ -1,6 +1,10 @@
 # Backlog: adopt any repo, not only a plugin
 
-**Status:** researching (design not started). Raised 2026-08-14.
+**Status:** ✅ DELIVERED 2026-08-14 — see `docs/superpowers/plans/2026-08-14-plan-13-any-repo.md`
+and commits `bd925ec`..`9881e93`. Layout is `mneme-index/` at the repo root (Rick's
+call); adoption drafts the scope from the repo's own sources instead of interviewing
+cold; `classify` declines in plain mode; `share` and `review` work unchanged. Kept for
+the research it records. Raised 2026-08-14.
 
 ## The ask
 
