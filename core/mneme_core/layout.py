@@ -111,6 +111,16 @@ class MigrationResult:
         return bound_body(self.lines, budget, "migration note")
 
 
+def body_length(lines: list[str]) -> int:
+    """The characters `lines` will occupy in a body — the unit `bound_body` budgets in.
+
+    Exposed so a caller can reserve room for lines that must NOT be truncated (a
+    retirement is the only record that knowledge left, so dropping one hides a deletion)
+    and spend the remainder on lines that may be.
+    """
+    return sum(len(line) + 1 for line in lines)
+
+
 def bound_body(lines: list[str], budget: int | None = None, noun: str = "line") -> list[str]:
     """`lines`, truncated so that everything a caller writes into ONE body fits in it.
 

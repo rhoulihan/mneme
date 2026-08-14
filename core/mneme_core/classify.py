@@ -456,34 +456,29 @@ def _is_integration_path(rel: str) -> bool:
 
 
 def _integration_text(repo: Path, changed: list[str]) -> str:
-    """One normalized blob of every skill file on the branch — where facts go to live.
+    """One normalized blob of every skill file this pass touched — where facts go to live.
 
-    This reads the whole skill tree, not only the files the pass changed. The narrower
-    form was defended on the grounds that "an integration is something this branch wrote",
-    and scanning everything would let a fact be accounted for by a coincidence of wording
-    somewhere nobody edited. Two things outweigh that. The match is a whole normalized
-    fact SENTENCE, not a phrase, so the coincidence is remote. And the question the gate
-    actually asks is "does this knowledge still exist in the repo?" — to which a sentence
-    sitting in an untouched skill is a plain yes. Refusing to let a librarian retire a
-    fact whose text is demonstrably still there taught them to keep dead duplicates, which
-    is the opposite of this pass's job.
+    Only files the pass CHANGED count: an integration is something this branch wrote.
 
-    `changed` is still taken because a file the pass DELETED must not count: it is read
-    from the working tree, so a deleted skill contributes nothing either way, and passing
-    the list keeps that explicit for the next reader.
+    This was briefly widened to the whole skill tree, to let a librarian drop a fact whose
+    sentence already sat in a skill nobody edited. The justification given was that the
+    match is "a whole normalized fact SENTENCE, not a phrase, so a coincidence is remote".
+    That was simply false: the test below is `text not in blob` — Python substring
+    containment against every skill flattened to one line — so the widened form let a fact
+    be retired by a four-word prefix of unrelated prose, by a heading joined to the body
+    under it, by a skill's frontmatter `description:`, by a repo README that happens to sit
+    under `skills/`, by a file `.gitignore` keeps out of the commit entirely, and by an
+    anti-pattern section quoting the fact in order to REFUTE it. Ten scenarios flipped from
+    refused to accepted, each one knowledge leaving the repo with nothing said about it.
+
+    The case that motivated widening is real, and `--retire` is the honest answer to it:
+    the librarian names the unit that covers the fact, the claim is checked for shape, and
+    a human reads it in the pull request. A gate should not guess at coverage it cannot
+    verify — it should make somebody say so.
     """
     parts: list[str] = []
-    seen: set[str] = set()
-    for path in sorted(repo.glob("skills/**/*.md")):
-        rel = path.relative_to(repo).as_posix()
-        if not _is_integration_path(rel) or not path.is_file():
-            continue
-        seen.add(rel)
-        text = _scannable_text(path)
-        if text is not None:
-            parts.append(_normalized(text))
-    for rel in changed:  # anything integration-shaped outside skills/, e.g. a moved file
-        if rel in seen or not _is_integration_path(rel):
+    for rel in changed:
+        if not _is_integration_path(rel):
             continue
         path = repo / rel
         if not path.is_file():
@@ -538,33 +533,56 @@ def _branch_unit_ids(repo: Path) -> set[str]:
 
 
 def _accept_retirements(
-    repo: Path, pairs: list[tuple[str, str]], main_ids: dict[str, str]
+    repo: Path, pairs: list[tuple[str, str]], main_facts: dict[str, list[str]]
 ) -> tuple[set[str], list[str]]:
-    """Validate every declaration; return the retired ids and the lines to report.
+    """Validate every declaration; return the retired fact TEXTS and the lines to report.
 
     mneme cannot tell whether the covering unit really says the same thing — that is the
     human's call at the pull request, which is why every accepted declaration is printed
     there. What it CAN do is refuse a declaration whose parts are not real, so the claim a
     reviewer reads is at least about two units that exist.
+
+    Retired TEXTS, not ids, because a unit id does not identify a fact. `normalize_topic_key`
+    is the first six words of the sentence, so two bullets in one topic file — routine,
+    since every bullet in it is about the same subject — share an id. Excusing by id let a
+    single declaration retire every colliding bullet at once while naming only one of them
+    in the pull request: the rest left with nothing said about them, which is the whole
+    thing this gate exists to prevent. An ambiguous id is refused rather than guessed at.
     """
     if not pairs:
         return set(), []
     on_branch_ids = _branch_unit_ids(repo)
     on_branch_texts = _branch_fact_texts(repo)
-    retired: set[str] = set()
+    declared = {retired_id for retired_id, _ in pairs}
+    retired_texts: set[str] = set()
     lines: list[str] = []
     for retired_id, covering_id in pairs:
         if retired_id == covering_id:
             raise MnemeError(f"--retire {layout._safe(retired_id)}: a unit cannot cover itself")
-        if retired_id not in main_ids:
+        texts = main_facts.get(retired_id, [])
+        if not texts:
             raise MnemeError(
                 f"--retire {layout._safe(retired_id)}: not a fact on main — nothing to retire"
                 " (check the unit id against `mneme classify prepare`)"
             )
-        if _normalized(main_ids[retired_id]) in on_branch_texts:
+        if len(texts) > 1:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: that unit id names"
+                f" {len(texts)} different bullets on main, because a unit id is only the"
+                " first six words of a sentence — retiring by it would remove all of them"
+                " while naming one. Reword or split the bullets so their ids differ, or"
+                " keep them"
+            )
+        if _normalized(texts[0]) in on_branch_texts:
             raise MnemeError(
                 f"--retire {layout._safe(retired_id)}: that fact is still present on the"
                 " branch — declare a retirement only for a fact this pass removed"
+            )
+        if covering_id in declared:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: covering unit"
+                f" {layout._safe(covering_id)} is itself being retired by this pass —"
+                " a retirement must point at knowledge that SURVIVES it"
             )
         if covering_id not in on_branch_ids:
             raise MnemeError(
@@ -572,9 +590,9 @@ def _accept_retirements(
                 f" {layout._safe(covering_id)} does not exist on the branch — a retirement"
                 " must point at knowledge that survives this pass"
             )
-        retired.add(retired_id)
+        retired_texts.add(_normalized(texts[0]))
         lines.append(f"{layout._safe(retired_id)} — covered by {layout._safe(covering_id)}")
-    return retired, lines
+    return retired_texts, lines
 
 
 def _preservation_gate(
@@ -593,7 +611,7 @@ def _preservation_gate(
     sentence still exists somewhere — which is also the better provenance — and it can
     refuse to let one vanish without anybody saying so.
     """
-    retired = retired or set()
+    retired = retired or set()  # normalized TEXTS, not ids — see `_accept_retirements`
     on_branch = _branch_fact_texts(repo)
     integrated = _integration_text(repo, changed)
     lost = [
@@ -601,7 +619,7 @@ def _preservation_gate(
         for rel, text in _main_fact_bullets(repo)
         if _normalized(text) not in on_branch
         and _normalized(text) not in integrated
-        and units.fact_unit_id(Path(rel).stem, text) not in retired
+        and _normalized(text) not in retired
     ]
     if lost:
         raise MnemeError(
@@ -673,6 +691,23 @@ def _finalize(
         if conflicts:
             raise _legacy_conflict_error(kind, conflicts)
 
+    # Validated BEFORE the guarded block, alongside `_legacy_conflicts` and for the same
+    # reason: nothing has been changed yet, so a rejection leaves the branch — and the
+    # librarian's committed work on it — intact for them to correct and finalize again.
+    # Inside the guard, a single mistyped unit id ran `_abort`: reset --hard, checkout main,
+    # branch -D. A week of reorganisation destroyed by a typo, with an error message
+    # inviting a retry that was no longer possible.
+    #
+    # Every check reads `main` and the tree as the librarian left it, and the migration
+    # below moves fact files without changing a bullet's text or its stem, so nothing here
+    # needs the post-migration state.
+    main_facts: dict[str, list[str]] = {}
+    for rel, text in _main_fact_bullets(repo):
+        main_facts.setdefault(units.fact_unit_id(Path(rel).stem, text), []).append(text)
+    retired_texts, retired_lines = _accept_retirements(
+        repo, _parse_retirements(retire), main_facts
+    )
+
     try:
         dirty = not gitops.is_clean(repo)
         ahead = gitops.head_sha(repo) != base_sha
@@ -689,15 +724,7 @@ def _finalize(
             raise MnemeError(f"{kind} fails repo lint: {details}")
         changed = _changed_files(repo)
         _scan_gate(repo, changed, kind)
-        # Parsed and validated INSIDE the guarded block: every rejection here rolls the
-        # branch back like any other gate failure, so a bad declaration never leaves a
-        # half-finished rail behind.
-        retired_ids, retired_lines = _accept_retirements(
-            repo, _parse_retirements(retire),
-            {units.fact_unit_id(Path(rel).stem, text): text
-             for rel, text in _main_fact_bullets(repo)},
-        )
-        _preservation_gate(repo, changed, kind, retired_ids)
+        _preservation_gate(repo, changed, kind, retired_texts)
     except MnemeError:
         harvest._abort(repo, branch, base_sha)
         raise
@@ -725,10 +752,23 @@ def _finalize(
     # Retirements lead: they are the only lines that describe knowledge LEAVING the repo,
     # and a reviewer skimming a forty-line body must meet them before the moves. Already
     # `_safe`d by `_accept_retirements`, and inside the same one bound as everything else.
+    # Retirements lead AND are never dropped. `bound_body` truncates from the end, so
+    # ordering alone was not enough: 400 declarations pushed past the budget and the
+    # overflow line silently swallowed 148 of them — from the commit body, the pull request
+    # body and the ledger record, which stores this same bounded list. The one line saying
+    # knowledge left is the one line that must survive, so the budget is spent on
+    # retirements first and the pass is refused outright if they alone cannot fit.
     retired_section = [f"Retired: {line}" for line in retired_lines]
-    result.units = layout.bound_body(
-        retired_section + notes + [rel for rel in reported if not _named_in(rel, notes)],
+    if layout.body_length(retired_section) > layout._BODY_MAX:
+        raise MnemeError(
+            f"{kind}: {len(retired_section)} retirements do not fit in one pull request"
+            " body, and a retirement that is not reported is a fact deleted in silence —"
+            " split this pass into smaller ones"
+        )
+    result.units = retired_section + layout.bound_body(
+        notes + [rel for rel in reported if not _named_in(rel, notes)],
         noun="change",
+        budget=layout._BODY_MAX - layout.body_length(retired_section),
     )
 
     try:

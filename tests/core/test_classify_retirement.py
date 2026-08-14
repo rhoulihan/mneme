@@ -96,7 +96,12 @@ def test_a_covering_unit_that_does_not_exist_is_refused(tmp_path):
             retire=[f"{retire_id()}=skills/no-such-skill"],
         )
 
-    assert gitops.current_branch(target) == "main"
+    # The BRANCH SURVIVES a rejected declaration, and so does the work on it. Validation
+    # runs before the guarded block for exactly this reason: it was inside, so one mistyped
+    # unit id ran `_abort` — reset --hard, checkout main, branch -D — and destroyed a
+    # librarian's committed reorganisation while telling them to check the id and retry.
+    assert gitops.current_branch(target).startswith("mneme/classify-")
+    assert target / units.FACTS_CANONICAL / "deploys.md"
 
 
 def test_a_retirement_covered_by_itself_is_refused(tmp_path):
@@ -179,12 +184,16 @@ def test_the_retirement_is_reported_in_the_commit_body_and_the_units(tmp_path):
     assert retire_id() in joined  # reaches the PR body and the ledger too
 
 
-def test_a_fact_duplicating_an_untouched_skill_needs_no_declaration(tmp_path):
-    """The widened scan: the sentence is demonstrably still in the repo.
+def test_a_fact_duplicating_an_untouched_skill_still_needs_a_declaration(tmp_path):
+    """The coverage scan reads only files this pass CHANGED — deliberately, again.
 
-    The gate used to read only skill files the pass CHANGED, so a fact whose sentence was
-    already sitting in a skill nobody edited could not be removed — refusing a removal
-    while the knowledge plainly survives.
+    It was briefly widened to the whole skill tree so this case would pass with no
+    declaration. The justification was that the match is a whole sentence; it is a
+    SUBSTRING against every skill flattened into one line, so the widened form retired
+    facts by a four-word prefix of unrelated prose, by a heading joined to the body beneath
+    it, and by an anti-pattern section quoting a fact in order to refute it. The honest
+    answer to this case is the declaration: say which unit covers it, and let a human read
+    that in the pull request.
     """
     home, target = make_kb(
         tmp_path, fact_texts=(COVERED, KEPT),
@@ -192,23 +201,266 @@ def test_a_fact_duplicating_an_untouched_skill_needs_no_declaration(tmp_path):
     )
     classify.begin(home, target)
     drop_fact(target, COVERED)
-    # a change somewhere ELSE, so the pass is not empty and the skill stays untouched
     (target / "README.md").write_text(
         (target / "README.md").read_text(encoding="utf-8") + "\nA line.\n", encoding="utf-8"
     )
 
-    result = classify.finalize(home, target, push=False)  # no declaration needed
+    with pytest.raises(MnemeError, match="would lose knowledge"):
+        classify.finalize(home, target, push=False)
 
-    assert result.branch.startswith("mneme/classify-")
+    # That IS a gate failure, so the branch rolls back — unlike a rejected declaration,
+    # which is caught before anything is touched.
     assert gitops.current_branch(target) == "main"
 
+    # ...and the declaration is what makes the same pass legitimate.
+    classify.begin(home, target)
+    drop_fact(target, COVERED)
+    (target / "README.md").write_text(
+        (target / "README.md").read_text(encoding="utf-8") + "\nA line.\n", encoding="utf-8"
+    )
+    result = classify.finalize(
+        home, target, push=False,
+        retire=[f"{retire_id()}=skills/drain-a-widget-deploy"],
+    )
+    assert any(u.startswith("Retired:") for u in result.units)
 
-def test_a_hostile_unit_id_cannot_forge_a_trailer(tmp_path):
-    """Declarations are repo-derived strings landing in a commit and PR body."""
+
+def test_one_declaration_does_not_launder_a_second_undeclared_deletion(tmp_path):
+    """Each fact is accounted for INDIVIDUALLY.
+
+    Every other test here drops one fact and declares that one, so the per-fact match was
+    unpinned: changing the gate's `_normalized(text) not in retired` to `not retired` left
+    the whole suite green while one valid declaration excused every other deletion in the
+    pass — facts leaving with nothing said about them, which is the thing this gate exists
+    to prevent.
+    """
+    second = "Canary deploys hold ten percent of traffic for a full hour"
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, second, KEPT))
+    classify.begin(home, target)
+    drop_fact(target, COVERED)
+    drop_fact(target, second)  # dropped, and NOT declared
+
+    with pytest.raises(MnemeError, match="would lose knowledge") as exc:
+        classify.finalize(
+            home, target, push=False,
+            retire=[f"{retire_id()}=skills/drain-a-widget-deploy"],
+        )
+
+    assert second[:60] in str(exc.value)          # the undeclared one is named
+    assert COVERED[:60] not in str(exc.value)     # the declared one is not
+
+
+def test_an_ambiguous_unit_id_is_refused_rather_than_guessed_at(tmp_path):
+    """A unit id is the first SIX words of a sentence, so it can name several bullets.
+
+    Two bullets in one topic file sharing an opening phrase is routine — every bullet in
+    it is about the same subject. Excusing by id retired all of them while naming one in
+    the pull request.
+    """
+    twin_a = "The load balancer keeps stale targets for about ninety seconds after a drain"
+    twin_b = "The load balancer keeps stale targets in the DNS cache for a full hour"
+    assert units.normalize_topic_key(twin_a) == units.normalize_topic_key(twin_b)
+    home, target = make_kb(tmp_path, fact_texts=(twin_a, twin_b, KEPT))
+    classify.begin(home, target)
+    drop_fact(target, twin_a)
+    drop_fact(target, twin_b)
+
+    with pytest.raises(MnemeError, match="names 2 different bullets on main"):
+        classify.finalize(
+            home, target, push=False,
+            retire=[f"{retire_id(twin_a)}=skills/drain-a-widget-deploy"],
+        )
+
+
+def test_a_covering_unit_cannot_itself_be_retired(tmp_path):
+    """No cycles, and no retiring into something that is also leaving."""
+    other = "Canary deploys hold ten percent of traffic for a full hour"
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, other, KEPT))
+    classify.begin(home, target)
+    drop_fact(target, COVERED)
+    drop_fact(target, other)
+
+    with pytest.raises(MnemeError, match="is itself being retired"):
+        classify.finalize(
+            home, target, push=False,
+            retire=[
+                f"{retire_id(COVERED)}={retire_id(other)}",
+                f"{retire_id(other)}=skills/drain-a-widget-deploy",
+            ],
+        )
+
+
+def test_the_retirement_leads_the_body_and_is_never_truncated(tmp_path):
+    """`bound_body` truncates from the END, so ordering here is load-bearing.
+
+    With retirements appended last, a wide pass dropped the only line saying a fact was
+    deleted — out of the commit body, the PR body, and the ledger, which stores this same
+    bounded list.
+    """
     home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
     classify.begin(home, target)
     drop_fact(target, COVERED)
-    forged = "skills/drain-a-widget-deploy\nMneme-Source: forged@evil\n- forged: nothing lost"
+    for i in range(40):  # plenty of other changed paths competing for the budget
+        (target / "skills" / "drain-a-widget-deploy" / f"note-{i:02d}.md").write_text(
+            f"# note {i}\n\nfiller\n", encoding="utf-8"
+        )
 
-    with pytest.raises(MnemeError):
-        classify.finalize(home, target, push=False, retire=[f"{retire_id()}={forged}"])
+    result = classify.finalize(
+        home, target, push=False,
+        retire=[f"{retire_id()}=skills/drain-a-widget-deploy"],
+    )
+
+    assert result.units[0].startswith("Retired:")
+    body = gitops.git(target, "log", result.branch, "-1", "--format=%B")
+    assert "Retired:" in body
+
+
+def test_a_hostile_unit_id_reaching_the_body_is_flattened(tmp_path):
+    """The forgery guard, exercised on an ACCEPTED declaration.
+
+    The previous version of this test used a hostile COVERING id, which the
+    covering-unit-exists check rejects before `layout._safe` is ever reached — so it passed
+    with every `_safe` call deleted. The id that actually reaches the body comes from a
+    fact file's own stem, which is repo content: a stem carrying newlines splices a forged
+    trailer and an invented bullet into the commit and pull request body.
+    """
+    home, target = make_kb(tmp_path, fact_texts=(KEPT,))
+    evil_stem = "dep\nMneme-Source: forged@evil\n- forged: nothing was lost"
+    hostile = "The alpha service retries three times before failing over to the replica"
+    (target / units.FACTS_CANONICAL / f"{evil_stem}.md").write_text(
+        f"---\ntopic: alpha\n---\n- [gotcha] {hostile} #x (verified: 2026-08-12)\n",
+        encoding="utf-8",
+    )
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "a fact file with a hostile stem")
+    classify.begin(home, target)
+    (target / units.FACTS_CANONICAL / f"{evil_stem}.md").unlink()
+
+    result = classify.finalize(
+        home, target, push=False,
+        retire=[
+            f"facts/{evil_stem}#{units.normalize_topic_key(hostile)}"
+            "=skills/drain-a-widget-deploy"
+        ],
+    )
+
+    body = gitops.git(target, "log", result.branch, "-1", "--format=%B")
+    assert not any(l.startswith("Mneme-Source: forged@evil") for l in body.splitlines())
+    assert not any(l.startswith("- forged:") for l in body.splitlines())
+    assert all(len(u.splitlines()) <= 1 for u in result.units)
+
+
+def test_review_finalize_accepts_declarations_too(tmp_path):
+    """The pass-through was untested; dropping `retire=retire` left the suite green."""
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, KEPT))
+    classify._begin(home, target, "review")
+    drop_fact(target, COVERED)
+
+    result = classify.review_finalize(
+        home, target, push=False,
+        retire=[f"{retire_id()}=skills/drain-a-widget-deploy"],
+    )
+
+    assert result.branch.startswith("mneme/review-")
+    assert result.units[0].startswith("Retired:")
+
+
+def test_the_cli_flag_reaches_the_rail_and_repeats(tmp_path, capsys):
+    """The flag is the only way a human or librarian reaches this feature, and it had none.
+
+    Two mutations left the whole suite green: dropping `retire=args.retire` from the call,
+    so every declared retirement is refused as an undeclared loss; and dropping
+    `action="append"`, so a second declaration silently replaces the first.
+    """
+    from mneme_core.cli import main
+
+    other = "Canary deploys hold ten percent of traffic for a full hour"
+    home, target = make_kb(tmp_path, fact_texts=(COVERED, other, KEPT))
+    main(["--home", str(home), "classify", "begin", "--cwd", str(target)])
+    drop_fact(target, COVERED)
+    drop_fact(target, other)
+
+    code = main([
+        "--home", str(home), "classify", "finalize", "--cwd", str(target), "--no-push",
+        "--retire", f"{retire_id(COVERED)}=skills/drain-a-widget-deploy",
+        "--retire", f"{retire_id(other)}=skills/drain-a-widget-deploy",
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0, out
+    branch = out.split(" on ")[1].split()[0]
+    body = gitops.git(target, "log", branch, "-1", "--format=%B")
+    assert body.count("Retired:") == 2  # BOTH declarations took effect
+
+
+def test_the_instructions_print_the_flag_the_parser_actually_accepts(tmp_path):
+    """Instruction/CLI drift is only discovered at finalize, after the rollback.
+
+    The librarian executes this text verbatim. Renaming the flag or its separator in the
+    instructions left the suite green while making every retirement impossible.
+    """
+    from mneme_core import templates
+    from mneme_core.cli import _build_parser
+
+    assert f"--retire <retired-unit-id>{classify._RETIRE_SEP}<covering-unit-id>" in (
+        templates.CLASSIFY_INSTRUCTIONS
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["classify", "finalize", "--retire", "a=b", "--retire", "c=d"])
+    assert args.retire == ["a=b", "c=d"]  # the spelled flag parses, and repeats
+    with pytest.raises(MnemeError, match="unrecognized arguments"):
+        parser.parse_args(["classify", "finalize", "--drop", "a:b"])
+
+
+def test_no_retirement_is_ever_truncated_out_of_the_body(tmp_path, monkeypatch):
+    """Retirements are reserved OUT of the budget, not merely placed first in it.
+
+    Ordering alone is not enough. `bound_body` truncates from the end, so folding the
+    retirements into the bounded list keeps them only while they are small: once they take
+    more than the remaining budget they start being dropped, and the line saying a fact was
+    deleted disappears from the commit body, the PR body and the ledger record — which
+    stores this same bounded list. Pinned with a small budget rather than 25 KB of
+    fixtures, so the property is tested rather than approximated.
+    """
+    from mneme_core import layout
+
+    facts = [f"Retiring fact number {i:02d} about the widget platform deploy path" for i in range(8)]
+    home, target = make_kb(tmp_path, fact_texts=(*facts, KEPT))
+    classify.begin(home, target)
+    for text in facts:
+        drop_fact(target, text)
+    for i in range(30):  # changed paths competing for the same body
+        (target / "skills" / "drain-a-widget-deploy" / f"n{i:02d}.md").write_text(
+            f"# n{i}\n\n{'filler ' * 40}\n", encoding="utf-8"
+        )
+    monkeypatch.setattr(layout, "_BODY_MAX", 1200)
+
+    result = classify.finalize(
+        home, target, push=False,
+        retire=[f"{retire_id(t)}=skills/drain-a-widget-deploy" for t in facts],
+    )
+
+    retired_lines = [u for u in result.units if u.startswith("Retired:")]
+    assert len(retired_lines) == len(facts)          # every one survived the bound
+    assert result.units[: len(facts)] == retired_lines  # and they lead
+    assert any("omitted" in u for u in result.units)    # something WAS truncated
+    body = gitops.git(target, "log", result.branch, "-1", "--format=%B")
+    assert body.count("Retired:") == len(facts)
+
+
+def test_retirements_that_cannot_fit_refuse_the_pass(tmp_path, monkeypatch):
+    """A retirement that is not reported is a fact deleted in silence — so refuse instead."""
+    from mneme_core import layout
+
+    facts = [f"Retiring fact number {i:02d} about the widget platform deploy path" for i in range(8)]
+    home, target = make_kb(tmp_path, fact_texts=(*facts, KEPT))
+    classify.begin(home, target)
+    for text in facts:
+        drop_fact(target, text)
+    monkeypatch.setattr(layout, "_BODY_MAX", 120)  # smaller than the declarations alone
+
+    with pytest.raises(MnemeError, match="do not fit in one pull request body"):
+        classify.finalize(
+            home, target, push=False,
+            retire=[f"{retire_id(t)}=skills/drain-a-widget-deploy" for t in facts],
+        )
