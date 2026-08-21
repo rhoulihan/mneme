@@ -272,3 +272,32 @@ def test_plugin_mode_is_as_careful_with_codeowners_as_plain_mode(tmp_path):
     assert not (repo / "CODEOWNERS").exists()
     assert (repo / ".github" / "CODEOWNERS").read_text("utf-8") == "* @platform-team\n"
     assert any("CODEOWNERS" in n for n in result.notes), result.notes
+
+
+def test_a_repo_left_with_no_routing_prompt_is_told_so(tmp_path):
+    """"Never overwrites" cuts both ways: a stub MNEME.md is left alone, and the repo is
+    then registered with an empty scope statement — the prompt every candidate fact is
+    matched against. Adoption reported success and said nothing."""
+    home = tmp_path / "home"
+    repo = app_repo(tmp_path, home, extra=[("MNEME.md", "# payments-service\n")])
+
+    result = scaffold.adopt(home, "payments-service")
+
+    assert "MNEME.md" not in result.added
+    assert (repo / "MNEME.md").read_text("utf-8") == "# payments-service\n"
+    assert any("Scope statement" in n and "route" in n for n in result.notes), result.notes
+
+
+def test_a_repo_that_gets_its_scope_statement_is_not_warned(tmp_path):
+    home = tmp_path / "home"
+    app_repo(tmp_path, home)
+    result = scaffold.adopt(home, "payments-service", description="Payments knowledge.")
+    assert not any("Scope statement" in n for n in result.notes), result.notes
+
+
+def test_ci_fails_rather_than_passing_over_zero_files(tmp_path):
+    """`find missing-dir 2>/dev/null` scans nothing and exits 0 — a green check that
+    looked at no files at all."""
+    yml = templates.validate_yml("mneme-index")
+    assert "test -d mneme-index" in yml
+    assert "2>/dev/null" not in yml

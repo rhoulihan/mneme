@@ -170,3 +170,56 @@ def test_a_routerless_own_root_is_still_reported(tmp_path):
     assert units.knowledge_root(repo) == repo / units.PLAIN_ROOT
     issues = lint.lint_repo(repo)
     assert any(i.code == "MN001" for i in issues), [i.code for i in issues]
+
+
+def test_a_live_router_outranks_a_stale_fact_in_the_other_root(tmp_path):
+    """Evidence is ranked, not taken from whichever root is checked first.
+
+    A leftover fact file in the root a repo has stopped using is just a file nobody deleted;
+    a router is something mneme wrote and keeps regenerating. Checking one whole root at a
+    time let the leftover win, and every subsequent write followed the stale root.
+    """
+    from tests.core.test_plain_repo_harvest import plain_repo
+
+    _home, repo = plain_repo(tmp_path)
+    (repo / units.PLAIN_ROOT).mkdir(parents=True)
+    (repo / units.PLAIN_ROOT / "SKILL.md").write_text(
+        "---\nname: mneme-index\ndescription: the live router\n---\n", encoding="utf-8"
+    )
+    (repo / units.FACTS_CANONICAL).mkdir(parents=True)
+    (repo / units.FACTS_CANONICAL / "stale.md").write_text(
+        "---\ntopic: stale\n---\n- [reference] Left behind #x (verified: 2026-08-14)\n",
+        encoding="utf-8",
+    )
+
+    assert units.knowledge_root(repo) == repo / units.PLAIN_ROOT
+    assert units.facts_write_dir(repo) == repo / units.FACTS_PLAIN
+    # ...and the stale file is still READ, because readers sweep every layout.
+    assert (repo / units.FACTS_CANONICAL / "stale.md") in units.fact_files(repo)
+
+
+def test_the_pre_flight_collision_check_uses_the_real_destination(tmp_path):
+    """`_legacy_conflicts` hardcoded the canonical constant, so it was wrong both ways."""
+    from mneme_core import classify as classify_mod
+    from tests.core.test_plain_repo_harvest import plain_repo
+
+    _home, repo = plain_repo(tmp_path)
+    (repo / units.PLAIN_ROOT).mkdir(parents=True)
+    (repo / units.PLAIN_ROOT / "SKILL.md").write_text(
+        "---\nname: mneme-index\ndescription: the live router\n---\n", encoding="utf-8"
+    )
+    for d in (units.FACTS_PLAIN, "facts"):
+        (repo / d).mkdir(parents=True, exist_ok=True)
+
+    fact = "---\ntopic: deploys\n---\n- [gotcha] A bullet #x (verified: 2026-08-14)\n"
+    (repo / "facts" / "deploys.md").write_text(fact, encoding="utf-8")
+
+    # A stale file in the OTHER root is not a collision — reporting one wedged the rail
+    # with a message naming a directory that is not the destination.
+    (repo / units.FACTS_CANONICAL).mkdir(parents=True, exist_ok=True)
+    (repo / units.FACTS_CANONICAL / "deploys.md").write_text(fact, encoding="utf-8")
+    assert classify_mod._legacy_conflicts(repo) == []
+
+    # A file in the REAL destination is one, and must be refused before the rail starts.
+    (repo / units.FACTS_PLAIN / "deploys.md").write_text(fact, encoding="utf-8")
+    assert classify_mod._legacy_conflicts(repo) == ["deploys.md"]

@@ -391,17 +391,24 @@ def established_root(root: Path) -> Path | None:
     harvest bug left behind untracked, and treating debris as a declaration would move a
     plain repo's knowledge into a directory nothing put anything in.
     """
-    for rel in KNOWLEDGE_ROOTS:
-        d = root / rel
-        # `is_file()` and `glob` both RAISE on a directory the user cannot read (EACCES is
-        # not among the errnos pathlib swallows), and this runs inside commands whose whole
-        # job is reading a repo mneme did not write. An unreadable root is one mneme cannot
-        # claim to be using, which is the same answer as "not established".
-        try:
-            if (d / "SKILL.md").is_file() or any((d / "facts").glob("*.md")):
-                return d
-        except OSError:
-            continue
+    # A ROUTER outranks facts, in either root, before facts are considered in either.
+    # Checking one whole root at a time let a stale fact file in the root a repo has stopped
+    # using outrank the live router in the one it actually uses — and every write would then
+    # follow the stale root. A router is something mneme wrote and keeps regenerating;
+    # a leftover fact file is just a file nobody deleted.
+    for probe in (lambda d: (d / "SKILL.md").is_file(),
+                  lambda d: any((d / "facts").glob("*.md"))):
+        for rel in KNOWLEDGE_ROOTS:
+            d = root / rel
+            # `is_file()` and `glob` both RAISE on a directory the user cannot read (EACCES
+            # is not among the errnos pathlib swallows), and this runs inside commands whose
+            # whole job is reading a repo mneme did not write. An unreadable root is one
+            # mneme cannot claim to be using — the same answer as "not established".
+            try:
+                if probe(d):
+                    return d
+            except OSError:
+                continue
     return None
 
 

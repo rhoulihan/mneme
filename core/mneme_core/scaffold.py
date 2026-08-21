@@ -439,6 +439,7 @@ def adopt(
     candidates[f"{root_rel}/facts/.gitkeep"] = ""
     for rel, content in candidates.items():
         _write_missing(target, rel, content, result)
+    result.notes.extend(_scope_warning(target, result))
     if f"{root_rel}/SKILL.md" in result.added:
         regenerate_index_skill(target, name, description, root_rel=root_rel)
     return result
@@ -488,6 +489,29 @@ def _write_missing(target: Path, rel: str, content: str, result: AdoptResult) ->
             f"cannot write {rel}: {e.strerror or e}{_landed(result)}"
         ) from e
     result.added.append(rel)
+
+
+def _scope_warning(target: Path, result: AdoptResult) -> list[str]:
+    """Warn when the repo ends up with no routing prompt at all.
+
+    "Never overwrites" cuts both ways: an existing `MNEME.md` is left alone, even a stub
+    with a title and no `## Scope statement`. Adoption then reports success and the repo is
+    registered with an EMPTY scope statement — and that statement is the prompt every
+    candidate fact is matched against, so the repo is registered and unroutable. Silence
+    about it is what made this hard to notice; `mneme context` would say
+    `(no scope statement)` only if someone thought to look.
+    """
+    from . import routing
+
+    if "MNEME.md" in result.added:
+        return []
+    if routing.read_scope_statement(target / "MNEME.md").strip():
+        return []
+    return [
+        "MNEME.md already existed and was left alone, but it carries no `## Scope"
+        " statement` section — that statement is the routing prompt every candidate fact is"
+        " matched against, so nothing will route here until you add one by hand."
+    ]
 
 
 def _landed(result: AdoptResult) -> str:
@@ -634,6 +658,12 @@ def regenerate_index_skill(
     manifest reported `mneme-index/SKILL.md`, then wrote `skills/knowledge-index/SKILL.md`:
     the one directory `--plain` promises never to claim, absent from the reported list, with
     the reported router left behind as an un-regenerated stub.
+
+    That exact case is now refused outright (`_adopt_mode` will not give a repo a second
+    knowledge root), so the two answers no longer diverge and no test can tell them apart.
+    The parameter stays because the caller stating its decision is what makes a silent
+    disagreement impossible if either rule moves again — this function must not re-derive
+    something its caller has already settled.
     """
     root = target / root_rel if root_rel else units.knowledge_root(target)
     index_name = root.name

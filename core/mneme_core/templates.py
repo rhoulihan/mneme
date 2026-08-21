@@ -231,10 +231,14 @@ jobs:
       - name: Secret scan
         run: |
           set -e
+          # A gate that passes because it looked at nothing is worse than no gate. If the
+          # knowledge root is gone the workflow is misconfigured, and saying so beats a
+          # green check over zero files.
+          test -d {knowledge_root} || {{ echo "{knowledge_root}/ not found"; exit 1; }}
           rc=0
           while IFS= read -r -d '' f; do
             /tmp/mneme/bin/mneme scan "$f" || rc=$?
-          done < <(find {knowledge_root} -name '*.md' -print0 2>/dev/null)
+          done < <(find {knowledge_root} -name '*.md' -print0)
           exit $rc
 """
 

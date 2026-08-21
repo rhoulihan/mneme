@@ -354,3 +354,80 @@ def test_the_refusal_names_the_bullet_that_would_be_lost(tmp_path):
     with pytest.raises(MnemeError) as e:
         classify.review_finalize(home, repo, push=False)
     assert "seventy two hours" in str(e.value), str(e.value)
+
+
+def test_a_pass_cannot_create_a_knowledge_root_to_gain_powers(tmp_path):
+    """The manifest is not the only way to flip the mode mid-flight.
+
+    `units.maintains_skills` answers "is mneme's own router under `skills/`", so a pass that
+    WRITES `skills/knowledge-index/SKILL.md` makes the working tree say yes even though the
+    base said no — and the application's own `skills/` becomes valid integration evidence
+    for a fact the same pass just deleted. Only `main` can be trusted for this question, and
+    only a repo with no established root on `main` can tell the two answers apart.
+    """
+    home, repo = plain_repo(tmp_path)
+    legacy = repo / "facts"
+    legacy.mkdir()
+    (legacy / "chargebacks.md").write_text(
+        f"---\ntopic: chargebacks\n---\n- [gotcha] {FACT} #cb (verified: 2026-08-14)\n",
+        encoding="utf-8",
+    )
+    (repo / "skills" / "combat").mkdir(parents=True)
+    (repo / "skills" / "combat" / "SKILL.md").write_text(
+        f"---\nname: combat\ndescription: the app's own\n---\n\n{FACT}\n", encoding="utf-8"
+    )
+    gitops.git(repo, "add", "-A")
+    gitops.git(repo, "commit", "-m", "a legacy fact and the app's own skill")
+    assert units.established_root(repo) is None, "the base has no knowledge root at all"
+
+    classify.review_begin(home, repo)
+    (legacy / "chargebacks.md").write_text("---\ntopic: chargebacks\n---\n", encoding="utf-8")
+    # The pass installs a router under skills/, which would make `maintains_skills` true.
+    (repo / units.PLUGIN_ROOT).mkdir(parents=True)
+    (repo / units.PLUGIN_ROOT / "SKILL.md").write_text(
+        "---\nname: knowledge-index\ndescription: router\n---\n", encoding="utf-8"
+    )
+    (repo / "skills" / "combat" / "SKILL.md").write_text(
+        f"---\nname: combat\ndescription: the app's own\n---\n\n{FACT}\n\nedited\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MnemeError, match="chargebacks"):
+        classify.review_finalize(home, repo, push=False)
+
+
+def test_review_never_credits_an_app_s_own_source_as_an_integration(tmp_path):
+    """Triage's integration evidence had the plugin-only rule `_carries_knowledge` refuses.
+
+    On a plain repo it walked the APPLICATION's `skills/`, so an inbound pull request's fact
+    was labelled already-integrated because the app's own source happened to contain the
+    sentence — and the maintainer drops a real contribution on the strength of a file mneme
+    neither wrote nor reads for knowledge. Advisory rather than committed loss, which is
+    exactly why nothing else catches it.
+    """
+    from mneme_core import review
+
+    home, repo = seeded_app(tmp_path)
+    (repo / "skills" / "combat").mkdir(parents=True)
+    (repo / "skills" / "combat" / "SKILL.md").write_text(
+        f"---\nname: combat\ndescription: the app's own\n---\n\n{FACT}\n", encoding="utf-8"
+    )
+    assert units.maintains_skills(repo) is False
+    assert review._integrated_texts(repo) == set()
+    assert not review._is_integrated(FACT, review._integrated_texts(repo))
+
+
+def test_review_does_credit_an_integration_where_mneme_maintains_the_skills(tmp_path):
+    """The same evidence, in a repo whose skills mneme owns, still counts."""
+    from mneme_core import review
+
+    home = tmp_path / "home"
+    target = scaffold.create(home, "acme-knowledge", owner="demo")
+    skill = target / "skills" / "drain-a-widget-deploy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: drain-a-widget-deploy\ndescription: Use when draining\n---\n\n{FACT}\n",
+        encoding="utf-8",
+    )
+    assert units.maintains_skills(target) is True
+    assert review._is_integrated(FACT, review._integrated_texts(target))
