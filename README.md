@@ -96,6 +96,8 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 11 — Review | `/mneme:review` inbound-PR triage: machine-annotated fact additions (duplicate / declined / possibly-integrated / new), per-PR human approval for every merge, closure, or extraction; deterministic fact-preservation gate at finalize | ✅ merged (v0.6.0) |
 | — | Fixes: Claude Code's 500-char description limit honored end to end (index description now O(1) in fact count); secret scanner no longer blocks mneme's own topic slugs. Docs: [getting-started walkthrough](docs/getting-started.md) | ✅ merged (v0.6.1) |
 | 12 — Canonical facts | Every new fact topic lands in `skills/knowledge-index/facts/`, whatever the repo's layout; a legacy root `facts/` is migrated automatically on the next contribution — history-preserving moves, merge-never-overwrite, delivered in that contribution's own PR — plus `mneme migrate` for a repo with nothing else pending | ✅ merged (v0.7.0) |
+| 13 — Any repo | Register and capture into an ordinary app, service or infra repo: knowledge lives in `mneme-index/` at the root and the repo is never turned into a plugin — no manifests, no claim on its `skills/` or `CONTRIBUTING.md`, CODEOWNERS scoped to the knowledge root, CI that only runs when the knowledge changes. `/mneme:adopt` drafts the scope statement from what the repo already says about itself. `share` and `review` work in both modes; `classify` declines where there are no destination skills | ✅ merged (v0.8.0) |
+| — | Hardening from a four-lens adversarial review: no write travels through a symlink (adoption could create files outside the repo via a dangling link); every preservation-gate proof asks git, and mode is read from `main` so a pass cannot vote itself powers; a knowledge repo with no plugin manifest keeps the root it already uses instead of being silently split across two | ✅ merged (v0.8.0) |
 
 Deferred by design: vector search layer (FTS5 first), Oracle 26ai / Postgres storage drivers (interface specced), Codex adapter (the core and `mneme-index` are deliberately harness-neutral), cross-org federation tooling.
 
@@ -125,7 +127,7 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 |---|---|
 | `/mneme:new <name>` | Interview for scope, then scaffold a governed knowledge plugin — repo, manifests, CI, routing scope statement |
 | `/mneme:register <name> <url>` | Register an existing repo you have access to (clones it for you); asks only for sensitivity — contributions are PR-only — and offers governance retrofit |
-| `/mneme:adopt <name>` | Retrofit mneme governance onto an existing repo — adds only what's missing, never overwrites |
+| `/mneme:adopt <name>` | Retrofit mneme onto an existing repo — drafts its scope from what the repo already says about itself, then adds only what's missing, never overwriting. Works on an app or service repo too: that keeps its knowledge in `mneme-index/` at the root and is never turned into a plugin |
 | `/mneme:capture <note>` | Flag hard-won knowledge the moment it happens — one line, distilled in the background later |
 | `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then harvest onto a `mneme/harvest-*` branch and open the PR |
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |

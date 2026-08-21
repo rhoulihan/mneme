@@ -355,11 +355,15 @@ def test_a_fact_deleted_during_a_migration_pass_is_still_refused(tmp_path):
 
     assert QUEUE_TEXT[:80] in str(exc.value)
     assert DEPLOY_TEXT not in str(exc.value)  # the migrated one is accounted for
-    assert gitops.current_branch(target) == "main"
-    assert gitops.is_clean(target)
+    # The librarian's own deletion is caught before the migration runs, so the branch
+    # survives for them to correct it; `main` is what the gate protects and is untouched.
+    assert gitops.current_branch(target).startswith("mneme/")
     assert gitops.git(target, "rev-parse", "main") == main_before
-    assert gitops.git(target, "branch", "--list", branch) == ""
-    assert (target / "facts" / "queues.md").is_file()  # rolled all the way back
+    assert gitops.git(target, "branch", "--list", branch) != ""  # the branch is still there
+    # Nothing was undone because nothing was done: the deletion is still the librarian's,
+    # and `main` still carries the bullet, which is the thing the gate protects.
+    assert not (target / "facts" / "queues.md").is_file()
+    assert QUEUE_TEXT in gitops.git(target, "show", "main:facts/queues.md")
 
 
 # --- one implementation, three flows ---------------------------------------------------

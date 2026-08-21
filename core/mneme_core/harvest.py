@@ -22,7 +22,9 @@ def _skill_name(cand: Candidate) -> str:
     return name
 
 
-def _unit_path(root: Path, kind: str, name: str, what: str, *tail: str, suffix: str = "") -> Path:
+def _unit_path(
+    repo: Path, root: Path, kind: str, name: str, what: str, *tail: str, suffix: str = ""
+) -> Path:
     """A path under `root` (the repo's `<kind>` directory) built from a candidate name.
 
     ``root`` is passed in rather than derived, because facts live in one of two places
@@ -40,9 +42,26 @@ def _unit_path(root: Path, kind: str, name: str, what: str, *tail: str, suffix: 
     proposals, registry), and it is what makes a name exactly one literal path segment.
     The containment assert behind it is belt-and-braces: the write is what is dangerous,
     so it is proven in terms of the resolved path, not only the spelling of the name.
+
+    That resolved check is necessary and NOT sufficient, which is why the link proof comes
+    first. When `root` is itself reached through a symlink, `root.resolve()` is already the
+    far end, so every destination under it is trivially "contained" there and the assert
+    passes while the fact is written outside the repo — the harvest reports the unit landed,
+    the commit carries a router pointing at a file that is not in the tree, and `_abort`
+    cannot reach what was written. `layout._canonical_dir` refused exactly this shape and
+    said why; the path that actually creates the file did not ask until now.
     """
     if not units.KEBAB_RE.fullmatch(name):
         raise MnemeError(f"{what} must be kebab-case: {name!r}")
+    rel = root.relative_to(repo).as_posix() if root != repo else ""
+    linked = units.first_link_segment(repo, rel) if rel else None
+    if linked is not None:
+        raise MnemeError(
+            f"{linked} is a symlink, not a directory — refusing to write {kind}/ through"
+            " it: the unit would land at the far end of the link, outside every gate this"
+            " repo runs and outside what a rollback can reach, while the harvest reported"
+            " it committed. Replace the link with a real directory (or remove it)"
+        )
     path = root.joinpath(name + suffix, *tail)
     if not path.resolve().is_relative_to(root.resolve()):
         raise MnemeError(f"{what} escapes {kind}/: {name!r}")
@@ -63,16 +82,29 @@ def _fact_path(repo: Path, stem: str, what: str) -> Path:
     migrated wholesale instead (`layout.migrate_legacy_facts`).
     """
     for d in units.facts_dirs(repo):
-        path = _unit_path(d, "facts", stem, what, suffix=".md")
+        path = _unit_path(repo, d, "facts", stem, what, suffix=".md")
         if path.exists():
             return path
-    return _unit_path(units.facts_write_dir(repo), "facts", stem, what, suffix=".md")
+    return _unit_path(repo, units.facts_write_dir(repo), "facts", stem, what, suffix=".md")
 
 
 def apply_skill(repo: Path, cand: Candidate) -> str:
     name = _skill_name(cand)
+    # `classify._require_destinations` refuses the librarian pass in a plain repo because
+    # "the repo's own `skills/` belongs to the application". This path had no such gate and
+    # wrote there anyway. The consequence was worse than untidy: `units.skill_dirs` is
+    # narrow there, so `lint_repo` never saw the file it had just written, and a
+    # description that MN005 rejects and rolls back in a plugin repo was committed and
+    # pushed in a plain one — a unit no gate in this repo will ever check again.
+    if not units.maintains_skills(repo):
+        raise MnemeError(
+            f"candidate {cand.id}: mneme does not maintain a skills/ tree in {repo} — that"
+            " directory belongs to the application. This repo captures FACTS, into"
+            f" {units.facts_write_rel(repo)}/. To ship skills from it, give it a knowledge"
+            " root under skills/: mneme adopt <name> --as-plugin"
+        )
     skill_md = _unit_path(
-        repo / "skills", "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
+        repo, repo / "skills", "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
     )
     if cand.edit == "new":
         if skill_md.exists():
@@ -253,23 +285,46 @@ class HarvestResult:
     pr: str = ""
 
 
-def _regenerate_index(repo: Path) -> None:
+def _regenerate_index(repo: Path, name: str = "", description: str = "") -> None:
+    """Rewrite the router skill for whatever knowledge root this repo uses.
+
+    ALWAYS, in either mode. This used to return early when there was no plugin manifest,
+    which made a plain repo unusable rather than unsupported: the fact write created the
+    knowledge root, nothing wrote the `SKILL.md` inside it, `lint_repo` then failed MN001
+    on a directory mneme had just made itself, and the whole harvest rolled back. A repo
+    with facts and no routing table is knowledge no agent is ever told exists — so the
+    router is not an optional extra keyed on a manifest, it is part of writing a fact.
+    """
     manifest = repo / ".claude-plugin" / "plugin.json"
-    if not manifest.exists():
-        return
-    # A hand-edited or adopted repo can carry a manifest that is not valid JSON. That is
-    # a repo problem the harvest must report (and roll back from), never a ValueError
-    # escaping into a traceback.
-    try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise MnemeError(f"{manifest} is not valid JSON: {e}") from e
-    if not isinstance(data, dict):
-        raise MnemeError(f"{manifest} must contain a JSON object")
-    (repo / "skills" / "knowledge-index").mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if manifest.is_file():
+        # A hand-edited or adopted repo can carry a manifest that is not valid JSON. That
+        # is a repo problem the harvest must report (and roll back from), never a
+        # ValueError escaping into a traceback.
+        try:
+            loaded = json.loads(manifest.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise MnemeError(f"{manifest} is not valid JSON: {e}") from e
+        if not isinstance(loaded, dict):
+            raise MnemeError(f"{manifest} must contain a JSON object")
+        data = loaded
+    # Identity comes from the repo's own declaration first, the caller's registration
+    # second, the checkout directory last. That order matters because the description IS
+    # the routing prompt: a plain repo has no manifest, and falling straight to the
+    # directory name published "durable facts from app" as the reason to consult a
+    # payments knowledge base — a routing surface naming nothing an agent could match on.
     scaffold_mod.regenerate_index_skill(
-        repo, str(data.get("name", repo.name)), str(data.get("description", ""))
+        repo,
+        str(data.get("name") or name or repo.name),
+        str(data.get("description") or description or _scope_statement(repo)),
     )
+
+
+def _scope_statement(repo: Path) -> str:
+    """The repo's own `MNEME.md` scope statement, when it has one."""
+    from . import routing
+
+    return routing.read_scope_statement(repo / "MNEME.md")
 
 
 def _abort(repo: Path, branch: str, base_sha: str) -> None:
@@ -334,7 +389,7 @@ def apply_batch(
                 result.units.append(apply_skill(repo, cand))
             else:
                 result.units.append(apply_fact(repo, cand))
-        _regenerate_index(repo)
+        _regenerate_index(repo, plugin.name)
         issues = lint.lint_repo(repo)
         if lint.has_errors(issues):
             details = "; ".join(

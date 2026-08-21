@@ -125,10 +125,11 @@ def lint_fact_file(path: Path) -> list[LintIssue]:
 
 def lint_repo(root: Path) -> list[LintIssue]:
     issues: list[LintIssue] = []
-    skills_dir = root / "skills"
-    if skills_dir.is_dir():
-        for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
-            issues.extend(lint_skill(d))
+    # `units.skill_dirs`, never a `skills/` walk of its own: in a plain repo `skills/` is
+    # the APPLICATION's directory, and linting it failed a harvest over files mneme did
+    # not write and does not own.
+    for d in units.skill_dirs(root):
+        issues.extend(lint_skill(d))
     # Both layouts, never just one: an unlinted fact file is an unenforced format, and CI
     # would pass over a malformed bullet that is committed and on disk.
     for f in units.fact_files(root):

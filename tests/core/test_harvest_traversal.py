@@ -18,6 +18,15 @@ from mneme_core.errors import MnemeError
 from mneme_core.staging import Candidate, candidate_id
 
 
+def _as_kb(repo):
+    """A repo whose skills/ mneme maintains — otherwise `apply_skill` refuses on MODE
+    before it ever reaches the path check these tests exist to exercise."""
+    (repo / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (repo / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
+    return repo
+
 def skill_body(name: str) -> str:
     """A skill unit whose frontmatter name is `name` — hostile names included.
 
@@ -73,6 +82,7 @@ ESCAPES = [
 def test_apply_skill_refuses_to_write_outside_the_repo(tmp_path, name):
     repo = tmp_path / "kb-a"
     (repo / "skills").mkdir(parents=True)
+    _as_kb(repo)
     before = sorted(p for p in tmp_path.rglob("*") if p.is_file())
 
     with pytest.raises(MnemeError, match="skill name"):
@@ -86,6 +96,7 @@ def test_apply_skill_refuses_a_non_kebab_name(tmp_path):
     """The name is the directory name; lint (MN002) demands kebab-case of both."""
     repo = tmp_path / "kb-a"
     (repo / "skills").mkdir(parents=True)
+    _as_kb(repo)
 
     with pytest.raises(MnemeError, match="kebab-case"):
         harvest.apply_skill(repo, skill_candidate(skill_body("Deploy_Widget")))
@@ -179,8 +190,8 @@ def test_legitimate_names_still_apply(tmp_path):
     """The guard rejects escapes, not ordinary units."""
     repo = tmp_path / "kb-a"
     (repo / "skills").mkdir(parents=True)
+    _as_kb(repo)
     (repo / "facts").mkdir(parents=True)
-
     line = harvest.apply_skill(repo, skill_candidate(skill_body("deploy-widget-2")))
     assert line == "skills/deploy-widget-2 (new skill)"
     assert (repo / "skills" / "deploy-widget-2" / "SKILL.md").exists()

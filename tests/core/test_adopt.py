@@ -11,6 +11,11 @@ def run(capsys, *argv):
     return code, captured.out, captured.err
 
 
+# This fixture is a hand-built knowledge repo that never got packaged: `skills/` with real
+# SKILL.md files and no plugin manifest. Adoption no longer INFERS plugin mode from that —
+# `skills/` is what any repo using Claude Code has, and escalating on it wrote manifests, a
+# repo-wide CODEOWNERS and a self-pushing release workflow into applications on a guess. The
+# ambiguity is reported instead, so these tests pass the flag a user would now pass.
 def make_existing_plugin(tmp_path, home, name="existing-kb"):
     repo = tmp_path / name
     d = repo / "skills" / "legacy-skill"
@@ -31,7 +36,7 @@ def make_existing_plugin(tmp_path, home, name="existing-kb"):
 def test_adopt_adds_only_missing(tmp_path, capsys):
     home = tmp_path / "home"
     repo = make_existing_plugin(tmp_path, home)
-    added = scaffold.adopt(home, "existing-kb", owner="team-leads")
+    added = scaffold.adopt(home, "existing-kb", owner="team-leads", as_plugin=True).added
     assert "MNEME.md" in added
     assert ".claude-plugin/plugin.json" in added
     assert "skills/knowledge-index/SKILL.md" in added
@@ -74,7 +79,7 @@ def test_adopt_seeds_canonical_beside_an_existing_legacy_facts_dir(tmp_path, cap
     fact = legacy_facts(repo)
     before = fact.read_bytes()
 
-    added = scaffold.adopt(home, "existing-kb")
+    added = scaffold.adopt(home, "existing-kb", as_plugin=True).added
 
     assert f"{units.FACTS_CANONICAL}/.gitkeep" in added
     assert (repo / units.FACTS_CANONICAL / ".gitkeep").is_file()
@@ -96,7 +101,7 @@ def test_adopt_cli_reports_the_pending_migration(tmp_path, capsys):
     home = tmp_path / "home"
     repo = make_existing_plugin(tmp_path, home, name="legacy-kb")
     legacy_facts(repo)
-    code, out, _ = run(capsys, "--home", str(home), "adopt", "legacy-kb")
+    code, out, _ = run(capsys, "--home", str(home), "adopt", "legacy-kb", "--as-plugin")
     assert code == 0
     notice = [line for line in out.splitlines() if line.startswith("legacy facts layout:")]
     assert len(notice) == 1, out
@@ -107,7 +112,7 @@ def test_adopt_cli_reports_the_pending_migration(tmp_path, capsys):
     assert "mneme migrate" in notice[0]
 
     make_existing_plugin(tmp_path, home, name="canonical-kb")
-    code, out, _ = run(capsys, "--home", str(home), "adopt", "canonical-kb")
+    code, out, _ = run(capsys, "--home", str(home), "adopt", "canonical-kb", "--as-plugin")
     assert code == 0
     assert "legacy facts layout" not in out
 
@@ -115,15 +120,15 @@ def test_adopt_cli_reports_the_pending_migration(tmp_path, capsys):
 def test_adopt_is_idempotent(tmp_path, capsys):
     home = tmp_path / "home"
     make_existing_plugin(tmp_path, home)
-    scaffold.adopt(home, "existing-kb")
-    assert scaffold.adopt(home, "existing-kb") == []
+    scaffold.adopt(home, "existing-kb", as_plugin=True)
+    assert scaffold.adopt(home, "existing-kb", as_plugin=True).added == []
 
 
 def test_adopt_never_touches_existing_mneme_md(tmp_path, capsys):
     home = tmp_path / "home"
     repo = make_existing_plugin(tmp_path, home)
     (repo / "MNEME.md").write_text("# custom scope\n", encoding="utf-8")
-    added = scaffold.adopt(home, "existing-kb")
+    added = scaffold.adopt(home, "existing-kb", as_plugin=True).added
     assert "MNEME.md" not in added
     assert (repo / "MNEME.md").read_text(encoding="utf-8") == "# custom scope\n"
 
@@ -131,10 +136,10 @@ def test_adopt_never_touches_existing_mneme_md(tmp_path, capsys):
 def test_adopt_cli_reports(tmp_path, capsys):
     home = tmp_path / "home"
     make_existing_plugin(tmp_path, home)
-    code, out, _ = run(capsys, "--home", str(home), "adopt", "existing-kb", "--owner", "x-team")
+    code, out, _ = run(capsys, "--home", str(home), "adopt", "existing-kb", "--owner", "x-team", "--as-plugin")
     assert code == 0
     assert "added: MNEME.md" in out
-    code, out, _ = run(capsys, "--home", str(home), "adopt", "existing-kb")
+    code, out, _ = run(capsys, "--home", str(home), "adopt", "existing-kb", "--as-plugin")
     assert "nothing to add" in out
 
 
@@ -153,6 +158,6 @@ def test_adopt_warns_on_legacy_lint_errors(tmp_path, capsys):
     bad = repo / "skills" / "broken-skill"
     bad.mkdir(parents=True)
     (bad / "SKILL.md").write_text("---\nname: Wrong_Name\n---\n", encoding="utf-8")
-    code, out, _ = run(capsys, "--home", str(home), "adopt", "existing-kb")
+    code, out, _ = run(capsys, "--home", str(home), "adopt", "existing-kb", "--as-plugin")
     assert code == 0
     assert "warning:" in out and "lint error" in out

@@ -54,6 +54,15 @@ mneme registry add acme-knowledge --repo git@github.com:acme/knowledge.git --clo
 mneme registry add personal-kb --repo git@github.com:you/kb.git --path ~/src/kb
 ```
 
+**It does not have to be a knowledge repo.** Register an ordinary app, service or infra
+repo and `/mneme:adopt` gives it a `mneme-index/` directory at the root — router plus facts
+— without turning it into a plugin. It writes no manifests, does not touch the repo's own
+`skills/` or `CONTRIBUTING.md`, scopes CODEOWNERS to `/mneme-index/`, and installs CI that
+only runs when the knowledge changes. `mneme status` names each registered repo's mode.
+`/mneme:share` and `/mneme:review` work there exactly as they do in a knowledge plugin;
+`/mneme:classify` is the one command that does not, because a plain repo has no destination
+skills to file facts into.
+
 There is no per-repo contribution setting to choose. Approved knowledge always lands on a
 `mneme/harvest-*` branch: with a remote, mneme pushes it and opens a PR; without one, the
 branch stays local for you to merge or push. Mneme never commits to a registered repo's
@@ -71,11 +80,13 @@ Check the whole pipeline at any time with `/mneme:status` (or `mneme status`).
 Once a repo has taken on a few merged PRs' worth of facts, run the librarian pass from
 inside it: `cd` into the knowledge repo and run `/mneme:classify`. The current directory is
 the argument — there is no plugin name to pass, and the command says so plainly if the
-directory is not a registered knowledge plugin. It reads every accumulated fact, proposes a
+directory is not a registered knowledge plugin, or is registered but is a plain repo whose
+knowledge lives in `mneme-index/`. It reads every accumulated fact, proposes a
 complete mapping of fact → the skill whose work it belongs to, and **waits for your
 approval** before editing anything, then regenerates the knowledge-index and delivers the
-whole reorganization as its own `mneme/classify-*` branch and PR. No fact is ever deleted:
-each one either lands in a skill or stays a fact. Change your mind at any point and
+whole reorganization as its own `mneme/classify-*` branch and PR. A fact either lands in a
+skill (sentence carried across verbatim), stays a fact, or is retired as a duplicate — and a
+retirement must name the unit that covers it, so nothing leaves silently. Change your mind at any point and
 `mneme classify abort` puts the repo back as it was.
 
 **Repos older than 0.5.0.** Facts live at `skills/knowledge-index/facts/`; a repo scaffolded

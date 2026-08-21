@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import gitops, harvest, layout, lint, paths, scan, templates, units
 from .errors import MnemeError
@@ -36,11 +36,6 @@ from .errors import MnemeError
 # user to "finalize or abort" a branch no command can finalize or abort would be advice
 # they cannot take.
 _RAIL_KINDS = ("classify", "review")
-
-# The generated router skill, `skills/knowledge-index/` — the directory the canonical facts
-# live inside. Never an integration destination (see `_is_integration_path`).
-_INDEX_SKILL_DIR = units.FACTS_CANONICAL.rsplit("/", 1)[0] + "/"
-
 
 def _branch_prefix(kind: str) -> str:
     return f"mneme/{kind}-"
@@ -112,7 +107,38 @@ def _abort(home: Path, cwd: Path, kind: str) -> None:
     gitops.git(repo, "branch", "-D", branch)
 
 
+def _require_destinations(repo: Path) -> None:
+    """Refuse the librarian pass in a repo that has nowhere to file anything.
+
+    Classify exists to move loose facts INTO destination skills. A plain repo has none:
+    mneme keeps to `mneme-index/`, and the repo's own `skills/` — if it has one — belongs
+    to the application. Run anyway and the pass either does nothing or starts filing
+    knowledge into somebody's source tree.
+
+    Declining is what makes the other rails safe to run on a repo mneme does not own, so
+    the message names them. A user who reads "not supported" and nothing else has no idea
+    they can still capture, ship and review.
+
+    The escape hatch Rick asked for — classify becoming available once a user supplies
+    tooling that defines destinations — needs a place for those destinations to live that
+    is mneme's and not the application's. That layout is deliberately not invented here:
+    a half-built destination directory nothing lints is worse than a clean refusal.
+    """
+    if units.maintains_skills(repo):
+        return
+    raise MnemeError(
+        f"mneme does not maintain a skills/ tree in {repo}, so there are no destination"
+        " skills to file facts into — classify has nowhere to put anything. What does work"
+        f" here: `mneme share` captures facts into {units.facts_write_rel(repo)}/, `mneme"
+        " review` accepts a pull request and the facts inside it, and `mneme migrate` moves"
+        " a legacy facts/ directory. To give this repo skills mneme maintains, run: mneme"
+        " adopt <name> --as-plugin"
+    )
+
+
 def begin(home: Path, cwd: Path) -> str:
+    _scope, repo = resolve(home, cwd)
+    _require_destinations(repo)
     return _begin(home, cwd, "classify")
 
 
@@ -211,6 +237,7 @@ def bundle(home: Path, cwd: Path) -> dict:
     the quoted content was read before the sentence that disarms it.
     """
     scope, repo = resolve(home, cwd)
+    _require_destinations(repo)
     notes: list[str] = []
     return {
         "instructions": templates.CLASSIFY_INSTRUCTIONS,
@@ -239,11 +266,20 @@ def _legacy_conflicts(repo: Path) -> list[str]:
     put the bullet in the right file is better than folding two versions together and
     sending a human the difference. The harvest has no such author to ask, so it takes the
     merge.
+
+    The destination is `units.facts_write_dir`, not the canonical constant — the sibling
+    literal `facts_write_rel` was created to kill, and it was wrong in both directions here.
+    In a repo whose write root is `mneme-index/facts/`, a REAL collision returned `[]` and
+    fell through to the in-guard merge (the answer this docstring argues against), while a
+    stale file in the OTHER root produced a spurious hard refusal on every finalize, naming
+    a directory that is not the destination.
     """
     legacy = repo / "facts"
     if not legacy.is_dir():
         return []
-    canonical = repo / units.FACTS_CANONICAL
+    canonical = units.facts_write_dir(repo)
+    if canonical == legacy:
+        return []
     conflicts: list[str] = []
     for src in sorted(p for p in legacy.rglob("*") if p.is_file()):
         rel = src.relative_to(legacy).as_posix()
@@ -352,37 +388,131 @@ def _changed_files(repo: Path) -> list[str]:
 _SCAN_CODECS = ("utf-8-sig", "utf-32", "utf-16")
 
 
-def _scannable_text(path: Path) -> str | None:
-    """Best-effort text for the secret scan — an odd encoding is never a free pass.
+def _decodings(raw: bytes) -> list[str]:
+    """Every plausible reading of these bytes — a scanner may not have to guess right.
 
-    The last resort is a lossy UTF-8 decode: undecodable bytes become replacement
+    The old ladder returned the FIRST codec that did not raise, and `utf-8-sig` does not
+    raise on BOM-less UTF-16LE: it yields NUL-interleaved mojibake that the rules match
+    nothing in, so an AWS key in a UTF-16 file passed the gate at the tip with no history
+    trick at all. Guessing an encoding is a reasonable thing for a reader to do and the
+    wrong thing for a gate — so every decoding that succeeds is scanned, and a blocker in
+    ANY of them refuses. A few extra decodes per blob is nothing against delivering a key.
+
+    The lossy pass is last and always present: undecodable bytes become replacement
     characters and any ASCII credential sitting among them still reaches the rules.
-    Only a file that cannot be read at all yields None.
+    """
+    seen: list[str] = []
+    for codec in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le"):
+        try:
+            text = raw.decode(codec)
+        except (UnicodeDecodeError, ValueError, LookupError):
+            continue
+        if text not in seen:
+            seen.append(text)
+    lossy = raw.decode("utf-8", errors="replace")
+    if lossy not in seen:
+        seen.append(lossy)
+    return seen
+
+
+def _scannable_text(path: Path) -> str | None:
+    """Best-effort text for readers that want one string — never a free pass.
+
+    The secret scan does NOT use this: it takes bytes and scans every decoding
+    (`_decodings`), because picking one is exactly how a UTF-16 credential got through.
     """
     try:
         raw = path.read_bytes()
     except OSError:
         return None
-    for codec in _SCAN_CODECS:
-        try:
-            return raw.decode(codec)
-        except (UnicodeDecodeError, ValueError):
+    return _decodings(raw)[0]
+
+
+def _push_range(repo: Path) -> str:
+    """The commit range the PUSH will actually ship.
+
+    `main..HEAD` is the range a local reader cares about; it is not what leaves the
+    machine. `push_branch` runs `push -u origin <branch>`, which ships everything the
+    remote does not have — so when local `main` is ahead of `origin/main`, those commits
+    ride along inside the pushed branch and `main..HEAD` never looked at them.
+    """
+    try:
+        gitops.git(repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+    except MnemeError:
+        return "main..HEAD"
+    return "origin/main..HEAD"
+
+
+def _branch_blobs(repo: Path) -> list[tuple[str, str]]:
+    """(label, bytes) for every blob the push ships that the remote does not already have.
+
+    `rev-list --objects` over the push range, then one `cat-file --batch`. Two subprocesses
+    for the whole branch, deduplicated by object id.
+
+    This replaces a per-commit `diff-tree --diff-filter=AM` walk, which was the right idea
+    against the wrong set and leaked five ways. Enumerating OBJECTS rather than diffs
+    dissolves all of them at once: there is no filter to omit `T` (a symlink replaced by a
+    real file smuggled a whole blob past `AM`), no per-commit diff to come back empty for a
+    MERGE (`diff-tree` prints nothing for two parents without `-m`/`--cc`, so a secret
+    introduced in a conflict resolution was invisible — and `git log -S` cannot see it
+    either, so the test written for that class was blind to it), and no per-commit refetch
+    of the same blob. It was also 1 + C + C x F subprocesses: 1051 of them for a 50-commit
+    pass, 80 seconds on a drvfs mount.
+    """
+    listing = gitops.git_bytes(repo, "rev-list", "--objects", _push_range(repo))
+    named: dict[str, str] = {}
+    for line in listing.decode("utf-8", "replace").splitlines():
+        sha, _, path = line.partition(" ")
+        if path:  # commits carry no path; trees and blobs do
+            named.setdefault(sha, path)
+    if not named:
+        return []
+    out = gitops.git_bytes(
+        repo, "cat-file", "--batch", stdin=("\n".join(named) + "\n").encode()
+    )
+    blobs: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(out):
+        nl = out.find(b"\n", pos)
+        if nl < 0:
+            break
+        header = out[pos:nl].decode("utf-8", "replace").split()
+        pos = nl + 1
+        if len(header) < 3:  # "<sha> missing" — nothing to read
             continue
-    return raw.decode("utf-8", errors="replace")
+        sha, kind, size = header[0], header[1], int(header[2])
+        content, pos = out[pos : pos + size], pos + size + 1
+        if kind == "blob":
+            blobs.append((named.get(sha, sha), content))
+    return blobs
 
 
 def _scan_gate(repo: Path, changed: list[str], kind: str) -> None:
+    """Refuse to deliver a secret — in the working tree OR anywhere the push carries.
+
+    Both halves read BYTES and are decoded by the same ladder, because the two used to
+    disagree: the worktree half tried several codecs while the history half took whatever
+    `text=True` gave it, so a UTF-16 blob in a commit was scanned as mojibake and a PNG
+    raised UnicodeDecodeError — a type no gate expected, which escaped into `harvest._abort`
+    and deleted the librarian's branch.
+    """
+    scannable: list[tuple[str, bytes]] = []
     for rel in changed:
         path = repo / rel
         if not path.is_file():
-            continue  # deleted or renamed away — nothing left to leak
-        text = _scannable_text(path)
-        if text is None:
+            continue  # gone from the worktree — the push range below still covers it
+        try:
+            scannable.append((rel, path.read_bytes()))
+        except OSError:
             continue  # unreadable: lint owns shape, the scan owns text
-        findings = scan.scan_text(text)
-        if scan.has_blockers(findings):
-            rules = ", ".join(sorted({f.rule for f in findings if f.severity == scan.BLOCK}))
-            raise MnemeError(f"{kind} fails the secret scan: {rel} ({rules})")
+    scannable.extend(_branch_blobs(repo))
+
+    for label, raw in scannable:
+        for text in _decodings(raw):
+            findings = scan.scan_text(text)
+            if scan.has_blockers(findings):
+                rules = ", ".join(sorted({f.rule for f in findings if f.severity == scan.BLOCK}))
+                raise MnemeError(f"{kind} fails the secret scan: {label} ({rules})")
 
 
 def _normalized(text: str) -> str:
@@ -398,13 +528,10 @@ def _main_fact_bullets(repo: Path) -> list[tuple[str, str]]:
     either facts layout, canonical first. A bullet `main` already carries malformed is
     skipped; the branch cannot be blamed for damage it did not do.
     """
-    prefixes = (f"{units.FACTS_CANONICAL}/", "facts/")
     bullets: list[tuple[str, str]] = []
     listing = gitops.git_raw(repo, "ls-tree", "-r", "-z", "--name-only", "main")
     for rel in listing.split("\0"):
-        if not rel.endswith(".md"):
-            continue
-        if not any(rel.startswith(p) and "/" not in rel[len(p) :] for p in prefixes):
+        if not units.is_fact_path(rel):
             continue
         try:
             _meta, body = units.parse_frontmatter(gitops.git_raw(repo, "show", f"main:{rel}"))
@@ -423,9 +550,22 @@ def _main_fact_bullets(repo: Path) -> list[tuple[str, str]]:
 
 
 def _branch_fact_texts(repo: Path) -> set[str]:
-    """Normalized text of every fact bullet the branch's working tree still carries."""
+    """Normalized text of every fact bullet the branch will COMMIT.
+
+    The third of the gate's three proofs, and the last to be fixed. `_integration_text` and
+    `_branch_unit_ids` were each caught reading the disk instead of git — a fact "survived"
+    inside a file `.gitignore` keeps out of the commit — and each was fixed on its own,
+    while this one was never looked at because it was not new code. A fact bullet moved
+    into an ignored fact file passed the gate with no declaration at all and existed in no
+    committed file.
+
+    All three now ask `_committable`. If a fourth proof is ever added here, it asks it too.
+    """
+    committable = _committable(repo)
     texts: set[str] = set()
     for f in units.fact_files(repo):
+        if f.relative_to(repo).as_posix() not in committable:
+            continue
         try:
             _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
         except (MnemeError, OSError, UnicodeDecodeError):
@@ -440,7 +580,37 @@ def _branch_fact_texts(repo: Path) -> set[str]:
     return texts
 
 
-def _is_integration_path(rel: str) -> bool:
+def _on_main(repo: Path, rel: str) -> bool:
+    try:
+        gitops.git(repo, "cat-file", "-e", f"main:{rel}")
+    except MnemeError:
+        return False
+    return True
+
+
+def _base_maintains_skills(repo: Path) -> bool:
+    """Did mneme own this repo's `skills/` BEFORE the pass? Read from `main`, not the tree.
+
+    `units.maintains_skills` stats the working tree, which during a classify or review pass
+    is the thing under suspicion. A pass could therefore hand itself the powers it is being
+    judged by — write `.claude-plugin/plugin.json`, or a router under `skills/`, and
+    `_carries_knowledge` flips to True for the application's own `skills/`, so a fact
+    deleted from `mneme-index/facts/` is suddenly "accounted for" by a file mneme did not
+    write. Composed with a symlink under that directory, the fact was committed nowhere and
+    the finalize passed.
+
+    `main` is the one reference the pass cannot edit — PR-only means mneme never writes it.
+    The rule mirrors `units.knowledge_root`: an established router wins, the manifest only
+    decides when there is none.
+    """
+    if _on_main(repo, f"{units.PLUGIN_ROOT}/SKILL.md"):
+        return True
+    if _on_main(repo, f"{units.PLAIN_ROOT}/SKILL.md"):
+        return False
+    return _on_main(repo, ".claude-plugin/plugin.json")
+
+
+def _is_integration_path(rel: str, base_maintains_skills: bool) -> bool:
     """Is this changed path skill PROSE a fact could have been integrated into?
 
     "Under `skills/`" is not the test, because the canonical facts directory lives under
@@ -452,19 +622,73 @@ def _is_integration_path(rel: str) -> bool:
     bundle — had lost it. The rest of the router skill is generated from the fact files, so
     it is no destination either.
     """
-    return rel.startswith("skills/") and not rel.startswith(_INDEX_SKILL_DIR)
+    return _carries_knowledge(rel, base_maintains_skills)
+
+
+def _carries_knowledge(rel: str, base_maintains_skills: bool) -> bool:
+    """Can a unit at this path hold knowledge a fact could be integrated into or covered by?
+
+    ONE predicate, because this question was being answered independently at three call
+    sites and the third got it wrong: `_branch_unit_ids` accepted `skills/knowledge-index`
+    as a covering unit. That skill is REGENERATED from the fact files by the very finalize
+    being gated, and it exists in every mneme repo — so it was a universal rubber stamp,
+    accepting any retirement while the retired sentence lived in no file at all.
+
+    Its two siblings both excluded that directory with docstrings arguing why. Stating the
+    rule once is the only way there is no fourth site to get wrong.
+
+    WHICH directory is generated is `units.in_knowledge_root`, not a literal here: a plain
+    repo's router lives at `mneme-index/`, and a predicate that knew only about
+    `skills/knowledge-index/` would hand back the same universal rubber stamp in the other
+    mode.
+
+    In a plain repo NOTHING carries knowledge. `skills/` there is the application's, so a
+    fact's sentence appearing in it is the app's own source coinciding with a fact — and
+    accepting that as an integration would let a deleted fact be "accounted for" by a file
+    mneme did not write and does not maintain.
+
+    `base_maintains_skills` is passed in rather than looked up, for two reasons: it must come from
+    `main` (`_base_maintains_skills`, so a pass cannot vote on its own mode), and both callers ask
+    it once for a whole loop instead of spawning a subprocess per changed file.
+    """
+    return rel.startswith("skills/") and base_maintains_skills and not units.in_knowledge_root(rel)
 
 
 def _integration_text(repo: Path, changed: list[str]) -> str:
     """One normalized blob of every skill file this pass touched — where facts go to live.
 
-    Only files the pass CHANGED count: an integration is something this branch wrote, and
-    scanning the whole repo would let a fact be "accounted for" by a coincidence of
-    wording somewhere nobody edited.
+    Only files the pass CHANGED count: an integration is something this branch wrote.
+
+    This was briefly widened to the whole skill tree, to let a librarian drop a fact whose
+    sentence already sat in a skill nobody edited. The justification given was that the
+    match is "a whole normalized fact SENTENCE, not a phrase, so a coincidence is remote".
+    That was simply false: the test below is `text not in blob` — Python substring
+    containment against every skill flattened to one line — so the widened form let a fact
+    be retired by a four-word prefix of unrelated prose, by a heading joined to the body
+    under it, by a skill's frontmatter `description:`, by a repo README that happens to sit
+    under `skills/`, by a file `.gitignore` keeps out of the commit entirely, and by an
+    anti-pattern section quoting the fact in order to REFUTE it. Ten scenarios flipped from
+    refused to accepted, each one knowledge leaving the repo with nothing said about it.
+
+    The case that motivated widening is real, and `--retire` is the honest answer to it:
+    the librarian names the unit that covers the fact, the claim is checked for shape, and
+    a human reads it in the pull request. A gate should not guess at coverage it cannot
+    verify — it should make somebody say so.
     """
     parts: list[str] = []
+    committable = _committable(repo)
+    base_maintains_skills = _base_maintains_skills(repo)
     for rel in changed:
-        if not _is_integration_path(rel):
+        if not _is_integration_path(rel, base_maintains_skills):
+            continue
+        # The gate's FOURTH proof, and the one the docstring above `_real_file` claimed had
+        # been closed everywhere. `_branch_fact_texts` and `_branch_unit_ids` were both
+        # taught to ask git; this one sat ten lines away still asking the disk, so a
+        # `skills/<name>/notes.md` symlinked at a file outside the repo satisfied the
+        # integration proof while the blob git actually commits is the link's target
+        # STRING. The sentence appeared in zero committed files and the finalize passed.
+        # A file `.gitignore` keeps out of the commit was the same hole.
+        if rel not in committable:
             continue
         path = repo / rel
         if not path.is_file():
@@ -475,28 +699,193 @@ def _integration_text(repo: Path, changed: list[str]) -> str:
     return "\n".join(parts)
 
 
-def _preservation_gate(repo: Path, changed: list[str], kind: str) -> None:
-    """Knowledge on `main` may be moved or integrated by this pass — never dropped.
+_RETIRE_SEP = "="
 
-    A fact is accounted for when its sentence is still a bullet in some fact file, or
-    appears verbatim inside a skill file the pass changed. That is deliberately a floor
-    and not a judgement of the integration's quality: mneme cannot tell a faithful summary
-    from a lossy one, but it can tell that the original sentence still exists somewhere in
-    the repo — which is also the better provenance, and what the instructions ask for.
+
+def _parse_retirements(retire: list[str] | None) -> list[tuple[str, str]]:
+    """`<retired-unit-id>=<covering-unit-id>` pairs, as given on the command line.
+
+    `=` is the separator because a unit id is `skills/<name>` or `facts/<stem>#<key>` and
+    neither shape can contain one, so the split is unambiguous without quoting.
     """
+    pairs: list[tuple[str, str]] = []
+    for raw in retire or []:
+        retired, sep, covering = raw.partition(_RETIRE_SEP)
+        if not sep or not retired.strip() or not covering.strip():
+            raise MnemeError(
+                f"--retire expects <retired-unit-id>{_RETIRE_SEP}<covering-unit-id>,"
+                f" got {layout._safe(raw)!r}"
+            )
+        pairs.append((retired.strip(), covering.strip()))
+    return pairs
+
+
+def _committable(repo: Path) -> set[str]:
+    """Repo-relative paths git will actually commit: tracked, plus untracked-not-ignored.
+
+    NOT a filesystem walk. A coverage proof that reads the working tree accepts a file
+    `.gitignore` keeps out of the commit — the fact is retired against a covering unit that
+    exists in no committed file, and the knowledge is gone. That defect was found in
+    `_integration_text`, fixed there, and then written straight back into this function,
+    which is why it is stated here rather than left to be re-derived: every proof in this
+    rail must ask git what the branch will carry, never the disk.
+    """
+    listing = gitops.git_raw(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    return {rel for rel in listing.split("\0") if rel and _real_file(repo, rel)}
+
+
+def _real_file(repo: Path, rel: str) -> bool:
+    """Is `rel` a regular file whose BYTES are the bytes git will store?
+
+    Asking git which paths it will commit is only half the claim, and three rounds of
+    fixes all stopped at that half. A symlink separates the two: git commits the path —
+    storing the link's TARGET STRING as the blob — while the proof reads through it and
+    sees whatever the target holds. A fact bullet moved into a symlinked file was
+    "preserved" by every one of the gate's three proofs while the committed tree contained
+    only `/tmp/somewhere/elsewhere.md` and the sentence lived in no file of the repo.
+
+    So no segment may be a link, not just the leaf: a symlinked DIRECTORY does the same
+    thing one level up. `layout` has always refused links at both ends of the migration
+    for exactly this reason; this is the same rule, finally stated for the gate too.
+    """
+    walked = repo
+    for part in PurePosixPath(rel).parts:
+        walked = walked / part
+        if walked.is_symlink():
+            return False
+    return walked.is_file()
+
+
+def _branch_unit_ids(repo: Path) -> set[str]:
+    """Every unit id the branch will COMMIT — the ids a retirement may point AT."""
+    committable = _committable(repo)
+    base_maintains_skills = _base_maintains_skills(repo)
+    ids = {
+        units.skill_unit_id(d.name)
+        for d in sorted((repo / "skills").glob("*"))
+        if d.is_dir()
+        and (d / "SKILL.md").is_file()
+        and _carries_knowledge(f"skills/{d.name}/SKILL.md", base_maintains_skills)
+        and (d / "SKILL.md").relative_to(repo).as_posix() in committable
+    }
+    for f in units.fact_files(repo):
+        if f.relative_to(repo).as_posix() not in committable:
+            continue
+        try:
+            _meta, body = units.parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        except (MnemeError, OSError, UnicodeDecodeError):
+            continue
+        for n, line in enumerate(body.splitlines(), start=1):
+            if not line.startswith("- ["):
+                continue
+            try:
+                ids.add(units.fact_unit_id(f.stem, units.parse_bullet_line(line, n).text))
+            except MnemeError:
+                continue
+    return ids
+
+
+def _accept_retirements(
+    repo: Path, pairs: list[tuple[str, str]],
+    main_facts: dict[str, list[tuple[str, str]]],
+) -> tuple[set[tuple[str, str]], list[str]]:
+    """Validate every declaration; return the retired fact TEXTS and the lines to report.
+
+    mneme cannot tell whether the covering unit really says the same thing — that is the
+    human's call at the pull request, which is why every accepted declaration is printed
+    there. What it CAN do is refuse a declaration whose parts are not real, so the claim a
+    reviewer reads is at least about two units that exist.
+
+    Retired (FILE, TEXT) pairs, because neither half alone identifies a fact.
+    `normalize_topic_key` is the first six words of a sentence, so two bullets in one topic
+    file — routine, since every bullet in it shares a subject — collide on a unit id;
+    excusing by id let one declaration retire all of them while naming one in the pull
+    request. Switching to normalized TEXT only moved that defect: two fact FILES can carry
+    the same sentence, so a text-keyed excuse covered both deletions from one declaration.
+    The pair is what `_main_fact_bullets` actually yields, and it is exact. An ambiguous id
+    — one naming more than one pair on main — is refused rather than guessed at.
+    """
+    if not pairs:
+        return set(), []
+    on_branch_ids = _branch_unit_ids(repo)
+    on_branch_texts = _branch_fact_texts(repo)
+    declared = {retired_id for retired_id, _ in pairs}
+    retired_pairs: set[tuple[str, str]] = set()
+    lines: list[str] = []
+    for retired_id, covering_id in pairs:
+        if retired_id == covering_id:
+            raise MnemeError(f"--retire {layout._safe(retired_id)}: a unit cannot cover itself")
+        entries = main_facts.get(retired_id, [])
+        if not entries:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: not a fact on main — nothing to retire"
+                " (check the unit id against `mneme classify prepare`)"
+            )
+        if len(entries) > 1:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: that unit id names"
+                f" {len(entries)} different bullets on main, because a unit id is only the"
+                " first six words of a sentence — retiring by it would remove all of them"
+                " while naming one. Reword or split the bullets so their ids differ, or"
+                " keep them"
+            )
+        rel, text = entries[0]
+        if _normalized(text) in on_branch_texts:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: that fact is still present on the"
+                " branch — declare a retirement only for a fact this pass removed"
+            )
+        if covering_id in declared:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: covering unit"
+                f" {layout._safe(covering_id)} is itself being retired by this pass —"
+                " a retirement must point at knowledge that SURVIVES it"
+            )
+        if covering_id not in on_branch_ids:
+            raise MnemeError(
+                f"--retire {layout._safe(retired_id)}: covering unit"
+                f" {layout._safe(covering_id)} does not exist on the branch — a retirement"
+                " must point at knowledge that survives this pass"
+            )
+        retired_pairs.add((rel, _normalized(text)))
+        lines.append(f"{layout._safe(retired_id)} — covered by {layout._safe(covering_id)}")
+    return retired_pairs, lines
+
+
+def _preservation_gate(
+    repo: Path, changed: list[str], kind: str,
+    retired: set[tuple[str, str]] | None = None,
+) -> None:
+    """Knowledge on `main` may be moved or integrated by this pass — never dropped silently.
+
+    A fact is accounted for when its sentence is still a bullet in some fact file, appears
+    verbatim inside a skill on the branch, or has been explicitly RETIRED with a
+    declaration naming the unit that covers it. The first two are proof; the third is a
+    stated claim, checked for shape by `_accept_retirements` and for substance by the human
+    reading the pull request it is printed in.
+
+    That is deliberately a floor and not a judgement of the integration's quality: mneme
+    cannot tell a faithful summary from a lossy one, but it can tell that the original
+    sentence still exists somewhere — which is also the better provenance — and it can
+    refuse to let one vanish without anybody saying so.
+    """
+    retired = retired or set()  # (file, normalized text) pairs — see `_accept_retirements`
     on_branch = _branch_fact_texts(repo)
     integrated = _integration_text(repo, changed)
     lost = [
         f"{rel}: {text[:80]}"
         for rel, text in _main_fact_bullets(repo)
-        if _normalized(text) not in on_branch and _normalized(text) not in integrated
+        if _normalized(text) not in on_branch
+        and _normalized(text) not in integrated
+        and (rel, _normalized(text)) not in retired
     ]
     if lost:
         raise MnemeError(
             f"{kind} would lose knowledge that is committed on main — "
             + "; ".join(lost)
-            + "; facts may move, but never vanish — integrate the content or leave the"
-            " fact in place"
+            + "; facts may move, but never vanish — integrate the content, leave the fact"
+            " in place, or retire it with"
+            " `--retire <unit-id>=<covering-unit-id>` naming the unit that already says it"
         )
 
 
@@ -526,7 +915,10 @@ def _commit(
     return gitops.head_sha(repo)
 
 
-def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest.HarvestResult:
+def _finalize(
+    home: Path, cwd: Path, kind: str, *, push: bool = True,
+    retire: list[str] | None = None,
+) -> harvest.HarvestResult:
     """Migrate, regenerate, gate, commit, and offer the branch's work as a PR.
 
     The rollback and index-regeneration behaviour is deliberately the harvest's own
@@ -557,6 +949,47 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
         if conflicts:
             raise _legacy_conflict_error(kind, conflicts)
 
+    # Validated BEFORE the guarded block, alongside `_legacy_conflicts` and for the same
+    # reason: nothing has been changed yet, so a rejection leaves the branch — and the
+    # librarian's committed work on it — intact for them to correct and finalize again.
+    # Inside the guard, a single mistyped unit id ran `_abort`: reset --hard, checkout main,
+    # branch -D. A week of reorganisation destroyed by a typo, with an error message
+    # inviting a retry that was no longer possible.
+    #
+    # Every check reads `main` and the tree as the librarian left it, and the migration
+    # below moves fact files without changing a bullet's text or its stem, so nothing here
+    # needs the post-migration state.
+    main_facts: dict[str, list[tuple[str, str]]] = {}
+    for rel, text in _main_fact_bullets(repo):
+        main_facts.setdefault(units.fact_unit_id(Path(rel).stem, text), []).append((rel, text))
+    retired_pairs, retired_lines = _accept_retirements(
+        repo, _parse_retirements(retire), main_facts
+    )
+    # Checked HERE, not where the body is assembled: that point is past the guarded block,
+    # so raising there left a half-migrated branch with no rollback. It is knowable now —
+    # the declarations are already parsed — and it is the same class as every other
+    # declaration refusal, which leaves the librarian's work intact to correct.
+    retired_section = [f"Retired: {line}" for line in retired_lines]
+    if layout.body_length(retired_section) > layout._BODY_MAX:
+        raise MnemeError(
+            f"{kind}: {len(retired_section)} retirements do not fit in one pull request"
+            " body, and a retirement that is not reported is a fact deleted in silence —"
+            " split this pass into smaller ones"
+        )
+
+    # The preservation gate runs BEFORE the guarded block, for the reason its own message
+    # gives: it is the only place mneme ever tells a librarian to retry with `--retire`, and
+    # from inside the guard that advice was self-defeating — `harvest._abort` hard-resets to
+    # the branch point and deletes the branch, so the edits the retry needs are gone by the
+    # time the message is printed. Round 1 hoisted declaration typos out for exactly this
+    # reason and left in the gate that motivates the declaration.
+    #
+    # Its inputs do not need the migration that follows: it compares `main`'s bullets against
+    # the branch's fact texts and the prose of changed SKILL files, and
+    # `layout.migrate_legacy_facts` moves fact files without changing a bullet's text, while
+    # the index regeneration only rewrites the one skill `_carries_knowledge` excludes.
+    _preservation_gate(repo, _changed_files(repo), kind, retired_pairs)
+
     try:
         dirty = not gitops.is_clean(repo)
         ahead = gitops.head_sha(repo) != base_sha
@@ -566,14 +999,26 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
         migration = layout.migrate_legacy_facts(repo)
         if not (dirty or ahead or migration.lines or migration.removed_dir):
             raise MnemeError(_nothing_to_do(kind))
-        harvest._regenerate_index(repo)
+        harvest._regenerate_index(repo, scope.name)
         issues = lint.lint_repo(repo)
         if lint.has_errors(issues):
             details = "; ".join(f"{i.code} {i.message}" for i in issues if i.severity == "error")
             raise MnemeError(f"{kind} fails repo lint: {details}")
         changed = _changed_files(repo)
         _scan_gate(repo, changed, kind)
-        _preservation_gate(repo, changed, kind)
+        # And AGAIN after the migration, because the two would catch different losses. The
+        # pass above catches what the LIBRARIAN did, before anything is touched, so its
+        # advice ("retire it with --retire…") is actionable — the branch and their edits
+        # survive. This one would catch what the MIGRATION did, which is nobody's edit to
+        # correct, so it aborts like any other rail failure.
+        #
+        # Stated plainly: no end-to-end path reaches this today. `layout._merge` measures
+        # its own result and keeps a file aside rather than fold a bullet away, so a
+        # migration cannot lose one for this to find — a mutation deleting this call
+        # survives the suite, and that is the honest state of it, not an oversight. It is
+        # kept as defense in depth for the day `layout`'s guard changes, and the unit test
+        # below pins the function's behaviour on a post-migration state directly.
+        _preservation_gate(repo, changed, kind, retired_pairs)
     except MnemeError:
         harvest._abort(repo, branch, base_sha)
         raise
@@ -598,8 +1043,19 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
     # straight back off that cliff: 117 KB for a 320-topic repo, with the notes inside
     # their 50 KB all along. One body, one bound.
     reported = [layout._safe(rel) for rel in changed]
-    result.units = layout.bound_body(
-        notes + [rel for rel in reported if not _named_in(rel, notes)], noun="change"
+    # Retirements lead: they are the only lines that describe knowledge LEAVING the repo,
+    # and a reviewer skimming a forty-line body must meet them before the moves. Already
+    # `_safe`d by `_accept_retirements`, and inside the same one bound as everything else.
+    # Retirements lead AND are never dropped. `bound_body` truncates from the end, so
+    # ordering alone was not enough: 400 declarations pushed past the budget and the
+    # overflow line silently swallowed 148 of them — from the commit body, the pull request
+    # body and the ledger record, which stores this same bounded list. The one line saying
+    # knowledge left is the one line that must survive, so the budget is spent on
+    # retirements first and the pass is refused outright if they alone cannot fit.
+    result.units = retired_section + layout.bound_body(
+        notes + [rel for rel in reported if not _named_in(rel, notes)],
+        noun="change",
+        budget=layout._BODY_MAX - layout.body_length(retired_section),
     )
 
     try:
@@ -642,14 +1098,26 @@ def _finalize(home: Path, cwd: Path, kind: str, *, push: bool = True) -> harvest
     return result
 
 
-def finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
-    """Deliver the librarian's reorganization as a pull request."""
-    return _finalize(home, cwd, "classify", push=push)
+def finalize(
+    home: Path, cwd: Path, *, push: bool = True, retire: list[str] | None = None
+) -> harvest.HarvestResult:
+    """Deliver the librarian's reorganization as a pull request.
+
+    `retire` carries `<retired-unit-id>=<covering-unit-id>` declarations: the only way a
+    fact leaves the repo, and one that names what covers it in the pull request.
+    """
+    # Guarded here and not in `_finalize`, which review shares. `abort` is deliberately
+    # left open: a branch that got made anyway must stay possible to unmake.
+    _scope, repo = resolve(home, cwd)
+    _require_destinations(repo)
+    return _finalize(home, cwd, "classify", push=push, retire=retire)
 
 
-def review_finalize(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:
+def review_finalize(
+    home: Path, cwd: Path, *, push: bool = True, retire: list[str] | None = None
+) -> harvest.HarvestResult:
     """Deliver facts extracted from inbound pull requests as mneme's own pull request."""
-    return _finalize(home, cwd, "review", push=push)
+    return _finalize(home, cwd, "review", push=push, retire=retire)
 
 
 def migrate(home: Path, cwd: Path, *, push: bool = True) -> harvest.HarvestResult:

@@ -39,6 +39,28 @@ def git_raw(repo: Path, *args: str) -> str:
     return result.stdout
 
 
+def git_bytes(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    """Raw BYTES from git, with optional stdin — for content that is not text.
+
+    `git_raw` decodes as text, which is right for paths and refs and wrong for blobs: a PNG
+    or a UTF-16 file raises UnicodeDecodeError deep inside a caller that is only trying to
+    read repo content, and an exception of a type no gate expects escapes into a rollback.
+    A scanner in particular must take the bytes and decide about encoding itself.
+    """
+    cmd = [
+        "git",
+        "-c", "user.name=mneme",
+        "-c", "user.email=mneme@localhost",
+        "-C", str(repo),
+        *args,
+    ]
+    result = subprocess.run(cmd, capture_output=True, input=stdin)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()[:300]
+        raise MnemeError(f"git {' '.join(args)} failed: {detail}")
+    return result.stdout
+
+
 def git(repo: Path, *args: str) -> str:
     return git_raw(repo, *args).strip()
 

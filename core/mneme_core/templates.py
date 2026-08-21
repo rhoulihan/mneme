@@ -50,8 +50,7 @@ $description
 
 ## What belongs here
 
-- Hard-won procedures (skills): verified fixes, deployment paths, debugging golden paths — each with the failure pattern that made it non-obvious.
-- Durable facts: constraints, gotchas, decisions, runbook notes that stay true across tickets.
+$belongs
 
 ## What does NOT belong here
 
@@ -64,6 +63,15 @@ $description
 This scope statement is the routing prompt: mneme's distiller matches candidate knowledge
 against it. Keep it specific — name the products, systems, and processes this plugin covers.
 """
+
+# `$belongs` for a repo whose purpose IS knowledge, and for one that merely keeps some.
+# A plain repo has no skills mneme maintains, so telling its users to write them points at
+# files nothing will lint, index, or route.
+BELONGS_PLUGIN = """- Hard-won procedures (skills): verified fixes, deployment paths, debugging golden paths — each with the failure pattern that made it non-obvious.
+- Durable facts: constraints, gotchas, decisions, runbook notes that stay true across tickets."""
+
+BELONGS_PLAIN = """- Durable facts about THIS repo: constraints, gotchas, decisions and runbook notes that stay true across tickets — each with the failure pattern that made it non-obvious.
+- Knowledge a teammate would otherwise rediscover by repeating the same dead ends."""
 
 AGENTS_MD = """# $name
 
@@ -124,6 +132,46 @@ CODEOWNERS = """# Default reviewers for all knowledge in this plugin.
 * @$owner
 """
 
+# A plain repo's source is not mneme's to own. The rule covers the knowledge root and
+# stops there, so adopting a service does not route every pull request in it to the
+# people who agreed to review facts.
+CODEOWNERS_SCOPED = """# Reviewers for the knowledge mneme maintains in this repo.
+# The rest of the repo keeps whatever ownership it already had.
+/$knowledge_root/ @$owner
+"""
+
+CONTRIBUTING_PLAIN_MD = """# Contributing knowledge to $name
+
+This repo keeps durable facts about itself in `$knowledge_root/`, captured with
+[mneme](https://github.com/rhoulihan/mneme). Everything else in the repo is unaffected.
+
+Knowledge enters through pull requests — human-written or staged by mneme's curated
+harvest. Either way the same rules apply.
+
+## The promotion rule
+
+A contribution must carry:
+
+1. **Verified success** — the procedure or fact was actually exercised, not assumed.
+2. **A named failure pattern** — what went wrong before the fix; the dead ends eliminated.
+3. **Non-obviousness** — not derivable from this repo's own source or public documentation.
+
+## Format
+
+- One topic per file in `$knowledge_root/facts/`, typed bullets
+  (`decision | constraint | gotcha | runbook-note | reference`), tags, verified dates.
+- `$knowledge_root/SKILL.md` is the routing table and is regenerated mechanically —
+  never edit it by hand.
+- Delta edits only — never regenerate whole files.
+
+## Review policy
+
+- CODEOWNERS routes `$knowledge_root/` to its maintainers.
+- Review judges substance: is it true, is it durable, is it non-obvious.
+- CI (`mneme-validate.yml`) lints format and scans for secrets, and runs only when
+  `$knowledge_root/` changes.
+"""
+
 VALIDATE_YML = """name: validate
 on:
   pull_request:
@@ -151,6 +199,50 @@ jobs:
           exit $rc
 """
 
+def validate_yml(knowledge_root: str) -> str:
+    """CI for a repo mneme only keeps a corner of.
+
+    Two differences from `VALIDATE_YML`, both about not spending an application's CI
+    budget: the workflow triggers ONLY when the knowledge root changes, and the secret
+    scan walks that root rather than `skills facts`. The file is named `mneme-validate`
+    so it cannot collide with a `validate.yml` the repo already has.
+    """
+    return f"""name: mneme knowledge validate
+on:
+  pull_request:
+    paths:
+      - "{knowledge_root}/**"
+  push:
+    branches: [main]
+    paths:
+      - "{knowledge_root}/**"
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch mneme engine
+        run: git clone --depth 1 https://github.com/rhoulihan/mneme /tmp/mneme
+      - name: Lint knowledge units
+        run: /tmp/mneme/bin/mneme lint .
+      - name: Secret scan
+        run: |
+          set -e
+          # A gate that passes because it looked at nothing is worse than no gate. If the
+          # knowledge root is gone the workflow is misconfigured, and saying so beats a
+          # green check over zero files.
+          test -d {knowledge_root} || {{ echo "{knowledge_root}/ not found"; exit 1; }}
+          rc=0
+          while IFS= read -r -d '' f; do
+            /tmp/mneme/bin/mneme scan "$f" || rc=$?
+          done < <(find {knowledge_root} -name '*.md' -print0)
+          exit $rc
+"""
+
+
 RELEASE_YML = """name: release
 on:
   push:
@@ -169,6 +261,8 @@ jobs:
           import json, pathlib
           p = pathlib.Path('.claude-plugin/plugin.json')
           data = json.loads(p.read_text())
+          if 'version' not in data:
+              raise SystemExit("plugin.json has no version — nothing to bump")
           major, minor, patch = data['version'].split('.')
           data['version'] = f"{major}.{minor}.{int(patch) + 1}"
           p.write_text(json.dumps(data, indent=2) + "\\n")
@@ -177,7 +271,11 @@ jobs:
         run: |
           git config user.name "mneme-bot"
           git config user.email "mneme-bot@users.noreply.github.com"
-          git commit -am "chore: bump version"
+          # The manifest and nothing else. `-a` stages every tracked modification in the
+          # working tree, so anything else a job left behind rode along in a commit pushed
+          # to main under `contents: write`, authored by a bot, with a message about a
+          # version bump.
+          git commit -m "chore: bump version" .claude-plugin/plugin.json
           git push
 """
 
@@ -187,7 +285,7 @@ __pycache__/
 """
 
 INDEX_SKILL_MD = """---
-name: knowledge-index
+name: $index_name
 description: Consult when you need durable facts from $name — constraints, gotchas, decisions, and runbook notes. $description
 ---
 
@@ -237,6 +335,36 @@ STANDING_RULE_REMINDER = (
     + "\n=== END STANDING RULE ==="
 )
 
+ADOPT_INSTRUCTIONS = f"""You are drafting the SCOPE STATEMENT for a repo about to be
+adopted by mneme.
+
+{STANDING_RULE_BLOCK}
+
+The scope statement is the routing prompt: mneme matches every candidate fact against it
+to decide which registered repo the knowledge belongs to. It is not a description of the
+product. Describe WHAT KNOWLEDGE BELONGS HERE — the systems, failure modes, and operational
+surfaces someone working in this repo learns the hard way. A README is marketing, and
+marketing prose used as a routing prompt matches everything and steals candidates from
+every sibling scope.
+
+Rules:
+1. DRAFT FIRST, then ask. The sources below are the evidence; propose a scope statement
+   built from them and name which source each claim came from. Asking a user to invent a
+   scope cold is how vague scopes get written.
+2. Say where the scope ENDS. If `siblings` is non-empty, state explicitly which kinds of
+   knowledge go to each sibling instead — that boundary is the part a user can actually
+   correct, and the part they cannot supply unprompted.
+3. Ask only what the sources cannot answer: the exclusions (what must never be captured
+   here), the sensitivity, and any boundary you could not settle yourself. Do not
+   re-ask anything already visible below.
+4. Name the systems, services and products specifically. "Backend knowledge" routes
+   nothing; "settlement, refunds and chargeback handling in the payments service" does.
+5. When the user has corrected the draft, run
+   `mneme adopt <name> --description "<the agreed scope>" --owner "<their team>"`.
+
+{STANDING_RULE_REMINDER}
+"""
+
 CLASSIFY_INSTRUCTIONS = f"""You are the mneme LIBRARIAN for this knowledge plugin.
 
 {STANDING_RULE_BLOCK}
@@ -248,21 +376,35 @@ leave the facts directory holding only what genuinely has no better home.
 Rules:
 1. For each fact, find the MOST relevant existing skill and integrate the fact there:
    append it to an appropriate section of that skill's SKILL.md, or to a file under the
-   skill's directory. Preserve the fact's meaning, its tags, and its verified date, and
-   present it as a fact-derived note rather than rewriting it into something new.
+   skill's directory. Carry the fact's SENTENCE ACROSS VERBATIM, with its tags and its
+   verified date, and write whatever context the skill needs AROUND it — a lead-in line, a
+   heading, a note on when it applies. Do not paraphrase the sentence itself and do not
+   fold it into a sentence of your own: finalize looks for that exact text, so a rewrite
+   reads to the gate as knowledge that vanished, and the pass is refused.
 2. Keep each skill's existing structure — the file listing for every skill is in this
    bundle so you can see the shape before you edit it.
 3. Create a NEW skill only when several related facts together justify one; a single fact
    is never a skill.
 4. A fact with no good home STAYS in the facts directory, untouched.
-5. NEVER delete knowledge. Every fact either lands in a skill's content (verbatim or
-   merged, with its meaning and verified date intact) or remains a fact. Retiring a fact
-   that merely restates what a skill already says still means carrying its sentence into
-   that skill as a quoted fact-derived note, then recording it in your report as retired
-   into that skill: finalize refuses any pass where a fact's sentence survives nowhere.
+5. NEVER delete knowledge silently. A fact has exactly three honest endings:
+   (a) it lands in a skill with its sentence verbatim (rule 1) — the usual case;
+   (b) it stays a fact, untouched (rule 4);
+   (c) it is RETIRED as a duplicate, because some other unit already says it.
+   Take (c) only when the knowledge genuinely survives elsewhere, and declare it when you
+   finalize:
+     mneme classify finalize --retire <retired-unit-id>=<covering-unit-id>
+   repeating the flag per retirement. The unit ids are in this bundle. finalize refuses a
+   declaration whose covering unit does not exist on the branch, whose retired fact is not
+   on main, or whose fact is still present — and it refuses any pass where a fact's
+   sentence survives nowhere and nothing was declared. Every accepted retirement is
+   printed in the pull request, so a human sees exactly what left and what now covers it.
+   If you are not certain a fact is covered, choose (a) or (b): retiring is the one
+   decision here that removes knowledge.
 6. Propose the COMPLETE mapping to the user first — fact by fact: destination skill and
-   section, facts staying put, facts retired as duplicates, any new skill worth creating —
-   and WAIT for their approval before editing a single file.
+   section, facts staying put, facts retired as duplicates WITH the unit id that covers
+   each one, any new skill worth creating — and WAIT for their approval before editing a
+   single file. A retirement is a deletion: name its covering unit when you propose it, so
+   the user approves the removal and not merely the move.
 7. After the approved edits are applied, run `mneme classify finalize`. It migrates any
    remaining legacy facts, regenerates the knowledge-index, lints, scans, commits on the
    classify branch, and opens the pull request. If anything goes wrong, or the user calls

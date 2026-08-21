@@ -111,6 +111,16 @@ class MigrationResult:
         return bound_body(self.lines, budget, "migration note")
 
 
+def body_length(lines: list[str]) -> int:
+    """The characters `lines` will occupy in a body — the unit `bound_body` budgets in.
+
+    Exposed so a caller can reserve room for lines that must NOT be truncated (a
+    retirement is the only record that knowledge left, so dropping one hides a deletion)
+    and spend the remainder on lines that may be.
+    """
+    return sum(len(line) + 1 for line in lines)
+
+
 def bound_body(lines: list[str], budget: int | None = None, noun: str = "line") -> list[str]:
     """`lines`, truncated so that everything a caller writes into ONE body fits in it.
 
@@ -173,7 +183,10 @@ def migrate_legacy_facts(repo: Path) -> MigrationResult:
     if not legacy.is_dir():
         return result
     canonical = _canonical_dir(repo)
-    _migrate_into(repo, legacy, canonical, LEGACY_DIRNAME, units.FACTS_CANONICAL, result)
+    # The SAME resolution `_canonical_dir` used, in the string form git takes. Passing
+    # the constant here while resolving the path through `facts_write_dir` is how every
+    # `git mv` came to name a directory the migration was not writing into.
+    _migrate_into(repo, legacy, canonical, LEGACY_DIRNAME, units.facts_write_rel(repo), result)
     _drop_empty(legacy, LEGACY_DIRNAME)
     result.removed_dir = True
     return result
@@ -205,7 +218,7 @@ def _migrate_into(
         # same proof `harvest._unit_path` makes for candidate-supplied names); the SOURCE
         # is an entry this migration is about to move and delete.
         _from_legacy(src, rel_src)
-        dest = _contained(canonical, name, rel_src)
+        dest = _contained(canonical, name, rel_src, rel_canonical)
         if name == ".gitkeep":
             # A placeholder is not knowledge: the canonical directory it was standing in
             # for is about to exist for real.
@@ -309,7 +322,7 @@ def _aside(canonical: Path, name: str, rel_canonical: str, rel_src: str) -> tupl
     for attempt in range(1, 100):
         suffix = "-legacy" if attempt == 1 else f"-legacy-{attempt}"
         candidate = f"{stem}{suffix}.md"
-        path = _contained(canonical, candidate, rel_src)
+        path = _contained(canonical, candidate, rel_src, rel_canonical)
         if not _occupied(path):
             return path, f"{rel_canonical}/{candidate}"
     raise MnemeError(
@@ -399,14 +412,15 @@ def _canonical_dir(repo: Path) -> Path:
     The repo root itself is deliberately not checked: it is the caller's own path, a clone
     under a symlinked parent is ordinary, and every proof below is made relative to it.
     """
+    canonical_rel = units.facts_write_rel(repo)
     walked = repo
-    for part in Path(units.FACTS_CANONICAL).parts:
+    for part in Path(canonical_rel).parts:
         walked = walked / part
         if walked.is_symlink():
             rel = walked.relative_to(repo).as_posix()
             raise MnemeError(
                 f"{rel} is a symlink, not a directory — refusing to migrate into"
-                f" {units.FACTS_CANONICAL}/ through it: every fact would be renamed to the"
+                f" {canonical_rel}/ through it: every fact would be renamed to the"
                 " far end of the link, outside the gates this repo runs and outside what a"
                 " rollback can reach, while the migration reported it moved. Replace the"
                 " link with a real directory (or remove it), then run the migration again"
@@ -431,7 +445,7 @@ def _from_legacy(src: Path, rel_src: str) -> None:
         )
 
 
-def _contained(canonical: Path, name: str, rel_src: str) -> Path:
+def _contained(canonical: Path, name: str, rel_src: str, rel_canonical: str) -> Path:
     """`canonical/name`, proven to stay inside `canonical` once every link is resolved.
 
     The resolved form is what matters: a canonical entry that is a *symlink* out of the
@@ -450,7 +464,7 @@ def _contained(canonical: Path, name: str, rel_src: str) -> Path:
         raise MnemeError(f"cannot migrate {_safe(rel_src)}: {e.strerror or e}") from e
     if not resolved.is_relative_to(root):
         raise MnemeError(
-            f"{_safe(rel_src)} would land outside {units.FACTS_CANONICAL}/ — refusing to migrate it"
+            f"{_safe(rel_src)} would land outside {rel_canonical}/ — refusing to migrate it"
         )
     return dest
 

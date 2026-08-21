@@ -8,6 +8,136 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.8.0 — 2026-08-21
+
+Mneme adopts any repo, not only a knowledge plugin (user direction, 2026-08-14). Before
+this release a registered repo had to be — or had to become — a Claude Code plugin, which
+made the cheapest and most frequent case the hardest one: a team that wants its own service
+repo to accumulate what it learns while working in it. Registration never actually checked,
+so an ordinary app repo could always be registered and would then brick on its first fact.
+
+- **A registered repo now has a MODE, and it decides writes only.** A **plugin**
+  (`.claude-plugin/plugin.json` present) keeps knowledge where it always has,
+  `skills/knowledge-index/`. A **plain repo** — an app, a service, an infra repo — keeps it
+  at `mneme-index/` at the top level. A plugin's `skills/` tree means something to the
+  harness; an application's is its own, and mneme writing into it is how a harvest came to
+  fail lint over a file mneme neither wrote nor can fix. Every READER accepts every layout
+  (`units.facts_dirs`, `fact_files`, `find_fact_file`, `skill_dirs`), so a repo that gains or
+  loses a manifest keeps all of its knowledge visible across the change.
+- **The harvest bug that motivated it.** `harvest._regenerate_index` returned early when
+  there was no plugin manifest, so a fact write created `skills/knowledge-index/` with no
+  `SKILL.md` inside it, `lint_repo` failed MN001 on a directory mneme had just made itself,
+  and the whole harvest rolled back. The router is not an optional extra keyed on a
+  manifest — a repo with facts and no routing table is knowledge no agent is told exists —
+  so it is now written unconditionally, into whichever root the mode resolves.
+- **Two questions that were sharing one `skills/` walk.** `units.skill_dirs` is what mneme
+  MAINTAINS and what lint enforces against: all of `skills/` in a plugin, the knowledge root
+  alone in a plain repo. `units.readable_skill_dirs` is what mneme can READ and what the
+  index ingests: that plus any `skills/<name>/` carrying a `SKILL.md`. The asymmetry is
+  deliberate — linting a file mneme does not maintain can BRICK a repo, since one MN003 in
+  an app's own `skills/` aborts a harvest and rolls it back, while indexing one costs a row
+  in a search table. A hand-built knowledge repo that never grew a manifest keeps every
+  skill it has searchable rather than silently vanishing from results.
+- **`/mneme:adopt` adds a corner instead of annexing the repo.** It classifies once and says
+  which mode it picked and why — a manifest settles it, and so does an existing
+  `skills/<name>/SKILL.md`, because a hand-built knowledge repo that never got packaged is
+  still a knowledge repo. `--as-plugin` and `--plain` override in either direction. In plain
+  mode it writes `MNEME.md`, the `mneme-index/` router, its facts directory and its own
+  `CONTRIBUTING.md` inside the directory that document governs. It does not write the plugin
+  manifests (the repo is not being published), `release.yml` (it bumps a version in a
+  manifest that will not exist), or the repo's root `CONTRIBUTING.md`. CODEOWNERS claims
+  `/mneme-index/` rather than `*`, and when a CODEOWNERS already exists the rule is
+  REPORTED, never appended: adopt adds missing files and never edits repo content, and a
+  file that routes code review is the last place to make an exception. CI lands as
+  `mneme-validate.yml`, so it cannot collide with a `validate.yml` the repo already has, and
+  every trigger is path-scoped to the knowledge root — an application's CI budget is not
+  mneme's to spend on pull requests that do not touch a fact.
+- **Adoption drafts the scope statement instead of interviewing from nothing.** The scope
+  statement is the routing prompt every candidate fact is matched against, so a vague one
+  quietly steals candidates from every sibling scope — and "what should this repo's scope be"
+  is a question almost nobody can answer cold. `mneme adopt <name> --describe` prints what a
+  draft can be built from: the README's first paragraph, package manifests, the shape and
+  language mix as GIT sees it (so a vendored `node_modules` is neither counted nor walked),
+  recent commit subjects, which agent-facing docs exist, the mode adoption will pick, and the
+  scopes already registered so the draft can say where this one ENDS. It reads and reports;
+  it adopts nothing. Every source is contributor-authored text quoted into an instruction
+  context, so the bundle travels inside the same standing-rule sandwich the classify and
+  review bundles use — first key and last — and every reader is bounded, with each failure an
+  absent source rather than an exception.
+- **`/mneme:classify` declines where it has nowhere to file anything.** The librarian pass
+  moves loose facts INTO destination skills, and a plain repo has none. It refuses at
+  `begin`, `bundle` and `finalize` alike, because a refusal only at the first door is one an
+  agent routes around; `abort` stays open so a branch that got made anyway can be unmade. The
+  refusal names what does work — `share` captures, `review` accepts a pull request and the
+  facts inside it, `migrate` moves a legacy `facts/`, `adopt --as-plugin` makes it a plugin —
+  because a user who reads "not supported" and nothing else has no idea they can still
+  capture and ship.
+- **The preservation gate could not see a plain repo's facts at all.** Found by verifying
+  the plan's own checklist rather than by writing the feature: a fact committed on `main` in
+  `mneme-index/facts/` could be deleted on the branch and the finalize passed, because
+  `_main_fact_bullets` carried its own tuple of layout prefixes. Three more sites carried the
+  same two literals — "facts live in exactly two places" and "the router is at
+  `skills/knowledge-index`" — each with a docstring arguing why, and all four were wrong at
+  once. The rules now live once in `units` (`is_fact_path`, `in_knowledge_root`) and every
+  site asks. `_carries_knowledge` also takes the repo now, because in a plain repo NOTHING
+  carries knowledge: `skills/` there is the application's, and accepting a fact's sentence
+  appearing in it as an "integration" would let a deleted fact be accounted for by a file
+  mneme did not write.
+- **Mode is visible where a user looks.** `mneme status` and `mneme registry list` name it,
+  and a repo whose local clone is missing reports THAT rather than "plain" — `is_plugin` on a
+  directory that is not there is False, and printing a mode mneme has no evidence for is the
+  claim a user would act on.
+- **Nothing mneme writes travels through a symlink.** `layout._canonical_dir` proved this
+  and argued why the containment check the other write paths made is not enough:
+  `path.resolve().is_relative_to(root.resolve())` is vacuous when `root` is itself the link,
+  because it resolves to the far end. So a committed `mneme-index/facts` symlink turned every
+  harvest into a silent write outside the repo — mneme reported the unit landed, the commit
+  carried a router pointing at a file not in the tree, and the rollback could not reach what
+  was written. Adoption was worse: `exists()` follows links, so a DANGLING one read as a
+  missing file, the "only add what is missing" test passed, and the write CREATED the link's
+  target — an arbitrary file at any path the user can write, chosen by somebody else's repo,
+  invisible to the `git status` adoption tells you to review it with. Every segment is repo
+  content a contributor can commit; `units.first_link_segment` states the rule once and all
+  three writers ask it.
+- **The preservation gate's fourth proof, and a pass that could vote on its own mode.**
+  `_integration_text` still read the working tree after its three siblings were taught to ask
+  git, so a `skills/<name>/notes.md` symlinked outside the repo satisfied the integration
+  check while the committed blob was the link's target string — the sentence existed in zero
+  committed files and the finalize passed. And the mode check read the working tree, which
+  during a pass is the thing under suspicion: a pass that wrote a manifest, or a router under
+  `skills/`, flipped the application's own `skills/` into valid integration evidence for a
+  fact it had just deleted. Mode now comes from `main`, the one ref PR-only guarantees a pass
+  cannot edit.
+- **A knowledge repo with no plugin manifest is still a knowledge repo.** `knowledge_root`
+  decided mode on the manifest alone while `scaffold._adopt_mode` argued the opposite, both
+  added in the same change. For every repo that was never packaged — an ordinary shape — that
+  meant all skill linting silently off, `classify` refused, and the next harvest pointed at a
+  second router Claude Code never discovers, with rows naming files that do not exist.
+  `units.established_root` settles it: a root the repo ALREADY uses wins, proven by a router
+  (ranked first) or a fact, never by an empty directory. `units.maintains_skills` — mneme owns
+  `skills/` exactly when its own router lives inside it — is the single rule behind lint,
+  `apply_skill`, classify's refusal, `verify`, and review's integration evidence.
+- **Adoption no longer annexes a repo on a guess.** Classifying any repo with one
+  `skills/<n>/SKILL.md` as a plugin wrote manifests, a root CODEOWNERS routing every pull
+  request, repo-wide CI, and a `release.yml` that commits and pushes to `main` under
+  `contents: write`. `skills/` is what a repo using Claude Code has; it is not consent. The
+  ambiguity is reported and `--as-plugin` is one flag away. Adopt also refuses any flag that
+  would give a repo a SECOND knowledge root, checks all three CODEOWNERS locations GitHub
+  reads in both modes, says what it already wrote when it fails partway, and warns when it
+  leaves a repo with no `## Scope statement` — an empty routing prompt nothing will route to.
+  `release.yml` no longer does `git commit -am`, which swept every tracked modification into
+  a bot commit about a version bump.
+- **`--describe` is hardened against the repos it reads.** It no longer follows a symlinked
+  `README.md` out of the repo, hangs forever on a FIFO, crashes on an unreadable `skills/`,
+  or lets one undecodable sibling `MNEME.md` brick adoption of every other repo — and all
+  five of its sources are bounded, not one.
+
+- **Docs.** `docs/getting-started.md` gains Path D, written from transcripts captured against
+  a real service repo end to end — register, `--describe`, adopt, share, the branch diff, the
+  merge — and states what plain mode does NOT give you: no classify, no marketplace
+  distribution, no automatic in-repo context for a teammate without mneme. `docs/install.md`
+  presents a plain repo as a first-class target rather than offering only knowledge repos.
+
 ## 0.7.0 — 2026-08-13
 
 Facts writes are unconditional and a legacy layout is migrated, never accommodated

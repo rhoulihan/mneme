@@ -92,6 +92,12 @@ def test_scan_exit_codes(tmp_path, capsys):
 
 
 def test_lint_exit_codes(tmp_path, capsys):
+    # A plugin: `skills/` there is mneme's to enforce against. In a plain repo it is the
+    # application's, and lint deliberately says nothing about it.
+    (tmp_path / ".claude-plugin").mkdir(parents=True)
+    (tmp_path / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
     skill = tmp_path / "skills" / "bad-skill"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: wrong-name\ndescription: d\n---\n", encoding="utf-8")

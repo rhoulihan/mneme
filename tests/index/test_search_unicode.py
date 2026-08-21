@@ -6,6 +6,12 @@ from mneme_index import build, db, search
 
 
 def make_tree(root):
+    # A knowledge repo is a plugin: the manifest is what tells mneme these `skills/` are
+    # its own to lint, rather than an application's directory it must keep its hands off.
+    (root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
     d = root / "skills" / "japanese-docs"
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(

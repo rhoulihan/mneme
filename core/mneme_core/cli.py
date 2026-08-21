@@ -113,6 +113,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_adopt.add_argument("name")
     p_adopt.add_argument("--description", default="")
     p_adopt.add_argument("--owner", default="maintainers")
+    # Tri-state on purpose: unset means "classify this repo", and the two flags are how a
+    # user overrides a classification that got it wrong in either direction.
+    p_adopt.add_argument("--as-plugin", dest="as_plugin", action="store_true", default=None)
+    p_adopt.add_argument("--plain", dest="as_plugin", action="store_false")
+    p_adopt.add_argument("--describe", action="store_true")
 
     # No plugin-name positional anywhere in the classify surface: the current directory
     # is the argument. `--cwd` exists so tests (and wrappers) can point at a directory
@@ -126,6 +131,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cfinalize = classify_sub.add_parser("finalize")
     p_cfinalize.add_argument("--cwd", type=Path, default=None)
     p_cfinalize.add_argument("--no-push", action="store_true")
+    p_cfinalize.add_argument(
+        "--retire", action="append", default=[], metavar="RETIRED=COVERING",
+        help="retire a fact this pass removed, naming the unit that already covers it: <retired-unit-id>=<covering-unit-id> (repeatable)",
+    )
     p_cabort = classify_sub.add_parser("abort")
     p_cabort.add_argument("--cwd", type=Path, default=None)
 
@@ -142,6 +151,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rfinalize = review_sub.add_parser("finalize")
     p_rfinalize.add_argument("--cwd", type=Path, default=None)
     p_rfinalize.add_argument("--no-push", action="store_true")
+    p_rfinalize.add_argument(
+        "--retire", action="append", default=[], metavar="RETIRED=COVERING",
+        help="retire a fact this pass removed, naming the unit that already covers it: <retired-unit-id>=<covering-unit-id> (repeatable)",
+    )
     p_rabort = review_sub.add_parser("abort")
     p_rabort.add_argument("--cwd", type=Path, default=None)
 
@@ -290,12 +303,24 @@ def main(argv: list[str] | None = None) -> int:
             from . import scaffold as scaffold_mod
             from . import units as units_mod
 
-            added = scaffold_mod.adopt(
-                home, args.name, description=args.description, owner=args.owner
+            if args.describe:
+                # Reads and reports; adopts nothing. The scope statement it feeds is the
+                # routing prompt, so it is drafted and agreed BEFORE any file is written.
+                import json as json_mod
+
+                print(json_mod.dumps(
+                    scaffold_mod.describe(home, args.name, as_plugin=args.as_plugin)
+                ))
+                return 0
+            adopted = scaffold_mod.adopt(
+                home, args.name, description=args.description, owner=args.owner,
+                as_plugin=args.as_plugin,
             )
-            for rel in added:
+            for note in adopted.notes:
+                print(note)
+            for rel in adopted.added:
                 print(f"added: {rel}")
-            if not added:
+            if not adopted.added:
                 print("nothing to add")
             plugin = registry_mod.get_plugin(home, args.name)
             # Adoption is where a pre-0.5 repo meets mneme, so it is where the user learns
@@ -306,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"legacy facts layout: {layout_mod.LEGACY_DIRNAME}/ is left as it is —"
                     f" the next contribution migrates it into"
-                    f" {units_mod.FACTS_CANONICAL}/ (or run: mneme migrate here)"
+                    f" {units_mod.facts_write_rel(Path(plugin.path))}/ (or run: mneme migrate here)"
                 )
             issues = lint_mod.lint_repo(Path(plugin.path))
             errors = [i for i in issues if i.severity == "error"]
@@ -358,6 +383,21 @@ def _legacy_layout_plugins(plugins) -> list[str]:
     return names
 
 
+def _mode_label(plugin) -> str:
+    """"plugin", "plain", or why neither can be said.
+
+    A missing clone is reported, never guessed: `units.is_plugin` on a directory that is
+    not there is False, and printing "plain" for a repo nobody can read is a claim mneme
+    has no evidence for — and the one a user would act on.
+    """
+    from . import units as units_mod
+
+    path = Path(plugin.path)
+    if not path.is_dir():
+        return "no local clone"
+    return "plugin" if units_mod.is_plugin(path) else "plain"
+
+
 def _status_cmd(home: Path) -> int:
     import json as json_mod
 
@@ -372,7 +412,7 @@ def _status_cmd(home: Path) -> int:
     plugins = registry_mod.load_registry(home)
     print(f"plugins: {len(plugins)} registered")
     for p in plugins:
-        print(f"- {p.name} [{p.sensitivity}]")
+        print(f"- {p.name} [{p.sensitivity}] ({_mode_label(p)})")
     for name in _legacy_layout_plugins(plugins):
         print(f"legacy facts layout: {name} (run: mneme migrate in that repo)")
     flag_records, bad_flags = flags_mod._read_flag_lines(home)
@@ -472,7 +512,7 @@ def _registry_cmd(home: Path, args: argparse.Namespace) -> int:
         return 0
     if args.registry_command == "list":
         for p in registry.load_registry(home):
-            print(f"{p.name}  {p.sensitivity}  {p.repo}")
+            print(f"{p.name}  {p.sensitivity}  {_mode_label(p)}  {p.repo}")
         return 0
     if args.registry_command == "remove":
         registry.remove_plugin(home, args.name)
@@ -620,31 +660,35 @@ def _verify_cmd(home: Path, args: argparse.Namespace) -> int:
     total = 0
     stale: list[tuple[str, str, str]] = []
 
-    skills_dir = repo / "skills"
-    if skills_dir.is_dir():
-        for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
-            # knowledge-index is regenerated mechanically from the fact files it lists,
-            # so it carries no verification stamp and is never a human-verifiable unit —
-            # sweeping it would report every scaffolded repo as permanently stale.
-            if d.name == "knowledge-index":
-                continue
-            skill_md = d / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            total += 1
-            try:
-                meta, _ = units_mod.parse_frontmatter(skill_md.read_text(encoding="utf-8-sig"))
-            except MnemeError:
-                stale.append((units_mod.skill_unit_id(d.name), "none", "unknown"))
-                continue
-            md = meta.get("metadata", {})
-            verified = str(md.get("mneme-last-verified", "")) if isinstance(md, dict) else ""
-            a = age(verified) if verified else None
-            if a is None or a > args.days:
-                stale.append(
-                    (units_mod.skill_unit_id(d.name), verified or "none",
-                     str(a) if a is not None else "unknown")
-                )
+    # `units.skill_dirs`, never a `skills/` walk of its own. Hand-walking it reported an
+    # adopted application's own skills as stale — units mneme neither wrote nor can stamp —
+    # so `mneme verify` exited 2 forever over content it does not own.
+    # `units.skill_dirs`, never a `skills/` walk of its own. Hand-walking it reported an
+    # adopted application's own skills as stale — units mneme neither wrote nor can stamp —
+    # so `mneme verify` exited 2 forever over content it does not own.
+    for d in units_mod.skill_dirs(repo):
+        # The knowledge root is regenerated mechanically from the fact files it lists, so
+        # it carries no verification stamp and is never a human-verifiable unit — sweeping
+        # it would report every scaffolded repo as permanently stale.
+        if units_mod.in_knowledge_root(d.relative_to(repo).as_posix() + "/"):
+            continue
+        skill_md = d / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        total += 1
+        try:
+            meta, _ = units_mod.parse_frontmatter(skill_md.read_text(encoding="utf-8-sig"))
+        except MnemeError:
+            stale.append((units_mod.skill_unit_id(d.name), "none", "unknown"))
+            continue
+        md = meta.get("metadata", {})
+        verified = str(md.get("mneme-last-verified", "")) if isinstance(md, dict) else ""
+        a = age(verified) if verified else None
+        if a is None or a > args.days:
+            stale.append(
+                (units_mod.skill_unit_id(d.name), verified or "none",
+                 str(a) if a is not None else "unknown")
+            )
 
     # Both fact layouts: a repo mid-migration must not report a smaller, rosier universe
     # of units than it actually carries.
@@ -828,7 +872,7 @@ def _classify_cmd(home: Path, args: argparse.Namespace) -> int:
         print(json_mod.dumps(classify_mod.bundle(home, cwd)))
         return 0
     if args.classify_command == "finalize":
-        result = classify_mod.finalize(home, cwd, push=not args.no_push)
+        result = classify_mod.finalize(home, cwd, push=not args.no_push, retire=args.retire)
         print(f"classified {result.target}: {len(result.units)} changes on {result.branch}")
         print(f"pr: {result.pr}")
         return 0
@@ -853,7 +897,9 @@ def _review_cmd(home: Path, args: argparse.Namespace) -> int:
         print(classify_mod.review_begin(home, cwd))
         return 0
     if args.review_command == "finalize":
-        result = classify_mod.review_finalize(home, cwd, push=not args.no_push)
+        result = classify_mod.review_finalize(
+            home, cwd, push=not args.no_push, retire=args.retire
+        )
         print(f"reviewed {result.target}: {len(result.units)} changes on {result.branch}")
         print(f"pr: {result.pr}")
         return 0
