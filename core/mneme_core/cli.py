@@ -308,7 +308,9 @@ def main(argv: list[str] | None = None) -> int:
                 # routing prompt, so it is drafted and agreed BEFORE any file is written.
                 import json as json_mod
 
-                print(json_mod.dumps(scaffold_mod.describe(home, args.name)))
+                print(json_mod.dumps(
+                    scaffold_mod.describe(home, args.name, as_plugin=args.as_plugin)
+                ))
                 return 0
             adopted = scaffold_mod.adopt(
                 home, args.name, description=args.description, owner=args.owner,
@@ -658,31 +660,35 @@ def _verify_cmd(home: Path, args: argparse.Namespace) -> int:
     total = 0
     stale: list[tuple[str, str, str]] = []
 
-    skills_dir = repo / "skills"
-    if skills_dir.is_dir():
-        for d in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
-            # knowledge-index is regenerated mechanically from the fact files it lists,
-            # so it carries no verification stamp and is never a human-verifiable unit —
-            # sweeping it would report every scaffolded repo as permanently stale.
-            if d.name == "knowledge-index":
-                continue
-            skill_md = d / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            total += 1
-            try:
-                meta, _ = units_mod.parse_frontmatter(skill_md.read_text(encoding="utf-8-sig"))
-            except MnemeError:
-                stale.append((units_mod.skill_unit_id(d.name), "none", "unknown"))
-                continue
-            md = meta.get("metadata", {})
-            verified = str(md.get("mneme-last-verified", "")) if isinstance(md, dict) else ""
-            a = age(verified) if verified else None
-            if a is None or a > args.days:
-                stale.append(
-                    (units_mod.skill_unit_id(d.name), verified or "none",
-                     str(a) if a is not None else "unknown")
-                )
+    # `units.skill_dirs`, never a `skills/` walk of its own. Hand-walking it reported an
+    # adopted application's own skills as stale — units mneme neither wrote nor can stamp —
+    # so `mneme verify` exited 2 forever over content it does not own.
+    # `units.skill_dirs`, never a `skills/` walk of its own. Hand-walking it reported an
+    # adopted application's own skills as stale — units mneme neither wrote nor can stamp —
+    # so `mneme verify` exited 2 forever over content it does not own.
+    for d in units_mod.skill_dirs(repo):
+        # The knowledge root is regenerated mechanically from the fact files it lists, so
+        # it carries no verification stamp and is never a human-verifiable unit — sweeping
+        # it would report every scaffolded repo as permanently stale.
+        if units_mod.in_knowledge_root(d.relative_to(repo).as_posix() + "/"):
+            continue
+        skill_md = d / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        total += 1
+        try:
+            meta, _ = units_mod.parse_frontmatter(skill_md.read_text(encoding="utf-8-sig"))
+        except MnemeError:
+            stale.append((units_mod.skill_unit_id(d.name), "none", "unknown"))
+            continue
+        md = meta.get("metadata", {})
+        verified = str(md.get("mneme-last-verified", "")) if isinstance(md, dict) else ""
+        a = age(verified) if verified else None
+        if a is None or a > args.days:
+            stale.append(
+                (units_mod.skill_unit_id(d.name), verified or "none",
+                 str(a) if a is not None else "unknown")
+            )
 
     # Both fact layouts: a repo mid-migration must not report a smaller, rosier universe
     # of units than it actually carries.

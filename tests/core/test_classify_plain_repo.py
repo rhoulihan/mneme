@@ -35,7 +35,12 @@ def test_classify_declines_and_says_what_does_work(tmp_path):
     assert "review" in message and "share" in message
     # And it declined BEFORE touching the repo: no branch, still on main.
     assert gitops.current_branch(repo) == "main"
-    assert "mneme/classify-" not in gitops.git(repo, "branch", "--list", "mneme/classify-*")
+    # `branch --list <pattern>` returns "" on no match, so asserting absence in it is
+    # near-vacuous. Ask for every branch and check the pattern against the real list.
+    assert not [
+        b for b in gitops.git(repo, "branch", "--list").splitlines()
+        if "mneme/classify-" in b
+    ]
 
 
 def test_classify_declines_at_every_door_not_only_the_first(tmp_path):

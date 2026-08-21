@@ -5,6 +5,15 @@ from mneme_core.errors import MnemeError
 from mneme_core.staging import Candidate, candidate_id
 
 
+def _as_kb(repo):
+    """A repo whose skills/ mneme maintains — otherwise `apply_skill` refuses on MODE
+    before it ever reaches the path check these tests exist to exercise."""
+    (repo / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (repo / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "kb", "version": "0.1.0"}\n', encoding="utf-8"
+    )
+    return repo
+
 def skill_body(name="deploy-widget", description="Use when deploying widgets"):
     return compose.render_skill_unit(
         name, description, "1. steps", "what failed first",
@@ -21,6 +30,7 @@ def make_candidate(body, edit="new", target_unit=""):
 
 
 def test_apply_new_skill(tmp_path):
+    _as_kb(tmp_path)
     body = skill_body()
     line = harvest.apply_skill(tmp_path, make_candidate(body))
     written = tmp_path / "skills" / "deploy-widget" / "SKILL.md"
@@ -29,6 +39,7 @@ def test_apply_new_skill(tmp_path):
 
 
 def test_apply_new_skill_conflict(tmp_path):
+    _as_kb(tmp_path)
     body = skill_body()
     harvest.apply_skill(tmp_path, make_candidate(body))
     with pytest.raises(MnemeError):
@@ -36,6 +47,7 @@ def test_apply_new_skill_conflict(tmp_path):
 
 
 def test_apply_update_replaces(tmp_path):
+    _as_kb(tmp_path)
     harvest.apply_skill(tmp_path, make_candidate(skill_body()))
     new_body = skill_body(description="Use when deploying widgets after the LB fix")
     line = harvest.apply_skill(
@@ -48,6 +60,7 @@ def test_apply_update_replaces(tmp_path):
 
 
 def test_apply_update_missing_target(tmp_path):
+    _as_kb(tmp_path)
     with pytest.raises(MnemeError):
         harvest.apply_skill(
             tmp_path,
@@ -56,6 +69,7 @@ def test_apply_update_missing_target(tmp_path):
 
 
 def test_apply_update_name_mismatch(tmp_path):
+    _as_kb(tmp_path)
     harvest.apply_skill(tmp_path, make_candidate(skill_body()))
     other = skill_body(name="other-skill")
     with pytest.raises(MnemeError):

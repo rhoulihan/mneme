@@ -13,7 +13,8 @@ import subprocess
 
 import pytest
 
-from mneme_core import gitops, harvest, lint, registry, scaffold, units
+from mneme_core import gitops, harvest, lint, registry, scaffold, templates, units
+from mneme_core.errors import MnemeError
 from mneme_core.cli import main
 from mneme_core.registry import Plugin
 
@@ -98,15 +99,27 @@ def test_ownership_is_claimed_over_the_knowledge_root_not_the_repo(tmp_path):
     assert "* @pay-team" not in text, "adopting a service must not make mneme own its source"
 
 
-def test_an_existing_codeowners_is_reported_never_rewritten(tmp_path):
-    """Adopt adds files that are missing. It does not edit repo content — it advises."""
+@pytest.mark.parametrize("where", ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"])
+def test_an_existing_codeowners_is_reported_never_rewritten(tmp_path, where):
+    """Adopt adds files that are missing. It does not edit repo content — it advises.
+
+    All THREE locations GitHub reads, not just the root one. Only the root case was covered,
+    and it passed for the wrong reason: the write loop's own `exists()` skip masked it. With
+    the repo's file at `.github/CODEOWNERS`, adopt created a second one at the root AND
+    reported that it hadn't — and a second CODEOWNERS changes which file GitHub honours for
+    the whole repo, so mneme silently re-routed code review in somebody else's service.
+    """
     home = tmp_path / "home"
-    repo = app_repo(tmp_path, home, extra=[("CODEOWNERS", "* @platform\n")])
+    repo = app_repo(tmp_path, home, extra=[(where, "* @platform\n")])
 
     result = scaffold.adopt(home, "payments-service", owner="pay-team")
 
-    assert (repo / "CODEOWNERS").read_text("utf-8") == "* @platform\n"
+    assert (repo / where).read_text("utf-8") == "* @platform\n"
     assert "CODEOWNERS" not in result.added
+    # And no NEW one appeared anywhere — the assertion the advice-only check never made.
+    found = [p for p in ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS")
+             if (repo / p).is_file()]
+    assert found == [where], found
     assert any("/mneme-index/ @pay-team" in n for n in result.notes), result.notes
 
 
@@ -140,27 +153,6 @@ def test_ci_runs_on_the_knowledge_root_and_nothing_else(tmp_path):
         assert any(l.strip() == "paths:" for l in block), f"{trigger} is unscoped:\n{yml}"
         assert any('"mneme-index/**"' in l for l in block), f"{trigger} scope:\n{yml}"
     assert "find mneme-index" in yml
-
-
-def test_a_repo_that_already_carries_skills_is_adopted_as_a_plugin(tmp_path):
-    """A hand-built knowledge repo that never grew a manifest is still a knowledge repo.
-
-    Manifest-only classification would file its facts in `mneme-index/` while its curated
-    skills sat in `skills/` — split in half, with lint enforcing on neither.
-    """
-    home = tmp_path / "home"
-    repo = app_repo(
-        tmp_path, home, name="team-kb",
-        extra=[("skills/deploy-widget/SKILL.md",
-                "---\nname: deploy-widget\ndescription: Use when deploying the widget\n---\nBody\n")],
-    )
-
-    result = scaffold.adopt(home, "team-kb")
-
-    assert result.mode == "plugin"
-    assert (repo / ".claude-plugin" / "plugin.json").is_file()
-    assert "skills/knowledge-index/SKILL.md" in result.added
-    assert not (repo / "mneme-index").exists()
 
 
 def test_the_classification_can_be_overridden_in_both_directions(tmp_path):
@@ -214,5 +206,69 @@ def test_the_scope_doc_describes_the_mode_the_repo_is_actually_in(tmp_path):
     repo = app_repo(tmp_path, home)
     scaffold.adopt(home, "payments-service")
     text = (repo / "MNEME.md").read_text("utf-8")
-    assert "Durable facts" in text
-    assert "skills)" not in text
+    # `BELONGS_PLUGIN` also contains "Durable facts:", so that alone is satisfied by the
+    # wrong branch; and pinning the stray ")" from "procedures (skills):" breaks on any
+    # rewording. Assert the two constants directly — they are the thing being chosen between.
+    assert templates.BELONGS_PLAIN.splitlines()[0] in text
+    assert templates.BELONGS_PLUGIN.splitlines()[0] not in text
+
+
+def test_plain_is_refused_on_a_repo_that_carries_a_manifest(tmp_path):
+    """Mode must be TRUE of the repo afterwards, not just claimed by a flag.
+
+    `--plain` here reported `mneme-index/SKILL.md` and then wrote
+    `skills/knowledge-index/SKILL.md` — the one directory `--plain` promises never to claim
+    — because `regenerate_index_skill` re-derived the mode from the manifest. Even fixed,
+    the combination is incoherent: the manifest is what makes a repo a plugin, every later
+    read and write resolves through it, and removing it is repo content mneme does not edit.
+    """
+    home = tmp_path / "home"
+    repo = app_repo(tmp_path, home)
+    (repo / ".claude-plugin").mkdir()
+    (repo / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "payments", "version": "0.1.0"}\n', encoding="utf-8"
+    )
+
+    with pytest.raises(MnemeError, match="plugin.json"):
+        scaffold.adopt(home, "payments-service", as_plugin=False)
+
+    assert not (repo / "mneme-index").exists()
+    assert not (repo / "skills").exists()
+
+
+def test_a_repo_carrying_skills_is_no_longer_annexed_on_a_guess(tmp_path):
+    """`skills/` is what a repo using Claude Code has. It is not consent to be a plugin.
+
+    Classifying on it wrote plugin manifests, a root CODEOWNERS routing EVERY pull request
+    in the repo, repo-wide CI, and a `release.yml` that commits and pushes to `main` on its
+    own — into an application, on a guess, from one file the repo already had.
+    """
+    home = tmp_path / "home"
+    repo = app_repo(
+        tmp_path, home,
+        extra=[("skills/deploy-widget/SKILL.md",
+                "---\nname: deploy-widget\ndescription: Use when deploying the widget\n---\nBody\n")],
+    )
+
+    result = scaffold.adopt(home, "payments-service")
+
+    assert result.mode == "plain"
+    assert not (repo / ".claude-plugin").exists()
+    assert not (repo / ".github" / "workflows" / "release.yml").exists()
+    assert (repo / "CODEOWNERS").read_text("utf-8").count("* @") == 0
+    # But the ambiguity is REPORTED, so a real knowledge repo is one flag away.
+    assert any("--as-plugin" in n and "skills/" in n for n in result.notes), result.notes
+
+
+def test_plugin_mode_is_as_careful_with_codeowners_as_plain_mode(tmp_path):
+    """`_plain_files` checked three locations for an existing CODEOWNERS; the plugin path
+    checked none, so adopting wrote `* @maintainers` beside a repo's own `.github/CODEOWNERS`."""
+    home = tmp_path / "home"
+    repo = app_repo(tmp_path, home, extra=[(".github/CODEOWNERS", "* @platform-team\n")])
+
+    result = scaffold.adopt(home, "payments-service", as_plugin=True)
+
+    assert "CODEOWNERS" not in result.added
+    assert not (repo / "CODEOWNERS").exists()
+    assert (repo / ".github" / "CODEOWNERS").read_text("utf-8") == "* @platform-team\n"
+    assert any("CODEOWNERS" in n for n in result.notes), result.notes

@@ -16,6 +16,7 @@ import subprocess
 import pytest
 
 from mneme_core import gitops, registry, scaffold, templates
+from mneme_core.errors import MnemeError
 from mneme_core.cli import main
 from mneme_core.registry import Plugin
 
@@ -115,7 +116,8 @@ def test_the_bundle_reports_the_mode_adoption_will_pick(tmp_path):
     home = tmp_path / "home"
     bundle = describe(tmp_path, home)
     assert bundle["repo"]["mode"] == "plain"
-    assert bundle["repo"]["why"]
+    # The reason must match the mode, not merely be a non-empty string ("x" passed).
+    assert "not a knowledge plugin" in bundle["repo"]["why"]
     assert bundle["repo"]["knowledge_root"] == "mneme-index"
 
 
@@ -198,3 +200,109 @@ def test_describe_is_reachable_from_the_cli_as_json(tmp_path, capsys):
     assert bundle["repo"]["mode"] == "plain"
     # `--describe` reads and reports. It must not have adopted anything.
     assert not (tmp_path / "payments-service" / "MNEME.md").exists()
+
+
+# --- every bound, not just the one that had a test ---------------------------
+#
+# `describe`'s output is contributor-authored repo content pasted into an agent's prompt.
+# Only `_text`/README was covered, so `_TREE_ENTRIES`, `_SUBJECTS`, `_SUBJECT_CHARS` and
+# `_SIBLING_SCOPE_CHARS` were all removable with the suite green — a context blow-up and a
+# widened injection surface, both chosen by whoever wrote the repo.
+
+
+def test_the_tree_and_language_lists_are_bounded(tmp_path):
+    home = tmp_path / "home"
+    files = [(f"dir{i:03d}/f.py", "x\n") for i in range(120)]
+    files += [(f"ext{i}/f.e{i}", "x\n") for i in range(30)]
+    app_repo(tmp_path, home, name="wide", files=files)
+    sources = scaffold.describe(home, "wide")["sources"]
+    assert len(sources["tree"]) <= scaffold._TREE_ENTRIES
+    assert len(sources["languages"]) <= 12
+
+
+def test_commit_subjects_are_bounded_in_count_and_length(tmp_path):
+    home = tmp_path / "home"
+    app_repo(
+        tmp_path, home, name="chatty",
+        files=[("a.txt", "x\n")],
+        commits=[f"fix: {'y' * 400} number {i}" for i in range(25)],
+    )
+    subjects = scaffold.describe(home, "chatty")["sources"]["recent_subjects"]
+    assert len(subjects) <= scaffold._SUBJECTS
+    assert all(len(s) <= scaffold._SUBJECT_CHARS for s in subjects)
+
+
+def test_a_sibling_scope_is_bounded_and_one_bad_sibling_breaks_nothing(tmp_path):
+    """`_siblings` was the one reader that ignored the module's own bounded helper.
+
+    `read_scope_statement` caught only `OSError`, so a single invalid UTF-8 byte in ANY
+    registered repo's MNEME.md raised out of `describe` — one bad sibling bricked adoption
+    of every other repo — and a huge one was read whole to produce 400 characters.
+    """
+    home = tmp_path / "home"
+
+    huge = tmp_path / "huge-kb"
+    huge.mkdir()
+    (huge / "MNEME.md").write_text(
+        "# huge\n\n## Scope statement\n\n" + "z" * 300_000 + "\n", encoding="utf-8"
+    )
+    registry.add_plugin(home, Plugin(name="huge-kb", repo="r", path=str(huge)))
+
+    broken = tmp_path / "broken-kb"
+    broken.mkdir()
+    (broken / "MNEME.md").write_bytes(b"# broken\n\n## Scope statement\n\n\xff\xfe\x00bad\n")
+    registry.add_plugin(home, Plugin(name="broken-kb", repo="r", path=str(broken)))
+
+    gone = tmp_path / "gone-kb"
+    registry.add_plugin(home, Plugin(name="gone-kb", repo="r", path=str(gone)))
+
+    bundle = describe(tmp_path, home)
+
+    scopes = {s["name"]: s["scope"] for s in bundle["siblings"]}
+    assert set(scopes) == {"huge-kb", "broken-kb", "gone-kb"}
+    assert len(scopes["huge-kb"]) <= scaffold._SIBLING_SCOPE_CHARS
+    assert scopes["gone-kb"] == ""
+
+
+def test_a_manifest_field_cannot_flood_the_bundle(tmp_path):
+    home = tmp_path / "home"
+    app_repo(
+        tmp_path, home, name="loud",
+        files=[("package.json",
+                '{"name": "' + "n" * 150_000 + '", "description": "' + "d" * 40_000 + '"}')],
+    )
+    manifests = scaffold.describe(home, "loud")["sources"]["manifests"]
+    assert manifests, "the manifest is still a source"
+    assert all(len(m["name"]) <= scaffold._MANIFEST_FIELD_CHARS for m in manifests)
+    assert all(len(m["description"]) <= scaffold._MANIFEST_FIELD_CHARS for m in manifests)
+
+
+def test_a_symlinked_source_is_not_followed_out_of_the_repo(tmp_path):
+    """`README.md -> /etc/passwd` is git-trackable and put that file into the bundle."""
+    home = tmp_path / "home"
+    secret = tmp_path / "secret.txt"
+    secret.write_text("root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8")
+    repo = app_repo(tmp_path, home, name="linked", files=[("a.txt", "x\n")])
+    (repo / "README.md").symlink_to(secret)
+
+    assert scaffold.describe(home, "linked")["sources"]["readme"] == ""
+
+
+def test_a_missing_clone_is_reported_not_guessed(tmp_path):
+    home = tmp_path / "home"
+    registry.add_plugin(home, Plugin(name="ghost", repo="r", path=str(tmp_path / "nope")))
+    with pytest.raises(MnemeError, match="clone"):
+        scaffold.describe(home, "ghost")
+
+
+def test_an_unreadable_skills_dir_does_not_crash_the_command(tmp_path):
+    """`iterdir()` on mode-000 raises, out of a command whose job is reading someone's repo."""
+    import os
+
+    home = tmp_path / "home"
+    repo = app_repo(tmp_path, home, name="locked", files=[("skills/x/SKILL.md", "---\n---\n")])
+    os.chmod(repo / "skills", 0o000)
+    try:
+        assert scaffold.describe(home, "locked")["repo"]["mode"] in ("plain", "plugin")
+    finally:
+        os.chmod(repo / "skills", 0o755)

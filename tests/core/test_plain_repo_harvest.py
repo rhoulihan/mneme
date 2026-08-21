@@ -134,9 +134,14 @@ def test_every_reader_accepts_every_layout(tmp_path):
         "facts/payments-service-topic.md",
     }
     # The repo's OWN layout is offered first, so callers that want one directory get the
-    # one new writes go to.
-    assert units.facts_dirs(repo)[0] == repo / "mneme-index" / "facts"
-    assert units.facts_dir(repo) == repo / "mneme-index" / "facts"
+    # one new writes go to — and "own" is the root the repo ALREADY uses, not the one its
+    # manifest would imply. This repo has facts under `skills/knowledge-index/`, so that is
+    # where the next one goes too; relocating an established root is what split a
+    # never-packaged knowledge repo across two routers, one of them stale.
+    assert units.facts_dirs(repo)[0] == repo / units.FACTS_CANONICAL
+    assert units.facts_dir(repo) == repo / units.FACTS_CANONICAL
+    assert units.knowledge_root(repo) == repo / units.PLUGIN_ROOT
+    assert units.maintains_skills(repo) is True
 
 
 def test_the_index_finds_the_plain_router(tmp_path):
@@ -147,7 +152,13 @@ def test_the_index_finds_the_plain_router(tmp_path):
 
     skipped: list[str] = []
     rows = build._skill_rows("payments-service", repo, skipped)
-    assert [r for r in rows if "mneme-index" in str(r)], f"router not indexed; skipped={skipped}"
+    # By FIELD, not `"mneme-index" in str(tuple)` — that blob match is satisfied by any
+    # field in any row containing the substring.
+    # Unit ids are location-independent by design, so the plain router's is
+    # `skills/mneme-index` just as the plugin router's is `skills/knowledge-index`.
+    assert [r for r in rows if r[1] == "skills/mneme-index" and r[3] == "mneme-index"], (
+        f"router not indexed; rows={rows} skipped={skipped}"
+    )
 
 
 def test_reading_an_app_s_skill_is_free_but_enforcing_on_it_is_not(tmp_path):
@@ -203,3 +214,100 @@ def test_a_plain_repo_s_legacy_facts_migrate_into_its_own_root(tmp_path):
     assert (repo / "mneme-index" / "facts" / "deploys.md").is_file()
     assert not (repo / units.FACTS_CANONICAL).exists()
     assert not legacy.exists()
+
+
+def test_a_skill_candidate_is_refused_in_a_plain_repo(tmp_path):
+    """`classify` refuses to file into an app's `skills/`; `apply_skill` must too.
+
+    It had no such gate, so a harvest wrote `skills/deploy-widget/SKILL.md` straight into
+    the application's tree — and because `skill_dirs` is narrow in plain mode, `lint_repo`
+    never saw it: a 799-character description that is REJECTED and rolled back in a plugin
+    repo (MN005) was committed and pushed in a plain one.
+    """
+    from mneme_core import compose
+    from mneme_core.errors import MnemeError
+
+    home, repo = plain_repo(tmp_path)
+    body = compose.render_skill_unit(
+        "deploy-widget", "Use when deploying the widget service", "1. steps", "what failed",
+        source="demo@s1", captured="2026-08-14",
+    )
+    cand = Candidate(
+        id=candidate_id("skill", "payments-service", body), type="skill", edit="new",
+        target="payments-service", body=body,
+    )
+    staging.write_candidate(home, cand)
+    main_before = gitops.git(repo, "rev-parse", "main")
+
+    with pytest.raises(MnemeError, match="skill"):
+        harvest.apply_batch(home, "payments-service", [cand], push=False)
+
+    assert not (repo / "skills").exists()
+    assert gitops.git(repo, "rev-parse", "main") == main_before
+    assert gitops.current_branch(repo) == "main"
+
+
+def test_the_router_names_a_path_a_reader_can_follow(tmp_path):
+    """Rows were always `facts/<name>`, correct only for facts inside the router's own dir.
+
+    With more than one root that made every other row a dead link, while the table looked
+    complete — and by this router's own rule, a topic missing from the table is a topic no
+    agent is told exists.
+    """
+    from mneme_core import scaffold as scaffold_mod
+
+    _home, repo = plain_repo(tmp_path)
+    for rel in (units.FACTS_CANONICAL, units.FACTS_PLAIN):
+        (repo / rel).mkdir(parents=True)
+    (repo / units.FACTS_CANONICAL / "own.md").write_text(
+        "---\ntopic: own\n---\n- [reference] Inside the router #x (verified: 2026-08-14)\n",
+        encoding="utf-8",
+    )
+    (repo / units.FACTS_PLAIN / "foreign.md").write_text(
+        "---\ntopic: foreign\n---\n- [reference] The other root #x (verified: 2026-08-14)\n",
+        encoding="utf-8",
+    )
+
+    router = scaffold_mod.regenerate_index_skill(repo, "payments-service", "scope")
+    text = router.read_text(encoding="utf-8")
+
+    assert "| own | facts/own.md | 1 |" in text
+    assert "| foreign | mneme-index/facts/foreign.md | 1 |" in text
+    # Every row resolves to a file that is actually there. A table whose rows name paths
+    # that do not exist is worse than no table, because it looks complete.
+    for row in [l for l in text.splitlines() if l.startswith("| ") and ".md" in l]:
+        path = row.split("|")[2].strip()
+        base = router.parent if not path.startswith(units.PLAIN_ROOT) else repo
+        assert (base / path).is_file(), f"dead link in the router: {row}"
+
+
+def test_the_router_identity_comes_from_declaration_then_registration(tmp_path):
+    """The description IS the routing prompt, so where it comes from is not cosmetic.
+
+    Every link in the chain — MNEME.md scope statement, then the REGISTERED name, then the
+    directory as a last resort — survived mutation, because every fixture set the registered
+    name equal to the directory name and left the scope statement empty. Nothing could tell
+    the three sources apart.
+    """
+    home = tmp_path / "home"
+    repo = tmp_path / "checkout-dir-with-another-name"
+    (repo / "src").mkdir(parents=True)
+    (repo / "MNEME.md").write_text(
+        "# payments-kb — knowledge scope\n\n## Scope statement\n\n"
+        "Settlement, refunds and chargeback handling in the payments service.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    gitops.git(repo, "config", "user.email", "t@example.com")
+    gitops.git(repo, "config", "user.name", "Test")
+    gitops.git(repo, "add", "-A")
+    gitops.git(repo, "commit", "-m", "the app")
+    registry.add_plugin(home, registry.Plugin(name="payments-kb", repo="r", path=str(repo)))
+
+    result = harvest.apply_batch(home, "payments-kb", [stage_fact(home, "payments-kb")], push=False)
+    router = gitops.git(repo, "show", f"{result.branch}:{units.PLAIN_ROOT}/SKILL.md")
+    meta, _ = units.parse_frontmatter(router)
+
+    assert "payments-kb" in meta["description"], "the REGISTERED name, not the directory"
+    assert "checkout-dir-with-another-name" not in meta["description"]
+    assert "Settlement, refunds and chargeback" in meta["description"], "the scope statement"

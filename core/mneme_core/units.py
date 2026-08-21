@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .errors import MnemeError
 
@@ -383,19 +383,69 @@ def is_plugin(root: Path) -> bool:
     return (root / ".claude-plugin" / "plugin.json").is_file()
 
 
+def established_root(root: Path) -> Path | None:
+    """A knowledge root this repo ALREADY uses, proven by content, or None.
+
+    Evidence, not an empty directory: a router, or at least one fact. The distinction
+    matters because an empty `skills/knowledge-index/` is exactly the debris the original
+    harvest bug left behind untracked, and treating debris as a declaration would move a
+    plain repo's knowledge into a directory nothing put anything in.
+    """
+    for rel in KNOWLEDGE_ROOTS:
+        d = root / rel
+        # `is_file()` and `glob` both RAISE on a directory the user cannot read (EACCES is
+        # not among the errnos pathlib swallows), and this runs inside commands whose whole
+        # job is reading a repo mneme did not write. An unreadable root is one mneme cannot
+        # claim to be using, which is the same answer as "not established".
+        try:
+            if (d / "SKILL.md").is_file() or any((d / "facts").glob("*.md")):
+                return d
+        except OSError:
+            continue
+    return None
+
+
 def knowledge_root(root: Path) -> Path:
     """The directory mneme keeps this repo's router skill and facts in.
 
-    A plugin gets `skills/knowledge-index/`, where Claude Code already discovers skills. An
-    ordinary repo gets `mneme-index/` at the top level: a plugin's `skills/` tree means
-    something to the harness, an app's does not, and writing into a directory whose meaning
-    belongs to the app is how mneme ends up failing lint on a game's combat skills.
+    A root the repo already uses WINS, whatever the manifest says. Deciding on the manifest
+    alone silently relocated every knowledge repo that was never packaged as a plugin —
+    a real and ordinary shape — so its next harvest wrote a second router at `mneme-index/`
+    while the one Claude Code actually discovers went stale, and the new router's rows named
+    files that were still under `skills/knowledge-index/facts/`. A routing table pointing at
+    paths that do not exist is worse than no table: it looks complete.
+
+    With no established root, the manifest decides where the FIRST one goes. A plugin gets
+    `skills/knowledge-index/`, where Claude Code already discovers skills. An ordinary repo
+    gets `mneme-index/` at the top level: a plugin's `skills/` tree means something to the
+    harness, an app's does not, and writing into a directory whose meaning belongs to the
+    app is how mneme ends up failing lint on a game's combat skills.
 
     This decides WRITES only. Every reader accepts every layout (`facts_dirs`,
     `fact_files`, `find_fact_file`, `skill_dirs`), so a repo that gains or loses a manifest
     keeps all of its knowledge visible across the change.
     """
+    established = established_root(root)
+    if established is not None:
+        return established
     return root / (PLUGIN_ROOT if is_plugin(root) else PLAIN_ROOT)
+
+
+def maintains_skills(root: Path) -> bool:
+    """Does mneme own this repo's `skills/` tree — lint it, write into it, file facts into it?
+
+    Exactly when mneme's own router lives inside it. That single rule replaced an
+    `is_plugin` check that disagreed with `scaffold._adopt_mode` in the same change: a
+    hand-built knowledge repo with curated skills and no manifest had all skill linting
+    (MN001/2/3) silently switched off, `classify` refused on it, and its facts were routed
+    to a second directory — while the adoption code argued at length that such a repo IS a
+    knowledge repo.
+
+    An application's `skills/` is its own, and mneme neither wrote it, lints it, nor gets to
+    fail a harvest over it. The router's location is what tells the two apart, because mneme
+    put the router there and nobody else did.
+    """
+    return knowledge_root(root).parent.name == "skills"
 
 
 def facts_write_dir(root: Path) -> Path:
@@ -412,6 +462,32 @@ def facts_write_dir(root: Path) -> Path:
     readable by lint, verify, index, search, and the classify/review bundles.
     """
     return knowledge_root(root) / "facts"
+
+
+def first_link_segment(root: Path, rel: str) -> str | None:
+    """The first segment of `root/rel` that is a SYMLINK, or None if the path is clean.
+
+    "Nothing mneme writes travels through a link", stated once. `layout._canonical_dir`
+    proved this and argued at length why it must — a directory that is itself a link
+    resolves to the far end, so a containment check made against the RESOLVED root is
+    vacuous and the write lands outside the repo while mneme reports success — and then the
+    two paths that actually create files, `harvest._unit_path` and `scaffold.adopt`, never
+    asked the question at all.
+
+    Every segment is repo content: a contributor, or a merged pull request, can commit any
+    of them as a symlink (git stores mode `120000` without complaint). The repo root itself
+    is deliberately NOT checked — a clone under a symlinked parent is ordinary, and every
+    proof is made relative to that root.
+
+    Returns the offending segment rather than raising, because each caller owes the user a
+    different sentence about what it was refusing to do.
+    """
+    walked = root
+    for part in PurePosixPath(rel).parts:
+        walked = walked / part
+        if walked.is_symlink():
+            return walked.relative_to(root).as_posix()
+    return None
 
 
 def facts_write_rel(root: Path) -> str:
@@ -474,7 +550,7 @@ def skill_dirs(root: Path) -> list[Path]:
     `readable_skill_dirs` answers the different question the index asks.
     """
     dirs: list[Path] = []
-    if is_plugin(root):
+    if maintains_skills(root):
         skills = root / "skills"
         if skills.is_dir():
             dirs.extend(sorted(p for p in skills.iterdir() if p.is_dir()))

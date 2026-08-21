@@ -67,8 +67,10 @@ def test_the_preservation_gate_fires_in_a_plain_repo(tmp_path):
     )
     with pytest.raises(MnemeError) as e:
         classify.review_finalize(home, repo, push=False)
+    # The bullet's own words, not `FACT.split()[0]` — which is "The", and matches any
+    # English sentence — and not the path, which the line above already covers.
     assert "chargebacks" in str(e.value)
-    assert FACT.split()[0].lower() in str(e.value).lower() or "facts/chargebacks" in str(e.value)
+    assert "seventy two hours" in str(e.value), str(e.value)
 
 
 def test_the_secret_scan_fires_in_a_plain_repo(tmp_path):
@@ -215,3 +217,140 @@ def test_an_app_s_own_skill_can_never_account_for_a_deleted_fact(tmp_path):
     )
     with pytest.raises(MnemeError, match="chargebacks"):
         classify.review_finalize(home, repo, push=False)
+
+
+# --- the gate's proofs must all ask git, and none may vote on its own mode ----
+
+
+def test_an_integration_proved_by_a_symlink_does_not_count(tmp_path):
+    """The gate's FOURTH proof. Git commits the link's target STRING, not the bytes.
+
+    `_branch_fact_texts` and `_branch_unit_ids` were both taught to ask `_committable`;
+    `_integration_text` sat ten lines away still asking the disk, so a `SKILL.md` sibling
+    symlinked at a file outside the repo satisfied the integration proof while the sentence
+    appeared in zero committed files.
+    """
+    home = tmp_path / "home"
+    target = scaffold.create(home, "acme-knowledge", owner="demo")
+    skill = target / "skills" / "drain-a-widget-deploy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: drain-a-widget-deploy\ndescription: Use when draining a deploy\n---\nBody\n",
+        encoding="utf-8",
+    )
+    facts = target / units.FACTS_CANONICAL
+    facts.mkdir(parents=True, exist_ok=True)
+    (facts / "deploys.md").write_text(
+        f"---\ntopic: deploys\n---\n- [gotcha] {FACT} #deploy (verified: 2026-08-14)\n",
+        encoding="utf-8",
+    )
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "seed")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "notes.md").write_text(f"Integrated here: {FACT}\n", encoding="utf-8")
+
+    classify.begin(home, target)
+    (facts / "deploys.md").write_text("---\ntopic: deploys\n---\n", encoding="utf-8")
+    (skill / "notes.md").symlink_to(outside / "notes.md")
+
+    with pytest.raises(MnemeError, match="deploys"):
+        classify.finalize(home, target, push=False)
+
+
+def test_a_gitignored_integration_does_not_count_either(tmp_path):
+    """Same proof, the other way a file fails to reach the commit."""
+    home = tmp_path / "home"
+    target = scaffold.create(home, "acme-knowledge", owner="demo")
+    skill = target / "skills" / "drain-a-widget-deploy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: drain-a-widget-deploy\ndescription: Use when draining a deploy\n---\nBody\n",
+        encoding="utf-8",
+    )
+    facts = target / units.FACTS_CANONICAL
+    facts.mkdir(parents=True, exist_ok=True)
+    (facts / "deploys.md").write_text(
+        f"---\ntopic: deploys\n---\n- [gotcha] {FACT} #deploy (verified: 2026-08-14)\n",
+        encoding="utf-8",
+    )
+    (target / ".gitignore").write_text("notes.md\n", encoding="utf-8")
+    gitops.git(target, "add", "-A")
+    gitops.git(target, "commit", "-m", "seed")
+
+    classify.begin(home, target)
+    (facts / "deploys.md").write_text("---\ntopic: deploys\n---\n", encoding="utf-8")
+    (skill / "notes.md").write_text(f"Integrated here: {FACT}\n", encoding="utf-8")
+
+    with pytest.raises(MnemeError, match="deploys"):
+        classify.finalize(home, target, push=False)
+
+
+def test_a_pass_cannot_vote_itself_plugin_powers(tmp_path):
+    """The mode check must read `main` — the one ref PR-only guarantees the pass cannot edit.
+
+    Reading `units.is_plugin` off the working tree let a pass write the very manifest it was
+    being judged by: add `.claude-plugin/plugin.json` and `_carries_knowledge` flips to True
+    for the application's own `skills/`, so a fact deleted from `mneme-index/facts/` is
+    suddenly accounted for by a file mneme did not write.
+    """
+    home, repo = seeded_app(tmp_path)
+    (repo / "skills" / "combat").mkdir(parents=True)
+    (repo / "skills" / "combat" / "SKILL.md").write_text(
+        f"---\nname: combat\ndescription: the app's own\n---\n\n{FACT}\n", encoding="utf-8"
+    )
+    gitops.git(repo, "add", "-A")
+    gitops.git(repo, "commit", "-m", "the app's own skill")
+
+    classify.review_begin(home, repo)
+    (repo / units.FACTS_PLAIN / "chargebacks.md").write_text(
+        "---\ntopic: chargebacks\n---\n", encoding="utf-8"
+    )
+    # The pass promotes the repo to a plugin mid-flight, then edits the app's skill so it
+    # counts as "changed" and would be scanned as an integration destination.
+    (repo / ".claude-plugin").mkdir()
+    (repo / ".claude-plugin" / "plugin.json").write_text(
+        '{"name": "payments", "version": "0.1.0"}\n', encoding="utf-8"
+    )
+    (repo / "skills" / "combat" / "SKILL.md").write_text(
+        f"---\nname: combat\ndescription: the app's own\n---\n\n{FACT}\n\nedited\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MnemeError, match="chargebacks"):
+        classify.review_finalize(home, repo, push=False)
+
+
+def test_the_preservation_refusal_leaves_the_branch_to_fix(tmp_path):
+    """The gate runs BEFORE the guarded block for one reason: so the advice is actionable.
+
+    Both placements raise the same sentence — including the "retry with `--retire`" hint —
+    so a test that only asserts `raises` cannot tell them apart. The one inside the guard
+    hard-resets and deletes the branch first, and then tells the librarian to retry work
+    that no longer exists.
+    """
+    home, repo = seeded_app(tmp_path)
+    branch = classify.review_begin(home, repo)
+    (repo / units.FACTS_PLAIN / "chargebacks.md").write_text(
+        "---\ntopic: chargebacks\n---\n", encoding="utf-8"
+    )
+
+    with pytest.raises(MnemeError, match="chargebacks"):
+        classify.review_finalize(home, repo, push=False)
+
+    assert gitops.current_branch(repo) == branch, "the pass's own work was discarded"
+    assert branch in gitops.git(repo, "branch", "--list", branch)
+    assert (repo / units.FACTS_PLAIN / "chargebacks.md").read_text("utf-8").endswith("---\n")
+
+
+def test_the_refusal_names_the_bullet_that_would_be_lost(tmp_path):
+    """Not just the file. A reviewer needs to know WHICH sentence went missing."""
+    home, repo = seeded_app(tmp_path)
+    classify.review_begin(home, repo)
+    (repo / units.FACTS_PLAIN / "chargebacks.md").write_text(
+        "---\ntopic: chargebacks\n---\n", encoding="utf-8"
+    )
+    with pytest.raises(MnemeError) as e:
+        classify.review_finalize(home, repo, push=False)
+    assert "seventy two hours" in str(e.value), str(e.value)

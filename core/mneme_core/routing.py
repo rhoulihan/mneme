@@ -17,9 +17,19 @@ class Scope:
 
 def read_scope_statement(mneme_md: Path) -> str:
     try:
-        text = mneme_md.read_text(encoding="utf-8-sig")
+        text = mneme_md.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return ""
+    return scope_statement_from(text)
+
+
+def scope_statement_from(text: str) -> str:
+    """The `## Scope statement` section of an already-read MNEME.md.
+
+    Split from the read so a caller that must bound its input (`scaffold.describe` sweeps
+    every registered sibling) can do so without reopening the file — and so one undecodable
+    byte in any one repo cannot raise out of a command about a different repo.
+    """
     lines = text.splitlines()
     collected: list[str] = []
     in_section = False

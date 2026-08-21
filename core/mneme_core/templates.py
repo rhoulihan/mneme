@@ -257,6 +257,8 @@ jobs:
           import json, pathlib
           p = pathlib.Path('.claude-plugin/plugin.json')
           data = json.loads(p.read_text())
+          if 'version' not in data:
+              raise SystemExit("plugin.json has no version — nothing to bump")
           major, minor, patch = data['version'].split('.')
           data['version'] = f"{major}.{minor}.{int(patch) + 1}"
           p.write_text(json.dumps(data, indent=2) + "\\n")
@@ -265,7 +267,11 @@ jobs:
         run: |
           git config user.name "mneme-bot"
           git config user.email "mneme-bot@users.noreply.github.com"
-          git commit -am "chore: bump version"
+          # The manifest and nothing else. `-a` stages every tracked modification in the
+          # working tree, so anything else a job left behind rode along in a commit pushed
+          # to main under `contents: write`, authored by a bot, with a message about a
+          # version bump.
+          git commit -m "chore: bump version" .claude-plugin/plugin.json
           git push
 """
 

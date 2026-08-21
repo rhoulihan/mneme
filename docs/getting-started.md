@@ -374,11 +374,14 @@ still has no scope statement and still cannot be routed to. Check with `mneme co
 adopting, and if it still says `(no scope statement)`, add the section by hand.
 
 **The first line is the mode**, and it decides everything below it. Adopt picks `plugin`
-when the repo already has a `.claude-plugin/plugin.json` **or** already carries a
-`skills/<name>/SKILL.md` — a hand-built knowledge repo that never got packaged is still a
-knowledge repo. Anything else is somebody's application and gets
-[Path D](#5b-path-d--adopt-an-app-or-service-repo) instead. Override with `--as-plugin` or
-`--plain` if it guessed wrong for your repo.
+when the repo already keeps knowledge under `skills/knowledge-index/`, or already has a
+`.claude-plugin/plugin.json`. A repo that merely has a `skills/` directory is **not**
+escalated on that alone — `skills/` is what any repo using Claude Code has, and plugin
+adoption writes manifests, a repo-wide CODEOWNERS and a workflow that pushes to `main`.
+Adopt reports the ambiguity instead and leaves the repo plain; `--as-plugin` is one flag
+away. `--plain` and `--as-plugin` override in either direction, except where the repo has
+already established a knowledge root — adopt will not give a repo a second one, because two
+routers means rows in each naming files that live under the other.
 
 Adopt differs from `new` in three ways: it needs the repo registered first, it writes a
 subset of the files (no `AGENTS.md`, `README.md` or `.gitignore`), and it takes sensitivity

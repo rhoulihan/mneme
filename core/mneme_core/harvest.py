@@ -22,7 +22,9 @@ def _skill_name(cand: Candidate) -> str:
     return name
 
 
-def _unit_path(root: Path, kind: str, name: str, what: str, *tail: str, suffix: str = "") -> Path:
+def _unit_path(
+    repo: Path, root: Path, kind: str, name: str, what: str, *tail: str, suffix: str = ""
+) -> Path:
     """A path under `root` (the repo's `<kind>` directory) built from a candidate name.
 
     ``root`` is passed in rather than derived, because facts live in one of two places
@@ -40,9 +42,26 @@ def _unit_path(root: Path, kind: str, name: str, what: str, *tail: str, suffix: 
     proposals, registry), and it is what makes a name exactly one literal path segment.
     The containment assert behind it is belt-and-braces: the write is what is dangerous,
     so it is proven in terms of the resolved path, not only the spelling of the name.
+
+    That resolved check is necessary and NOT sufficient, which is why the link proof comes
+    first. When `root` is itself reached through a symlink, `root.resolve()` is already the
+    far end, so every destination under it is trivially "contained" there and the assert
+    passes while the fact is written outside the repo — the harvest reports the unit landed,
+    the commit carries a router pointing at a file that is not in the tree, and `_abort`
+    cannot reach what was written. `layout._canonical_dir` refused exactly this shape and
+    said why; the path that actually creates the file did not ask until now.
     """
     if not units.KEBAB_RE.fullmatch(name):
         raise MnemeError(f"{what} must be kebab-case: {name!r}")
+    rel = root.relative_to(repo).as_posix() if root != repo else ""
+    linked = units.first_link_segment(repo, rel) if rel else None
+    if linked is not None:
+        raise MnemeError(
+            f"{linked} is a symlink, not a directory — refusing to write {kind}/ through"
+            " it: the unit would land at the far end of the link, outside every gate this"
+            " repo runs and outside what a rollback can reach, while the harvest reported"
+            " it committed. Replace the link with a real directory (or remove it)"
+        )
     path = root.joinpath(name + suffix, *tail)
     if not path.resolve().is_relative_to(root.resolve()):
         raise MnemeError(f"{what} escapes {kind}/: {name!r}")
@@ -63,16 +82,29 @@ def _fact_path(repo: Path, stem: str, what: str) -> Path:
     migrated wholesale instead (`layout.migrate_legacy_facts`).
     """
     for d in units.facts_dirs(repo):
-        path = _unit_path(d, "facts", stem, what, suffix=".md")
+        path = _unit_path(repo, d, "facts", stem, what, suffix=".md")
         if path.exists():
             return path
-    return _unit_path(units.facts_write_dir(repo), "facts", stem, what, suffix=".md")
+    return _unit_path(repo, units.facts_write_dir(repo), "facts", stem, what, suffix=".md")
 
 
 def apply_skill(repo: Path, cand: Candidate) -> str:
     name = _skill_name(cand)
+    # `classify._require_destinations` refuses the librarian pass in a plain repo because
+    # "the repo's own `skills/` belongs to the application". This path had no such gate and
+    # wrote there anyway. The consequence was worse than untidy: `units.skill_dirs` is
+    # narrow there, so `lint_repo` never saw the file it had just written, and a
+    # description that MN005 rejects and rolls back in a plugin repo was committed and
+    # pushed in a plain one — a unit no gate in this repo will ever check again.
+    if not units.maintains_skills(repo):
+        raise MnemeError(
+            f"candidate {cand.id}: mneme does not maintain a skills/ tree in {repo} — that"
+            " directory belongs to the application. This repo captures FACTS, into"
+            f" {units.facts_write_rel(repo)}/. To ship skills from it, give it a knowledge"
+            " root under skills/: mneme adopt <name> --as-plugin"
+        )
     skill_md = _unit_path(
-        repo / "skills", "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
+        repo, repo / "skills", "skills", name, f"candidate {cand.id}: skill name", "SKILL.md"
     )
     if cand.edit == "new":
         if skill_md.exists():

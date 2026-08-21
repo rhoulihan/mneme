@@ -124,14 +124,15 @@ def _require_destinations(repo: Path) -> None:
     is mneme's and not the application's. That layout is deliberately not invented here:
     a half-built destination directory nothing lints is worse than a clean refusal.
     """
-    if units.is_plugin(repo):
+    if units.maintains_skills(repo):
         return
     raise MnemeError(
-        f"{repo} is not a knowledge plugin, so it has no destination skills to file facts"
-        " into — classify has nowhere to put anything. What does work here: `mneme share`"
-        " captures facts into mneme-index/, `mneme review` accepts a pull request and the"
-        " facts inside it, and `mneme migrate` moves a legacy facts/ directory. To make"
-        " this repo a plugin instead, run: mneme adopt <name> --as-plugin"
+        f"mneme does not maintain a skills/ tree in {repo}, so there are no destination"
+        " skills to file facts into — classify has nowhere to put anything. What does work"
+        f" here: `mneme share` captures facts into {units.facts_write_rel(repo)}/, `mneme"
+        " review` accepts a pull request and the facts inside it, and `mneme migrate` moves"
+        " a legacy facts/ directory. To give this repo skills mneme maintains, run: mneme"
+        " adopt <name> --as-plugin"
     )
 
 
@@ -265,11 +266,20 @@ def _legacy_conflicts(repo: Path) -> list[str]:
     put the bullet in the right file is better than folding two versions together and
     sending a human the difference. The harvest has no such author to ask, so it takes the
     merge.
+
+    The destination is `units.facts_write_dir`, not the canonical constant — the sibling
+    literal `facts_write_rel` was created to kill, and it was wrong in both directions here.
+    In a repo whose write root is `mneme-index/facts/`, a REAL collision returned `[]` and
+    fell through to the in-guard merge (the answer this docstring argues against), while a
+    stale file in the OTHER root produced a spurious hard refusal on every finalize, naming
+    a directory that is not the destination.
     """
     legacy = repo / "facts"
     if not legacy.is_dir():
         return []
-    canonical = repo / units.FACTS_CANONICAL
+    canonical = units.facts_write_dir(repo)
+    if canonical == legacy:
+        return []
     conflicts: list[str] = []
     for src in sorted(p for p in legacy.rglob("*") if p.is_file()):
         rel = src.relative_to(legacy).as_posix()
@@ -570,7 +580,37 @@ def _branch_fact_texts(repo: Path) -> set[str]:
     return texts
 
 
-def _is_integration_path(repo: Path, rel: str) -> bool:
+def _on_main(repo: Path, rel: str) -> bool:
+    try:
+        gitops.git(repo, "cat-file", "-e", f"main:{rel}")
+    except MnemeError:
+        return False
+    return True
+
+
+def _base_maintains_skills(repo: Path) -> bool:
+    """Did mneme own this repo's `skills/` BEFORE the pass? Read from `main`, not the tree.
+
+    `units.maintains_skills` stats the working tree, which during a classify or review pass
+    is the thing under suspicion. A pass could therefore hand itself the powers it is being
+    judged by — write `.claude-plugin/plugin.json`, or a router under `skills/`, and
+    `_carries_knowledge` flips to True for the application's own `skills/`, so a fact
+    deleted from `mneme-index/facts/` is suddenly "accounted for" by a file mneme did not
+    write. Composed with a symlink under that directory, the fact was committed nowhere and
+    the finalize passed.
+
+    `main` is the one reference the pass cannot edit — PR-only means mneme never writes it.
+    The rule mirrors `units.knowledge_root`: an established router wins, the manifest only
+    decides when there is none.
+    """
+    if _on_main(repo, f"{units.PLUGIN_ROOT}/SKILL.md"):
+        return True
+    if _on_main(repo, f"{units.PLAIN_ROOT}/SKILL.md"):
+        return False
+    return _on_main(repo, ".claude-plugin/plugin.json")
+
+
+def _is_integration_path(rel: str, base_maintains_skills: bool) -> bool:
     """Is this changed path skill PROSE a fact could have been integrated into?
 
     "Under `skills/`" is not the test, because the canonical facts directory lives under
@@ -582,10 +622,10 @@ def _is_integration_path(repo: Path, rel: str) -> bool:
     bundle — had lost it. The rest of the router skill is generated from the fact files, so
     it is no destination either.
     """
-    return _carries_knowledge(repo, rel)
+    return _carries_knowledge(rel, base_maintains_skills)
 
 
-def _carries_knowledge(repo: Path, rel: str) -> bool:
+def _carries_knowledge(rel: str, base_maintains_skills: bool) -> bool:
     """Can a unit at this path hold knowledge a fact could be integrated into or covered by?
 
     ONE predicate, because this question was being answered independently at three call
@@ -606,12 +646,12 @@ def _carries_knowledge(repo: Path, rel: str) -> bool:
     fact's sentence appearing in it is the app's own source coinciding with a fact — and
     accepting that as an integration would let a deleted fact be "accounted for" by a file
     mneme did not write and does not maintain.
+
+    `base_maintains_skills` is passed in rather than looked up, for two reasons: it must come from
+    `main` (`_base_maintains_skills`, so a pass cannot vote on its own mode), and both callers ask
+    it once for a whole loop instead of spawning a subprocess per changed file.
     """
-    return (
-        rel.startswith("skills/")
-        and units.is_plugin(repo)
-        and not units.in_knowledge_root(rel)
-    )
+    return rel.startswith("skills/") and base_maintains_skills and not units.in_knowledge_root(rel)
 
 
 def _integration_text(repo: Path, changed: list[str]) -> str:
@@ -636,8 +676,19 @@ def _integration_text(repo: Path, changed: list[str]) -> str:
     verify — it should make somebody say so.
     """
     parts: list[str] = []
+    committable = _committable(repo)
+    base_maintains_skills = _base_maintains_skills(repo)
     for rel in changed:
-        if not _is_integration_path(repo, rel):
+        if not _is_integration_path(rel, base_maintains_skills):
+            continue
+        # The gate's FOURTH proof, and the one the docstring above `_real_file` claimed had
+        # been closed everywhere. `_branch_fact_texts` and `_branch_unit_ids` were both
+        # taught to ask git; this one sat ten lines away still asking the disk, so a
+        # `skills/<name>/notes.md` symlinked at a file outside the repo satisfied the
+        # integration proof while the blob git actually commits is the link's target
+        # STRING. The sentence appeared in zero committed files and the finalize passed.
+        # A file `.gitignore` keeps out of the commit was the same hole.
+        if rel not in committable:
             continue
         path = repo / rel
         if not path.is_file():
@@ -708,12 +759,13 @@ def _real_file(repo: Path, rel: str) -> bool:
 def _branch_unit_ids(repo: Path) -> set[str]:
     """Every unit id the branch will COMMIT — the ids a retirement may point AT."""
     committable = _committable(repo)
+    base_maintains_skills = _base_maintains_skills(repo)
     ids = {
         units.skill_unit_id(d.name)
         for d in sorted((repo / "skills").glob("*"))
         if d.is_dir()
         and (d / "SKILL.md").is_file()
-        and _carries_knowledge(repo, f"skills/{d.name}/SKILL.md")
+        and _carries_knowledge(f"skills/{d.name}/SKILL.md", base_maintains_skills)
         and (d / "SKILL.md").relative_to(repo).as_posix() in committable
     }
     for f in units.fact_files(repo):

@@ -357,6 +357,13 @@ def _integrated_texts(repo: Path) -> set[str]:
     that cannot be decoded costs its own evidence and nothing else: triage stays total.
     """
     texts: set[str] = set()
+    # The same rule `classify._carries_knowledge` states: where mneme does not maintain
+    # `skills/`, nothing in it is evidence of anything. Without this, an inbound pull
+    # request's fact was labelled already-integrated because the APPLICATION's own source
+    # happened to contain the sentence, and a maintainer dropped a real contribution on
+    # the strength of a file mneme neither wrote nor reads for knowledge.
+    if not units.maintains_skills(repo):
+        return texts
     for path in sorted((repo / "skills").rglob("SKILL.md")):
         if units.in_knowledge_root(path.relative_to(repo).as_posix()):
             continue

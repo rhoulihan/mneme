@@ -108,7 +108,9 @@ _TREE_ENTRIES = 40
 _SUBJECTS = 15
 _SUBJECT_CHARS = 120
 _SIBLING_SCOPE_CHARS = 400
+_SIBLING_FILE_CHARS = 20_000
 _MANIFEST_CHARS = 200_000
+_MANIFEST_FIELD_CHARS = 400
 
 # Name/description live under different keys in each ecosystem's manifest; anything not
 # listed here simply contributes no manifest source.
@@ -128,6 +130,13 @@ def _text(path: Path, limit: int) -> str:
     because a source mneme cannot decode is a source it does without, not a crash — this
     bundle reads a repo it did not write and does not get to fail it.
     """
+    # A regular file, proven before opening. `open()` on a FIFO BLOCKS — a `README.md`
+    # that is a named pipe hung the command forever, in a function whose docstring promises
+    # every failure is an absent source. And a symlink is followed to wherever it points:
+    # `README.md -> /etc/passwd` put the password file into a bundle handed to the model,
+    # chosen by a repo somebody else wrote.
+    if path.is_symlink() or not path.is_file():
+        return ""
     try:
         with path.open(encoding="utf-8-sig", errors="replace") as fh:
             return fh.read(limit)
@@ -180,10 +189,13 @@ def _manifests(repo: Path) -> list[dict]:
             # A manifest that will not parse is not a source. It is also not an error:
             # adoption reads a repo it did not write and does not get to fail it.
             continue
+        # Capped like every other source. These two were bounded only by the 200 KB file
+        # cap, so a manifest with a 150 000-character `name` put all of it into an agent's
+        # context verbatim.
         entry = {
             "file": name,
-            "name": _nested(data, name_keys),
-            "description": _nested(data, desc_keys),
+            "name": _nested(data, name_keys)[:_MANIFEST_FIELD_CHARS],
+            "description": _nested(data, desc_keys)[:_MANIFEST_FIELD_CHARS],
         }
         if entry["name"] or entry["description"]:
             found.append(entry)
@@ -233,12 +245,17 @@ def _siblings(home: Path, exclude: str) -> list[dict]:
     for plugin in registry.load_registry(home):
         if plugin.name == exclude:
             continue
-        scope = routing.read_scope_statement(Path(plugin.path) / "MNEME.md")
+        # `_text`, not `routing.read_scope_statement`: that helper reads the whole file with
+        # `errors` unset, so one invalid UTF-8 byte in ANY registered repo's MNEME.md raised
+        # out of `describe` and bricked adoption of every other repo, and a 400 MB sibling
+        # was read whole to produce 400 characters.
+        raw = _text(Path(plugin.path) / "MNEME.md", _SIBLING_FILE_CHARS)
+        scope = routing.scope_statement_from(raw) if raw else ""
         out.append({"name": plugin.name, "scope": " ".join(scope.split())[:_SIBLING_SCOPE_CHARS]})
     return out
 
 
-def describe(home: Path, name: str) -> dict:
+def describe(home: Path, name: str, *, as_plugin: bool | None = None) -> dict:
     """The raw material for a scope statement, for an agent to draft FROM.
 
     "What should this repo's scope be?" is a question almost nobody can answer cold, and
@@ -256,7 +273,7 @@ def describe(home: Path, name: str) -> dict:
     target = Path(plugin.path)
     if not target.is_dir():
         raise MnemeError(f"local clone missing: {target}")
-    mode, why = _adopt_mode(target, None)
+    mode, why, _hint = _adopt_mode(target, as_plugin)
     tops, langs = _shape(target)
     agent_docs = [
         f for f in ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "MNEME.md")
@@ -294,28 +311,91 @@ class AdoptResult:
     mode: str = "plugin"
 
 
-def _adopt_mode(target: Path, as_plugin: bool | None) -> tuple[str, str]:
-    """(mode, why) — classified ONCE, and the repo is unambiguous in that mode after.
+def _adopt_mode(target: Path, as_plugin: bool | None) -> tuple[str, str, str | None]:
+    """(mode, why, hint) — classified ONCE, and the repo is unambiguous in that mode after.
 
-    A manifest settles it. So does an existing `skills/<name>/SKILL.md`: a hand-built
-    knowledge repo that never got packaged is still a knowledge repo, and classifying it
-    plain would file its facts in `mneme-index/` while its curated skills sat in `skills/`,
-    split in half with lint enforcing on neither.
+    ONLY a manifest auto-selects the invasive mode. Plugin adoption writes the plugin
+    manifests, a root `CODEOWNERS`, repo-wide CI, and a `release.yml` that commits and
+    pushes to `main` under `contents: write` — and an earlier version of this function
+    escalated to all of that on finding a single `skills/<name>/SKILL.md`. That is what an
+    ordinary repo using Claude Code has. It is not consent to become a marketplace plugin,
+    and inferring consent from a file the repo already had is the annexation this whole
+    change exists to prevent. Worse, once classified plugin, `units.skill_dirs` walks all of
+    `skills/`, so one sibling directory without a SKILL.md yields MN001 and every later
+    harvest aborts — the repo mneme could register and could not use, through the other door.
 
-    Everything else is somebody's application, where `skills/`, `CONTRIBUTING.md`,
-    `CODEOWNERS` and the CI budget already belong to someone. Adopting one must add a
-    corner, not annex the repo.
+    The real case behind that heuristic — a hand-built knowledge repo that never got
+    packaged — is still served, as a REPORTED ambiguity rather than a silent escalation. The
+    user is one flag from the mode they want, and nothing was done to their repo to find out.
+
+    `--plain` on a repo that carries a manifest is refused rather than obeyed: the manifest
+    is what makes a repo a plugin, every later read and write resolves through it, and
+    deleting it is repo content mneme does not edit. A mode has to be TRUE of the repo
+    afterwards, not merely claimed by a flag.
     """
+    manifest = units.is_plugin(target)
+    established = units.established_root(target)
+    established_mode = None
+    if established is not None:
+        established_mode = "plugin" if established.parent.name == "skills" else "plain"
+
+    # A mode has to be TRUE of the repo afterwards, not merely claimed by a flag. Both
+    # refusals below exist because obeying the flag would leave the repo in two modes at
+    # once: two routers, two facts directories, and rows in each naming files that live in
+    # the other. Adopt adds what is missing and never moves repo content, so it cannot
+    # resolve that by relocating anything — it says so instead.
+    if established_mode is not None and as_plugin is not None:
+        asked = "plugin" if as_plugin else "plain"
+        if asked != established_mode:
+            rel = established.relative_to(target).as_posix()
+            raise MnemeError(
+                f"{target} already keeps its knowledge in {rel}/, so --{'as-plugin' if as_plugin else 'plain'}"
+                f" would give it a second knowledge root while the first one stayed behind:"
+                " two routers, and rows in each naming files that live under the other."
+                " mneme does not move repo content, and there is no migration between the"
+                f" two roots yet. Move {rel}/ yourself if you want the other mode, then"
+                " adopt again."
+            )
+    if as_plugin is False and manifest:
+        raise MnemeError(
+            f"{target} carries .claude-plugin/plugin.json, which is what makes a repo a"
+            " plugin — every later read and write resolves through it, so --plain would"
+            " claim a mode that is not true of this repo. Remove the manifest yourself if"
+            " that is what you want (mneme does not delete repo content), then adopt again."
+        )
     if as_plugin is True:
-        return "plugin", "requested with --as-plugin"
+        return "plugin", "requested with --as-plugin", None
     if as_plugin is False:
-        return "plain", "requested with --plain"
-    if units.is_plugin(target):
-        return "plugin", "the repo already carries .claude-plugin/plugin.json"
+        return "plain", "requested with --plain", None
+    if established_mode is not None:
+        rel = established.relative_to(target).as_posix()
+        return established_mode, f"the repo already keeps its knowledge in {rel}/", None
+    if manifest:
+        return "plugin", "the repo already carries .claude-plugin/plugin.json", None
+    hint = None
+    if _has_own_skills(target):
+        hint = (
+            "this repo carries skills/<name>/SKILL.md but no plugin manifest — adopted as"
+            " plain, which leaves skills/ alone. If it is really a knowledge repo whose"
+            " skills mneme should maintain, re-run with --as-plugin"
+        )
+    return "plain", "the repo is not a knowledge plugin, so mneme keeps to one directory", hint
+
+
+def _has_own_skills(target: Path) -> bool:
+    """Does `skills/` hold at least one `SKILL.md`? Never raises — it is only a hint.
+
+    `iterdir()` on an unreadable directory raises `PermissionError`, and `is_dir()` follows
+    links, so an unguarded walk let a repo mneme cannot even read crash the command, and a
+    `skills -> ../elsewhere` link let content OUTSIDE the repo drive the classification.
+    """
     skills = target / "skills"
-    if skills.is_dir() and any((d / "SKILL.md").is_file() for d in skills.iterdir() if d.is_dir()):
-        return "plugin", "the repo already carries skills/<name>/SKILL.md"
-    return "plain", "the repo is not a knowledge plugin, so mneme keeps to one directory"
+    if skills.is_symlink() or not skills.is_dir():
+        return False
+    try:
+        return any((d / "SKILL.md").is_file() for d in skills.iterdir() if d.is_dir())
+    except OSError:
+        return False
 
 
 def adopt(
@@ -334,17 +414,19 @@ def adopt(
         name=name, description=description, owner=owner,
         sensitivity=plugin.sensitivity,
     )
-    mode, why = _adopt_mode(target, as_plugin)
+    mode, why, hint = _adopt_mode(target, as_plugin)
     result = AdoptResult(mode=mode)
     result.notes.append(f"mode: {mode} — {why}")
+    if hint:
+        result.notes.append(hint)
 
     if mode == "plugin":
-        candidates = _plugin_files(subs)
+        candidates, advisory = _plugin_files(target, subs, owner)
         root_rel = units.PLUGIN_ROOT
     else:
         candidates, advisory = _plain_files(target, subs, owner)
         root_rel = units.PLAIN_ROOT
-        result.notes.extend(advisory)
+    result.notes.extend(advisory)
 
     # Adoption seeds the canonical facts location, unconditionally — including in a repo
     # that still files facts at the top level. Skipping it there (Plan 10) left the adopted
@@ -356,25 +438,72 @@ def adopt(
     # that are missing and never rewrites, moves or deletes repo content.
     candidates[f"{root_rel}/facts/.gitkeep"] = ""
     for rel, content in candidates.items():
-        path = target / rel
-        if path.exists():
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        result.added.append(rel)
+        _write_missing(target, rel, content, result)
     if f"{root_rel}/SKILL.md" in result.added:
-        regenerate_index_skill(target, name, description)
+        regenerate_index_skill(target, name, description, root_rel=root_rel)
     return result
 
 
-def _plugin_files(subs: dict) -> dict[str, str]:
+def _write_missing(target: Path, rel: str, content: str, result: AdoptResult) -> None:
+    """Create `target/rel` if it is genuinely absent — and never through a link.
+
+    Two separate ways the old three-liner wrote outside the repo, both reachable from repo
+    content a contributor can commit:
+
+    `path.exists()` FOLLOWS symlinks, so a DANGLING link reads as a missing file, the
+    "only add what is missing" test passes, and `write_text` creates the link's target —
+    an arbitrary file at any path the user can write, chosen by somebody else's repository.
+    Nothing about it shows up in `git status`, so the one safeguard adoption prescribes
+    ("review and commit these files through your repo's normal process") cannot see it.
+    `is_symlink()` first is what makes a link a thing that is THERE.
+
+    `mkdir(parents=True, exist_ok=True)` accepts a symlinked parent just as happily, so
+    `.github/workflows -> ../../elsewhere` redirects the write with no dangling leaf needed.
+    `units.first_link_segment` proves the whole path, segment by segment.
+
+    A failure is reported with what already landed. Adoption is not transactional and is not
+    being made so — it writes independent files and rolling back could delete something the
+    user had meanwhile edited — but silence about a half-finished adoption is the part that
+    actually hurts, because the user cannot undo what they were never told about.
+    """
+    path = target / rel
+    linked = units.first_link_segment(target, rel)
+    if linked is not None:
+        raise MnemeError(
+            f"{linked} is a symlink, not a regular file or directory — refusing to write"
+            f" {rel} through it: the file would land at the far end of the link, outside"
+            " this repository and invisible to the `git status` you would review it with."
+            f" Replace the link with a real file or directory (or remove it).{_landed(result)}"
+        )
+    # `is_symlink()` first is what makes a link a thing that is THERE. Redundant while
+    # the proof above catches every link, and kept deliberately: a later narrowing of
+    # that proof to parent segments only must not silently re-open the leaf case.
+    if path.is_symlink() or path.exists():
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except OSError as e:
+        raise MnemeError(
+            f"cannot write {rel}: {e.strerror or e}{_landed(result)}"
+        ) from e
+    result.added.append(rel)
+
+
+def _landed(result: AdoptResult) -> str:
+    """What adoption already wrote, for a message that has to stop partway."""
+    if not result.added:
+        return " Nothing was written."
+    return " Already written, and yours to keep or remove: " + ", ".join(result.added)
+
+
+def _plugin_files(target: Path, subs: dict, owner: str) -> tuple[dict[str, str], list[str]]:
     """What a repo whose PURPOSE is knowledge gets: the full plugin scaffold."""
-    return {
+    files = {
         "MNEME.md": templates.render(
             templates.MNEME_MD, belongs=templates.BELONGS_PLUGIN, **subs
         ),
         "CONTRIBUTING.md": templates.render(templates.CONTRIBUTING_MD, **subs),
-        "CODEOWNERS": templates.render(templates.CODEOWNERS, **subs),
         ".github/workflows/validate.yml": templates.VALIDATE_YML,
         ".github/workflows/release.yml": templates.RELEASE_YML,
         ".claude-plugin/plugin.json": templates.render_json(templates.PLUGIN_JSON, **subs),
@@ -385,6 +514,34 @@ def _plugin_files(subs: dict) -> dict[str, str]:
             templates.INDEX_SKILL_MD, index_name="knowledge-index", **subs
         ),
     }
+    # The same care plain mode takes. This path took none, so adopting a repo that already
+    # had `.github/CODEOWNERS` wrote a second, repo-wide `* @maintainers` beside it —
+    # re-routing every pull request in the repo to people who never agreed to that.
+    rule = templates.render(templates.CODEOWNERS, **subs)
+    existing = _existing_codeowners(target)
+    notes: list[str] = []
+    if existing is None:
+        files["CODEOWNERS"] = rule
+    else:
+        notes.append(
+            f"{existing} already exists and was left alone — add `* @{owner}` (or a"
+            " narrower rule) if knowledge review should route to that team"
+        )
+    return files, notes
+
+
+def _existing_codeowners(target: Path) -> str | None:
+    """Where this repo already keeps CODEOWNERS, if it does.
+
+    GitHub reads it from the root, `.github/`, or `docs/` and nowhere else, so a scoped rule
+    cannot be tucked inside the knowledge root — and when one exists the rule is REPORTED
+    rather than appended. Adopt adds missing files and never edits repo content, and a file
+    that routes code review is the last place to make an exception.
+    """
+    for rel in ("CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"):
+        if (target / rel).is_file():
+            return rel
+    return None
 
 
 def _plain_files(target: Path, subs: dict, owner: str) -> tuple[dict[str, str], list[str]]:
@@ -409,22 +566,13 @@ def _plain_files(target: Path, subs: dict, owner: str) -> tuple[dict[str, str], 
     }
     rule = templates.render(templates.CODEOWNERS_SCOPED, knowledge_root=root, owner=owner)
     notes: list[str] = []
-    # GitHub reads CODEOWNERS from the root, `.github/`, or `docs/` and nowhere else, so a
-    # scoped rule cannot be tucked inside the knowledge root. When the repo already has
-    # one, the rule is REPORTED rather than appended: adopt adds missing files and never
-    # edits repo content, and silently rewriting a file that routes code review is the
-    # last place to make an exception.
-    existing = next(
-        (p for p in (target / "CODEOWNERS", target / ".github" / "CODEOWNERS",
-                     target / "docs" / "CODEOWNERS") if p.is_file()),
-        None,
-    )
+    existing = _existing_codeowners(target)
     if existing is None:
         files["CODEOWNERS"] = rule
     else:
         line = rule.strip().splitlines()[-1]
         notes.append(
-            f"{existing.relative_to(target).as_posix()} already exists and was left alone —"
+            f"{existing} already exists and was left alone —"
             f" add this line to route knowledge review: {line}"
         )
     return files, notes
@@ -470,12 +618,24 @@ def _fit(text: str, budget: int) -> str:
     return (head if sep else cut) + "…"
 
 
-def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
-    # Where the router goes is the repo's mode, not a constant: a plugin's belongs in
-    # `skills/knowledge-index/` where Claude Code discovers it, a plain repo's in
-    # `mneme-index/` where it collides with nothing the application owns. The skill is
-    # named for the directory it lands in because MN003 requires exactly that.
-    root = units.knowledge_root(target)
+def regenerate_index_skill(
+    target: Path, name: str, description: str, *, root_rel: str | None = None
+) -> Path:
+    """Rewrite the router skill. `root_rel` overrides where it goes.
+
+    Where the router goes is normally the repo's mode: a plugin's belongs in
+    `skills/knowledge-index/` where Claude Code discovers it, a plain repo's in
+    `mneme-index/` where it collides with nothing the application owns. The skill is named
+    for the directory it lands in, because MN003 requires exactly that.
+
+    `root_rel` exists because `adopt` decides the mode ITSELF — `--plain` and `--as-plugin`
+    are the user overriding the classification — and re-deriving it here from
+    `units.knowledge_root` discarded that decision. `adopt --plain` on a repo that carries a
+    manifest reported `mneme-index/SKILL.md`, then wrote `skills/knowledge-index/SKILL.md`:
+    the one directory `--plain` promises never to claim, absent from the reported list, with
+    the reported router left behind as an un-regenerated stub.
+    """
+    root = target / root_rel if root_rel else units.knowledge_root(target)
     index_name = root.name
     entries: list[tuple[str, str, int]] = []
     # Every fact file, in both layouts: the index skill IS the routing surface, so a topic
@@ -495,10 +655,17 @@ def regenerate_index_skill(target: Path, name: str, description: str) -> Path:
                         continue
         except MnemeError:
             pass
-        # `facts/<file>` in both layouts: relative to this skill's own directory in
-        # the canonical layout, relative to the repo root in a legacy one — and it is
-        # also the prefix of the unit id, which never moves with the files.
-        entries.append((topic, f"facts/{f.name}", count))
+        # The path a reader of THIS router can actually follow. Rows used to be
+        # `facts/<name>` unconditionally — correct only for facts sitting inside the
+        # router's own directory. With more than one root that made every other row a dead
+        # link: a repo adopted plain and later re-adopted `--as-plugin` got a new router
+        # listing `facts/chargebacks.md` next to itself while the fact stayed in
+        # `mneme-index/facts/`, and lint reported nothing. By this function's own rule — a
+        # topic missing from this table is a topic no agent is told exists — every topic in
+        # that repo had become unreachable while the table looked complete.
+        rel = f.relative_to(target).as_posix()
+        inside = f.parent == root / "facts"
+        entries.append((topic, f"facts/{f.name}" if inside else rel, count))
 
     # The description lands on a single frontmatter line: fold any newline/tab the
     # caller supplied so the rendered template stays parseable before we cap it.
