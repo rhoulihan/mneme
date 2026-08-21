@@ -328,3 +328,17 @@ def test_adopt_will_not_give_a_repo_a_second_knowledge_root(tmp_path, flag, seed
 
     other = units.PLUGIN_ROOT if seed == units.PLAIN_ROOT else units.PLAIN_ROOT
     assert not (repo / other).exists(), "a second root was created anyway"
+
+
+def test_the_release_workflow_commits_only_the_manifest():
+    """`git commit -am` stages EVERY tracked modification in the working tree.
+
+    That commit is pushed to `main` under `contents: write`, authored by a bot, with a
+    message about a version bump — so anything an earlier step left behind rides along
+    unreviewed. And `data['version']` raised a KeyError on a manifest the repo brought
+    itself, failing every push to main rather than saying what was wrong.
+    """
+    yml = templates.RELEASE_YML
+    assert "git commit -am" not in yml
+    assert 'git commit -m "chore: bump version" .claude-plugin/plugin.json' in yml
+    assert "'version' not in data" in yml
