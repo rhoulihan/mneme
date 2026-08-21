@@ -301,3 +301,30 @@ def test_ci_fails_rather_than_passing_over_zero_files(tmp_path):
     yml = templates.validate_yml("mneme-index")
     assert "test -d mneme-index" in yml
     assert "2>/dev/null" not in yml
+
+
+@pytest.mark.parametrize("flag,seed", [
+    (True, units.PLAIN_ROOT),     # --as-plugin over an established plain root
+    (False, units.PLUGIN_ROOT),   # --plain over an established canonical root
+])
+def test_adopt_will_not_give_a_repo_a_second_knowledge_root(tmp_path, flag, seed):
+    """Obeying the flag here leaves the repo in two modes at once.
+
+    Two routers, two facts directories, and rows in each naming files that live under the
+    other — with `mneme lint` reporting nothing, because each root is internally consistent.
+    Adopt adds what is missing and never moves repo content, so it cannot resolve that by
+    relocating anything. It says so instead.
+    """
+    home = tmp_path / "home"
+    repo = app_repo(tmp_path, home)
+    (repo / seed).mkdir(parents=True)
+    (repo / seed / "SKILL.md").write_text(
+        f"---\nname: {seed.rsplit('/', 1)[-1]}\ndescription: the established router\n---\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MnemeError, match="second knowledge root"):
+        scaffold.adopt(home, "payments-service", as_plugin=flag)
+
+    other = units.PLUGIN_ROOT if seed == units.PLAIN_ROOT else units.PLAIN_ROOT
+    assert not (repo / other).exists(), "a second root was created anyway"
