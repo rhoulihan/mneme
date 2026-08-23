@@ -70,6 +70,7 @@ def index_tree(
     *,
     repo: str = "",
     sensitivity: str = "",
+    fingerprint: str = "",
 ) -> IndexStats:
     if not root.is_dir():
         raise MnemeError(f"index root is not a directory: {root}")
@@ -100,11 +101,12 @@ def index_tree(
         [(r[0], r[1], r[3], r[4], r[5], r[7]) for r in rows],
     )
     conn.execute(
-        "INSERT INTO plugins (name, root, repo, sensitivity, built_at)"
-        " VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO plugins (name, root, repo, sensitivity, built_at, fingerprint)"
+        " VALUES (?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(name) DO UPDATE SET root = excluded.root, repo = excluded.repo,"
-        " sensitivity = excluded.sensitivity, built_at = excluded.built_at",
-        (plugin, str(root), repo, sensitivity, _now()),
+        " sensitivity = excluded.sensitivity, built_at = excluded.built_at,"
+        " fingerprint = excluded.fingerprint",
+        (plugin, str(root), repo, sensitivity, _now(), fingerprint),
     )
     conn.commit()
     return stats

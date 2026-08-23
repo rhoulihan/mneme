@@ -94,8 +94,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_index = sub.add_parser("index")
     index_sub = p_index.add_subparsers(dest="index_command", required=True)
-    index_sub.add_parser("rebuild")
+    p_irebuild = index_sub.add_parser("rebuild")
+    p_irebuild.add_argument("--stale", action="store_true")
     index_sub.add_parser("status")
+    index_sub.add_parser("check")
 
     p_srch = sub.add_parser("search")
     p_srch.add_argument("query")
@@ -490,7 +492,13 @@ def _status_cmd(home: Path) -> int:
                 conn.close()
         except MnemeError:
             built = "unreadable"
-        print(f"index: enabled (built {built or 'never'})")
+        from . import indexing
+
+        behind = indexing.stale(home)
+        # Named, not just counted: "2 stale" tells a user something is wrong without
+        # telling them which repo to rebuild or which answers to distrust.
+        suffix = f" — STALE: {', '.join(r.plugin for r in behind)}" if behind else ""
+        print(f"index: enabled (built {built or 'never'}){suffix}")
     if unreadable:
         print(f"warning: {unreadable} unreadable line(s) skipped")
     return 0
@@ -792,10 +800,23 @@ def _require_index_db(home: Path):
 
 
 def _index_cmd(home: Path, args: argparse.Namespace) -> int:
+    if args.index_command == "check":
+        from . import indexing
+
+        behind = indexing.stale(home)
+        if not behind:
+            print("index is fresh")
+            return 0
+        for r in behind:
+            print(f"stale: {r.plugin} — {r.reason}")
+        print("run: mneme index rebuild --stale")
+        # 2, not 1: staleness is a REPORT, like `verify`'s. A script that treats any
+        # non-zero as a crash should not confuse "out of date" with "it broke".
+        return 2
     if args.index_command == "rebuild":
         from . import indexing
 
-        for s in indexing.rebuild(home):
+        for s in indexing.rebuild(home, only_stale=args.stale):
             print(
                 f"indexed {s.plugin}: {s.skills} skills,"
                 f" {s.facts} facts, {len(s.skipped)} skipped"
@@ -811,8 +832,18 @@ def _index_cmd(home: Path, args: argparse.Namespace) -> int:
             st = index_search.status(conn)
         finally:
             conn.close()
+        from . import indexing
+
+        behind = {r.plugin: r.reason for r in indexing.stale(home)}
         for p in st["plugins"]:
-            print(f"{p['name']}  skills={p['skills']}  facts={p['facts']}  built_at={p['built_at']}")
+            mark = f"  STALE ({behind[p['name']]})" if p["name"] in behind else ""
+            print(
+                f"{p['name']}  skills={p['skills']}  facts={p['facts']}"
+                f"  built_at={p['built_at']}{mark}"
+            )
+        for name, reason in behind.items():
+            if not any(p["name"] == name for p in st["plugins"]):
+                print(f"{name}  STALE ({reason})")
         print(f"total_units={st['total_units']}")
         return 0
     return 1
@@ -828,6 +859,20 @@ def _search_cmd(home: Path, args: argparse.Namespace) -> int:
         conn.close()
     for h in hits:
         print(f"{h['score']:.2f}\t{h['plugin']}\t{h['id']}\t{h['description']}")
+    # STDERR, and after the hits. Every existing caller parses stdout, so a warning there
+    # would corrupt the one machine-readable surface this command has — and the hits it
+    # does hold are still worth returning. Answering confidently from a corpus that is
+    # known to be out of date is the failure this exists to prevent.
+    from . import indexing
+
+    behind = indexing.stale(home)
+    if behind:
+        names = ", ".join(r.plugin for r in behind)
+        print(
+            f"warning: index is stale for {names} — these results may be missing knowledge"
+            " that is already merged. Run: mneme index rebuild --stale",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -8,5 +8,6 @@ Before reinventing, check what the organization already knows.
 1. Resolve the binary: `"$CLAUDE_PLUGIN_ROOT/bin/mneme"` if `CLAUDE_PLUGIN_ROOT` is set, else `bin/mneme`.
 2. Run `mneme search "<a few words describing the need>"` — terms are OR-matched and ranked, so cast wide. Filter with `--kind skill` or `--kind fact` and `--plugin <name>` when the target is known.
 3. Top hits are entry points: skills route onward through their own SKILL.md; facts carry their category, tags, and verified date. For structured lookups use `mneme db query "SELECT ... FROM units WHERE ..."` (read-only).
-4. If the index is not built (`index not built` on stderr), fall back to reading the registered plugins' files directly — `mneme registry list` shows their paths — and suggest `mneme db enable` to the user once.
-5. If retrieved knowledge turns out wrong or stale, flag it: `mneme flag --kind knowledge-issue "<what is wrong>"`.
+4. **Read stderr, not just the hits.** A `warning: index is stale for <repos>` line means the corpus predates a merge, a pull, or an edit — so a thin or empty result may be the index rather than the organisation. Say so before concluding nobody knows this, run `mneme index rebuild --stale`, and search again; the second answer is the one to rely on.
+5. If the index is not built (`index not built` on stderr), fall back to reading the registered plugins' files directly — `mneme registry list` shows their paths — and suggest `mneme db enable` to the user once.
+6. If retrieved knowledge turns out wrong or stale, flag it: `mneme flag --kind knowledge-issue "<what is wrong>"`.

@@ -1008,6 +1008,36 @@ has already solved — which is the whole point of putting the knowledge there.
 **`/mneme:status`** — the pipeline at a glance: plugins, pending flags, staging, submissions,
 index freshness.
 
+**`/mneme:index`** — the index is built from the working trees of your registered repos, and
+almost every event that changes one is somebody else's: a merged pull request most of all,
+since mneme never merges. So it goes stale quietly.
+
+```bash
+mneme index check
+```
+
+```
+stale: oracle-ai-dev — changed since it was indexed
+run: mneme index rebuild --stale
+```
+
+Exit code 2 means stale, 0 means fresh — a report, like `verify`'s, not a crash. Rebuild
+only what moved with `mneme index rebuild --stale`.
+
+You will usually meet this the other way round, though: `mneme search` tells you, on
+stderr, and still answers with what it has.
+
+```
+warning: index is stale for oracle-ai-dev — these results may be missing knowledge that is
+already merged. Run: mneme index rebuild --stale
+```
+
+That warning is the whole point. Search never rebuilds on its own — its database connection
+is read-only by design — so instead of quietly answering from last week's corpus and letting
+an agent conclude the organization does not know something you merged on Tuesday, it says
+the corpus is behind. The retrieval skill reads that line too, and will offer to rebuild
+before it tells you nobody knows.
+
 **`/mneme:verify <name>`** — the staleness sweep. Exit code 2 means stale units were found;
 that is a report, not an error:
 

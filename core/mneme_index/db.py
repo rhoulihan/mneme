@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS plugins (
   root TEXT NOT NULL,
   repo TEXT NOT NULL DEFAULT '',
   sensitivity TEXT NOT NULL DEFAULT '',
-  built_at TEXT NOT NULL DEFAULT ''
+  built_at TEXT NOT NULL DEFAULT '',
+  -- What the tree looked like when these rows were built. Empty means indexed before
+  -- this column existed, which reads as stale once and then settles.
+  fingerprint TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS units (
   plugin TEXT NOT NULL,
@@ -60,11 +63,27 @@ def _unusable(path: Path, reason: object) -> MnemeError:
     )
 
 
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """Bring an existing database up to the current schema.
+
+    `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so a column
+    added later never reaches a database built before it — and the failure is a bare
+    `no such column` from whichever query happens to touch it first. Every addition is
+    listed here with its default, and adding one twice is a no-op.
+    """
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(plugins)")}
+    for column, ddl in (("fingerprint", "fingerprint TEXT NOT NULL DEFAULT ''"),):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE plugins ADD COLUMN {ddl}")
+    conn.commit()
+
+
 def open_db(path: Path) -> sqlite3.Connection:
     try:
         conn = sqlite3.connect(_uri(path, readonly=False), uri=True)
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
+        _add_missing_columns(conn)
     except sqlite3.Error as e:
         raise _unusable(path, e) from e
     try:

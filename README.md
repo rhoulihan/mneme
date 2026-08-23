@@ -155,6 +155,7 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 | `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve, decline, or **re-route** one the distiller placed wrong, then harvest onto a `mneme/harvest-*` branch and open the PR |
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |
 | `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
+| `/mneme:index` | Check whether the search index still speaks for the registered repos, and rebuild the ones that moved — `search` warns when it is stale rather than answering confidently from an old corpus |
 | `/mneme:classify` | Librarian pass on the current repo: triage accumulated facts into the relevant skills' content (you approve the mapping), regenerate the knowledge-index, deliver as its own PR. Needs destination skills, so it declines in a plain repo and says what does work there |
 | `/mneme:review` | Maintainer triage of the current repo's open PRs: every fact each one adds is annotated duplicate / declined / possibly-integrated / new, then you approve each merge, duplicate-closure, or extraction of the new bullets (requires the `gh` CLI) |
 
