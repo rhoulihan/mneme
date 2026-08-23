@@ -10,6 +10,8 @@ Mneme (after the Greek muse of memory) is a knowledge-mining engine for AI codin
 
 Companies, universities, and government agencies get repositories of institutional knowledge — products, codebases, processes, procedures, implementations — that their AI tools consume natively and their existing git governance (pull requests, CODEOWNERS, branch protection, audit history) controls completely. **No vendor SaaS anywhere in the loop.**
 
+The destination does not have to be a knowledge repo. Point mneme at an ordinary app, service, or infrastructure repo and it keeps that team's hard-won knowledge in one directory at the root — `mneme-index/` — without turning the repo into a plugin, claiming its `skills/`, or spending its CI budget. Most knowledge is learned inside a repo that is not about knowledge at all, and that is exactly where it should live.
+
 Don't tell the AI to document what it did. Tell it to decompose the knowledge it's mining into a collection of skills anyone in the organization can install.
 
 ## Why this doesn't already exist
@@ -66,6 +68,26 @@ canonical since v0.5.0, and every new topic goes there. A repo still carrying a 
 top-level `facts/` stays fully readable and is migrated automatically on its next
 contribution, moves included in that same pull request; `mneme migrate` covers a repo with
 nothing else pending.)
+
+An ordinary repo takes one directory instead, and nothing else:
+
+```
+payments-service/               # your app — mneme adds a corner, it does not annex it
+├── MNEME.md                    # scope statement: the same routing prompt, the same marker
+├── mneme-index/
+│   ├── SKILL.md                # mechanically regenerated router over this repo's facts
+│   ├── facts/<topic>.md        # typed, tagged, dated — delta-edited, never rewritten
+│   └── CONTRIBUTING.md         # the promotion rule, inside the directory it governs
+├── CODEOWNERS                  # `/mneme-index/ @your-team` — scoped, never `* @…`
+└── .github/workflows/mneme-validate.yml   # fires only when the knowledge changes
+```
+
+No plugin manifest (it is not being published), no release workflow, no claim on the repo's
+own `skills/` or `CONTRIBUTING.md`, and an existing `CODEOWNERS` is reported rather than
+edited. `/mneme:share` and `/mneme:review` work exactly as they do in a knowledge plugin;
+`/mneme:classify` is the one command that does not, because a plain repo has no destination
+skills to file facts into. `mneme status` names each registered repo's mode.
+
 For a walkthrough of all of this with real output, see [docs/getting-started.md](docs/getting-started.md).
 
 **Skills** carry procedures with their failure patterns — knowledge enters only with evidence of success and the dead ends that made it non-obvious. **Facts** are single-line typed bullets (`decision | constraint | gotcha | runbook-note | reference`) with tags and verified-dates:
@@ -75,7 +97,7 @@ For a walkthrough of all of this with real output, see [docs/getting-started.md]
 - [gotcha] v2 API silently truncates batch writes over 500 items #api (verified: 2026-08-11)
 ```
 
-You can register **any number** of knowledge plugins — personal, team, per-product, per-project. Each repo's `MNEME.md` scope statement teaches the router where new knowledge belongs, and every candidate shows its target at the human gate before anything moves. Sensitivity labels (`public | internal | restricted`) mark how far each repo's knowledge may travel; the `[boundary]` warning that flags a candidate drifting toward a less-restricted repo is implemented but not yet wired into the background distiller, so today that judgment is yours at the `/mneme:share` gate.
+You can register **any number** of repos — personal, team, per-product, per-service — knowledge plugins and ordinary application repos side by side. Each repo's `MNEME.md` scope statement teaches the router where new knowledge belongs, and every candidate shows its target at the human gate before anything moves. Sensitivity labels (`public | internal | restricted`) mark how far each repo's knowledge may travel; the `[boundary]` warning that flags a candidate drifting toward a less-restricted repo is implemented but not yet wired into the background distiller, so today that judgment is yours at the `/mneme:share` gate.
 
 ## Status
 
@@ -132,7 +154,7 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 | `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then harvest onto a `mneme/harvest-*` branch and open the PR |
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |
 | `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
-| `/mneme:classify` | Librarian pass on the current repo: triage accumulated facts into the relevant skills' content (you approve the mapping), regenerate the knowledge-index, deliver as its own PR |
+| `/mneme:classify` | Librarian pass on the current repo: triage accumulated facts into the relevant skills' content (you approve the mapping), regenerate the knowledge-index, deliver as its own PR. Needs destination skills, so it declines in a plain repo and says what does work there |
 | `/mneme:review` | Maintainer triage of the current repo's open PRs: every fact each one adds is annotated duplicate / declined / possibly-integrated / new, then you approve each merge, duplicate-closure, or extraction of the new bullets (requires the `gh` CLI) |
 
 And mneme rides the session without being asked: a SessionStart hook injects the noticing brief so the agent flags golden paths as they happen, Stop/PreCompact hooks run the background distiller over what was flagged, and a retrieval skill has the agent search installed knowledge by vague notion before reinventing something the organization already knows. Opening a session inside an unregistered knowledge repo (its `MNEME.md` marker present) makes the brief *ask you* whether to register it — declining is persisted, so you're never nagged twice about the same repo.
