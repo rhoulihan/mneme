@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -169,6 +169,26 @@ def _first_paragraph(repo: Path) -> str:
     return ""
 
 
+def _toml_field(text: str, table: str, key: str) -> str:
+    """`key` from `[table]` in a TOML document, without a TOML parser.
+
+    `tomllib` is Python 3.11+ and this project's floor is 3.10 with a stdlib-only runtime,
+    so there is no backport to fall back on. `tests/e2e/test_release.py` reached exactly
+    this conclusion, for exactly this reason, and said so in its docstring — and importing
+    `tomllib` here anyway broke every test module on 3.10. CI caught it on the first push
+    after the merge; nothing local did, because the development interpreter is 3.12.
+
+    Scoped deliberately: the table header, then up to the next table, then the key. A
+    document this cannot read contributes no manifest source, which is the same answer it
+    gives for one that will not parse at all.
+    """
+    header = re.search(rf"^\[{re.escape(table)}\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    if header is None:
+        return ""
+    m = re.search(rf"""^{re.escape(key)}\s*=\s*(["'])(.*?)\1\s*$""", header.group(1), re.M)
+    return m.group(2) if m else ""
+
+
 def _nested(data: object, keys: tuple[str, ...]) -> str:
     for key in keys:
         if not isinstance(data, dict):
@@ -183,19 +203,24 @@ def _manifests(repo: Path) -> list[dict]:
         raw = _text(repo / name, _MANIFEST_CHARS)
         if not raw:
             continue
-        try:
-            data = json.loads(raw) if fmt == "json" else tomllib.loads(raw)
-        except (json.JSONDecodeError, tomllib.TOMLDecodeError, ValueError):
-            # A manifest that will not parse is not a source. It is also not an error:
-            # adoption reads a repo it did not write and does not get to fail it.
-            continue
+        if fmt == "json":
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                # A manifest that will not parse is not a source. It is also not an error:
+                # adoption reads a repo it did not write and does not get to fail it.
+                continue
+            found_name, found_desc = _nested(data, name_keys), _nested(data, desc_keys)
+        else:
+            found_name = _toml_field(raw, name_keys[0], name_keys[1])
+            found_desc = _toml_field(raw, desc_keys[0], desc_keys[1])
         # Capped like every other source. These two were bounded only by the 200 KB file
         # cap, so a manifest with a 150 000-character `name` put all of it into an agent's
         # context verbatim.
         entry = {
             "file": name,
-            "name": _nested(data, name_keys)[:_MANIFEST_FIELD_CHARS],
-            "description": _nested(data, desc_keys)[:_MANIFEST_FIELD_CHARS],
+            "name": found_name[:_MANIFEST_FIELD_CHARS],
+            "description": found_desc[:_MANIFEST_FIELD_CHARS],
         }
         if entry["name"] or entry["description"]:
             found.append(entry)

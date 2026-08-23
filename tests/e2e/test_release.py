@@ -127,3 +127,58 @@ def test_the_readme_status_table_records_the_version_being_shipped():
     assert [row for row in named if f"✅ merged (v{version})" in row], (
         f"README status row for v{version} does not record it as merged: {named}"
     )
+
+
+# Modules that entered the standard library AFTER this project's floor. Importing one is
+# invisible on a developer machine running a newer interpreter and fatal on the floor —
+# `tomllib` in `scaffold._manifests` took out 44 test modules on 3.10 while 907 tests passed
+# locally on 3.12, and it shipped in a release because nothing checked CI after the merge.
+# `tests/e2e/test_release.py` had already rejected `tomllib` for this exact reason, in a
+# docstring, three days earlier. A rule that lives only in a comment gets re-broken.
+_ABOVE_THE_FLOOR = (
+    # (what, first version, how it looks in source). Patterns are explicit rather than
+    # derived from the name: deriving them matched `walked` for `pathlib.Path.walk` and
+    # reported four files that were innocent.
+    ("tomllib", "3.11", r"^\s*(?:import\s+tomllib|from\s+tomllib\s+import)\b"),
+    ("enum.StrEnum", "3.11", r"\bStrEnum\b"),
+    ("hashlib.file_digest", "3.11", r"\.file_digest\("),
+    ("asyncio.TaskGroup", "3.11", r"\bTaskGroup\("),
+    ("itertools.batched", "3.12", r"\bbatched\("),
+    ("pathlib.Path.walk", "3.12", r"\.walk\("),
+)
+
+
+def _floor() -> str:
+    """The lowest Python the CI matrix actually runs — the real contract."""
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    versions = re.findall(r'"(\d+\.\d+)"', ci)
+    assert versions, "ci.yml declares no python matrix"
+    return min(versions, key=lambda v: tuple(int(p) for p in v.split(".")))
+
+
+def test_the_runtime_imports_nothing_newer_than_the_supported_floor():
+    """The engine is stdlib-only, so an import above the floor has no backport to fall to."""
+    floor = tuple(int(p) for p in _floor().split("."))
+    offenders = []
+    for path in sorted((REPO_ROOT / "core").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for what, added, pattern in _ABOVE_THE_FLOOR:
+            if tuple(int(p) for p in added.split(".")) <= floor:
+                continue
+            if re.search(pattern, text, re.M):
+                offenders.append(
+                    f"{path.relative_to(REPO_ROOT).as_posix()}: {what} needs {added}"
+                )
+    assert not offenders, (
+        f"the CI matrix runs {_floor()} and these need newer:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_declared_floor_matches_the_ci_matrix():
+    """`requires-python` and the matrix must agree, or one of them is decoration."""
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'requires-python\s*=\s*["\']>=\s*(\d+\.\d+)["\']', text)
+    assert m, "pyproject.toml declares no requires-python floor"
+    assert m.group(1) == _floor(), (
+        f"pyproject says >={m.group(1)} but CI's lowest matrix entry is {_floor()}"
+    )
