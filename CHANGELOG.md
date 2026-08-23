@@ -8,6 +8,31 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.8.1 — 2026-08-23
+
+A patch release, and an honest one: **v0.8.0 does not import on Python 3.10**, which is
+this project's supported floor and one of the two interpreters its CI runs.
+
+- **`tomllib` is stdlib from 3.11.** `scaffold._manifests` imported it to read
+  `pyproject.toml` and `Cargo.toml` for `mneme adopt --describe`. The engine is
+  stdlib-only, so on 3.10 there is no backport to fall back to: 44 test modules — the whole
+  suite — failed at import, while 907 tests passed on the 3.12 development interpreter.
+  `_toml_field` now reads the two fields adoption actually needs, `name` and `description`
+  from `[project]` or `[package]`, with a scoped regex. That is the same technique, for the
+  same reason, as `_pyproject_version` in `tests/e2e/test_release.py` directly beside it —
+  whose docstring had already rejected `tomllib` on exactly these grounds before v0.8.0 was
+  written. A document the regex cannot read contributes no manifest source, which is what
+  an unparseable one already did.
+- **The floor is now enforced, not documented.** A rule that lives only in a docstring gets
+  re-broken. The release tests scan `core/` for constructs newer than the floor **CI
+  actually runs** — reading that floor from the workflow matrix rather than restating it —
+  and separately assert `requires-python` agrees with the matrix, so neither can quietly
+  become decoration. Verified by reintroducing the import on an isolated copy and watching
+  the guard fail.
+
+Nothing else changed. If you are on 3.11 or newer, v0.8.0 worked and this release is only
+the guard; if you are on 3.10, v0.8.0 never ran and this is the fix.
+
 ## 0.8.0 — 2026-08-21
 
 Mneme adopts any repo, not only a knowledge plugin (user direction, 2026-08-14). Before

@@ -26,7 +26,7 @@ def _pyproject_version() -> str:
 
 
 def test_version_consistency():
-    assert mneme_core.__version__ == "0.8.0"
+    assert mneme_core.__version__ == "0.8.1"
     manifest = json.loads(
         (REPO_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
