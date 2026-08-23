@@ -95,6 +95,26 @@ update.
 - Reviewers: `CODEOWNERS`
 """
 
+# The same repo, minus the one paragraph that would send a reader to a command that
+# cannot work: with no plugin manifest there is nothing to install from a marketplace.
+README_NO_PLUGIN_MD = """# $name
+
+$description
+
+A [mneme](https://github.com/rhoulihan/mneme) knowledge repo: procedures as Agent Skills in
+`skills/`, durable facts in `skills/knowledge-index/facts/`, governance in CI. It is not
+packaged as a plugin, so there is no marketplace to install from — clone it, or register it
+with mneme (`mneme registry add $name --repo <url> --clone`) and reach it through
+`mneme search` along with every other scope you have.
+
+Run `mneme adopt $name --as-plugin` if you later want to distribute it; that adds the
+manifests without moving any knowledge.
+
+- Scope and routing: `MNEME.md`
+- Contribution pipeline: `CONTRIBUTING.md`
+- Reviewers: `CODEOWNERS`
+"""
+
 CONTRIBUTING_MD = """# Contributing knowledge to $name
 
 Knowledge enters this repo through pull requests — human-written or staged by mneme's

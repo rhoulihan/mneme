@@ -127,6 +127,23 @@ It is already a git repo with one commit on `main`:
 eaa2196 chore: scaffold acme-knowledge knowledge plugin
 ```
 
+**If nobody will install it, say so.** `mneme new <name> --no-plugin` scaffolds the same
+repo without `.claude-plugin/` or the release workflow:
+
+```
+created ~/.mneme/repos/ops-knowledge
+registered ops-knowledge
+no-plugin: no manifests, so there is no marketplace to install from — clone it, or register it with mneme. Skills, facts, lint, classify and review all work as usual.
+to distribute it later: mneme adopt ops-knowledge --as-plugin
+```
+
+Nothing is missing except distribution. It keeps the canonical `skills/knowledge-index/`
+layout, which is what matters: mneme owns a repo's `skills/` exactly when its own router
+lives inside it, so this repo still gets skill linting, `/mneme:classify`, and skill
+harvests. Scaffolding it into the *plain* `mneme-index/` layout instead — the one an
+application repo gets — would silently take all three away and leave a knowledge repo that
+can hold facts and never skills.
+
 ### The scope statement
 
 `MNEME.md` is the file worth reading before anything else. Here it is exactly as the scaffold

@@ -148,7 +148,7 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 
 | Command | What it does |
 |---|---|
-| `/mneme:new <name>` | Interview for scope, then scaffold a governed knowledge plugin — repo, manifests, CI, routing scope statement |
+| `/mneme:new <name>` | Interview for scope, then scaffold a governed knowledge repo — CI, CODEOWNERS, routing scope statement, and the plugin manifests that make it installable. `--no-plugin` skips the manifests for a repo nobody installs: same skills, facts and gates, just not distributed |
 | `/mneme:register <name> <url>` | Register an existing repo you have access to (clones it for you); asks only for sensitivity — contributions are PR-only — and offers governance retrofit |
 | `/mneme:adopt <name>` | Retrofit mneme onto an existing repo — drafts its scope from what the repo already says about itself, then adds only what's missing, never overwriting. Works on an app or service repo too: that keeps its knowledge in `mneme-index/` at the root and is never turned into a plugin |
 | `/mneme:capture <note>` | Flag hard-won knowledge the moment it happens — one line, distilled in the background later |

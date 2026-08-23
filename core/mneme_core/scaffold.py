@@ -34,7 +34,21 @@ def create(
     owner: str = "maintainers",
     repo_url: str = "",
     sensitivity: str = "internal",
+    as_plugin: bool = True,
 ) -> Path:
+    """Scaffold a governed knowledge repo. `as_plugin=False` drops the distribution layer.
+
+    What it does NOT drop is the layout. mneme owns a repo's `skills/` exactly when its own
+    router lives inside it (`units.maintains_skills`), so scaffolding a knowledge repo into
+    the PLAIN layout would switch off skill linting, make `/mneme:classify` refuse for want
+    of destination skills, and make `harvest.apply_skill` refuse — leaving a knowledge repo
+    that can hold facts and never skills. Plain mode is for an APPLICATION repo, where
+    `skills/` belongs to the application; that is a different situation, not a smaller one.
+
+    So the difference is the manifests and the release workflow that bumps a version inside
+    one of them. `units.established_root` then keeps every later read and write pointed at
+    `skills/knowledge-index/`, manifest or no manifest.
+    """
     if not KEBAB_RE.match(name):
         raise MnemeError(f"plugin name must be kebab-case: {name!r}")
     target = directory if directory is not None else paths.repos_dir(home) / name
@@ -45,29 +59,35 @@ def create(
     subs = dict(name=name, description=description, owner=owner, sensitivity=sensitivity)
 
     files = {
-        ".claude-plugin/plugin.json": templates.render_json(templates.PLUGIN_JSON, **subs),
-        ".claude-plugin/marketplace.json": templates.render_json(
-            templates.MARKETPLACE_JSON, **subs
-        ),
         "MNEME.md": templates.render(templates.MNEME_MD, belongs=templates.BELONGS_PLUGIN, **subs),
         "AGENTS.md": templates.render(templates.AGENTS_MD, **subs),
-        "README.md": templates.render(templates.README_MD, **subs),
+        "README.md": templates.render(
+            templates.README_MD if as_plugin else templates.README_NO_PLUGIN_MD, **subs
+        ),
         "CONTRIBUTING.md": templates.render(templates.CONTRIBUTING_MD, **subs),
         "CODEOWNERS": templates.render(templates.CODEOWNERS, **subs),
+        # The format gates matter MORE without a marketplace, not less: there is no
+        # install to fail loudly, so CI is the only thing that catches a malformed unit.
         ".github/workflows/validate.yml": templates.VALIDATE_YML,
-        ".github/workflows/release.yml": templates.RELEASE_YML,
         ".gitignore": templates.GITIGNORE,
         "skills/knowledge-index/SKILL.md": templates.render(
             templates.INDEX_SKILL_MD, index_name="knowledge-index", **subs
         ),
     }
-    # Manifests are the one machine-parsed artifact lint_repo never sees; verify them
-    # here so a broken manifest can never reach disk, the first commit, or the registry.
-    for rel in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
-        try:
-            json.loads(files[rel])
-        except json.JSONDecodeError as e:
-            raise MnemeError(f"scaffold generated invalid JSON in {rel} (bug): {e}") from e
+    if as_plugin:
+        files[".claude-plugin/plugin.json"] = templates.render_json(templates.PLUGIN_JSON, **subs)
+        files[".claude-plugin/marketplace.json"] = templates.render_json(
+            templates.MARKETPLACE_JSON, **subs
+        )
+        # `release.yml` bumps a version inside plugin.json; without one it fails every push.
+        files[".github/workflows/release.yml"] = templates.RELEASE_YML
+        # Manifests are the one machine-parsed artifact lint_repo never sees; verify them
+        # here so a broken manifest can never reach disk, the first commit, or the registry.
+        for rel in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+            try:
+                json.loads(files[rel])
+            except json.JSONDecodeError as e:
+                raise MnemeError(f"scaffold generated invalid JSON in {rel} (bug): {e}") from e
 
     for rel, content in files.items():
         path = target / rel
@@ -85,7 +105,8 @@ def create(
 
     _git(target, "init", "-b", "main")
     _git(target, "add", "-A")
-    _git(target, "commit", "-m", f"chore: scaffold {name} knowledge plugin")
+    kind = "knowledge plugin" if as_plugin else "knowledge repo"
+    _git(target, "commit", "-m", f"chore: scaffold {name} {kind}")
 
     registry.add_plugin(
         home,

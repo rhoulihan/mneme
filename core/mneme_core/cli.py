@@ -109,6 +109,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_new.add_argument("--description", default="")
     p_new.add_argument("--owner", default="maintainers")
     p_new.add_argument("--repo", default="")
+    # A knowledge repo that is not DISTRIBUTED as a plugin. It keeps the canonical layout
+    # — mneme owns `skills/` exactly when its router lives there — and drops the manifests
+    # and the release workflow that bumps a version inside one of them.
+    p_new.add_argument("--no-plugin", dest="as_plugin", action="store_false", default=True)
     p_new.add_argument(
         "--sensitivity", default="internal", choices=sorted(registry.SENSITIVITIES)
     )
@@ -296,9 +300,19 @@ def main(argv: list[str] | None = None) -> int:
                 owner=args.owner,
                 repo_url=args.repo,
                 sensitivity=args.sensitivity,
+                as_plugin=args.as_plugin,
             )
             print(f"created {target}")
             print(f"registered {args.name}")
+            if not args.as_plugin:
+                # The two shapes differ in what you can DO with the result, so say which
+                # one this is rather than leaving it to be discovered at install time.
+                print(
+                    "no-plugin: no manifests, so there is no marketplace to install from —"
+                    " clone it, or register it with mneme. Skills, facts, lint, classify"
+                    " and review all work as usual."
+                )
+                print(f"to distribute it later: mneme adopt {args.name} --as-plugin")
             return 0
         if args.command == "adopt":
             from . import layout as layout_mod

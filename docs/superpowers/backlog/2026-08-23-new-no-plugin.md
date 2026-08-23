@@ -1,6 +1,9 @@
 # Backlog: `mneme new --no-plugin` — a knowledge repo that is not a plugin
 
-**Status:** raised 2026-08-23 (Rick). Implement after Plan 14 (re-routing) lands.
+**Status:** ✅ DELIVERED 2026-08-23 — `mneme new <name> --no-plugin`. The reading in
+"The design question this raises" below was the one implemented: canonical
+`skills/knowledge-index/` layout, minus the manifests and the release workflow. Kept
+for the reasoning. Raised 2026-08-23 (Rick).
 
 ## The ask
 
