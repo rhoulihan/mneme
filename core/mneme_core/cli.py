@@ -852,9 +852,14 @@ def _index_cmd(home: Path, args: argparse.Namespace) -> int:
 def _search_cmd(home: Path, args: argparse.Namespace) -> int:
     from mneme_index import search as index_search
 
+    from . import indexing
+
     conn = _require_index_db(home)
     try:
         hits = index_search.search(conn, args.query, k=args.k, kind=args.kind, plugin=args.plugin)
+        # On the SAME connection: opening a second one exposed a lock window in which the
+        # staleness warning was lost while the hits still printed.
+        behind = indexing.stale(home, conn)
     finally:
         conn.close()
     for h in hits:
@@ -863,9 +868,6 @@ def _search_cmd(home: Path, args: argparse.Namespace) -> int:
     # would corrupt the one machine-readable surface this command has — and the hits it
     # does hold are still worth returning. Answering confidently from a corpus that is
     # known to be out of date is the failure this exists to prevent.
-    from . import indexing
-
-    behind = indexing.stale(home)
     if behind:
         names = ", ".join(r.plugin for r in behind)
         print(

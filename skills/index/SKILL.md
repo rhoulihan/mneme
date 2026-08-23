@@ -13,6 +13,8 @@ The binary is `"$CLAUDE_PLUGIN_ROOT/bin/mneme"` when installed, else `bin/mneme`
 3. `mneme index rebuild` with no flag rebuilds everything. Use it when a fingerprint may be wrong rather than the tree — after upgrading mneme, or when `--stale` reported nothing but a search still looks short.
 4. `mneme index status` shows per-repo counts, when each was built, and which are behind.
 
-**A missing local clone is reported, never fatal.** It stays listed as stale until the clone comes back; `search` still answers with everything else it holds.
+**A repo mneme cannot read is reported, never fatal** — a missing clone, or a directory it lacks permission to list. It stays listed as stale until you fix it, which is the honest answer: the index genuinely does not speak for that repo, and `--stale` cannot make it fresh by trying again. `search` still answers with everything else it holds.
+
+**"Fresh" means checked, not merely unobjectionable.** Anything mneme could not determine — no database yet, an unreadable or corrupt one, a rebuild holding the lock — is reported as stale rather than passed over. A check that says fine when it could not look is the failure this command exists to prevent.
 
 **mneme does not rebuild on its own during a search.** The search path opens the database read-only on purpose, so it tells you the corpus is stale and answers with what it has rather than writing on a read. If a search warned you, run step 2 and ask again — the second answer is the one to trust.

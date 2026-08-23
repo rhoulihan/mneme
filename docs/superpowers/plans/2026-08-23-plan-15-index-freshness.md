@@ -105,6 +105,52 @@ Auto-rebuild from hooks (SessionStart could refresh in the background — real, 
 latency decision on every session start and wants the locking work first), and the locking
 itself (`docs/superpowers/backlog/2026-08-23-boundary-and-staging-integrity.md`).
 
+## Adversarial review — 2026-08-23
+
+Ten findings. The central one broke the design's own reasoning and is worth stating in full:
+
+> Proving the fingerprint's file set equals the BUILD's file set proves only that the two
+> track each other. It says nothing about whether either tracks the REPO. **Agreement
+> between two observers blinded the same way is not evidence of correctness.**
+
+`Path.glob` returns `[]` for a directory it cannot read — it swallows the `PermissionError`
+that `os.scandir` raises — so an unreadable facts directory looks empty to the build AND to
+the fingerprint at once. Reproduced: the rebuild indexed zero facts and reported `0 skipped`
+as a clean success, `index check` exited 0 saying "fresh", and `search` printed nothing on
+stdout and nothing on stderr, while the repo's facts sat on disk. The invariant held
+throughout.
+
+Fixed by making blindness a *recorded fact* rather than an absence: every directory is
+probed with `os.scandir`, what could not be read is hashed into the digest (so unreadable
+can never collide with empty) and surfaced by both `rebuild` (as skipped) and `stale` (as a
+reason).
+
+Also fixed, all reproduced:
+
+- **`stale()` failed open.** No database, a corrupt one, a future schema, or a writer
+  holding the lock each reported "fresh" — so on a fresh install `index check` said fine
+  with no database at all, and `rebuild --stale` did nothing, taking two invocations to
+  converge. Every "cannot tell" is now reported as stale.
+- **`fingerprint` raised on an unreadable parent**, so one bad repo broke `search`,
+  `status` and `index check` outright — a regression against the parent commit, and against
+  this function's own comment promising it never fails.
+- **A de-registered repo's rows kept answering searches** and nothing reported it; removing
+  the LAST plugin made it unfixable, because `rebuild` raised before pruning.
+- **`except sqlite3.OperationalError` was too broad**: a lock read as "never indexed", the
+  exact misdiagnosis the migration handling was written to avoid.
+- **`search` opened the database twice**, so a lock in that window lost the warning while
+  the hits still printed. One connection now.
+- **Unbounded memory**: `read_bytes` on a 300 MB file allocated it whole, on the agent's
+  hot path. Chunked reads — measured after: 300 MB file, 21 MB peak RSS, 0.14s.
+
+**Not fixed, and honestly so.** The check reads the corpus on every `search`, so its cost is
+O(bytes): the review measured ~2.6ms/file on a drvfs mount, which puts a 5 000-fact repo on
+a Windows mount at several seconds per search. Real corpora today are two orders of
+magnitude smaller (13 files / 28 KB on the largest registered repo; `index check` takes
+0.4s including interpreter startup), and every cheaper signal reintroduces the ~4ms mtime
+hole this design exists to close. Worth revisiting with a stat-prefilter plus a recorded
+build timestamp if a corpus ever gets big enough to notice — not worth the machinery now.
+
 ## Verification
 
 1. Merge a PR into a registered repo by hand; `search` warns and `index check` exits 2.
