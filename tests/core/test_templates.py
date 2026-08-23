@@ -100,3 +100,23 @@ def test_render_json_round_trips_benign_values_unchanged():
     assert templates.render_json(templates.PLUGIN_JSON, **SUBS) == templates.render(
         templates.PLUGIN_JSON, **SUBS
     )
+
+
+def test_the_librarian_is_told_to_integrate_not_to_dump():
+    """These instructions ARE the product — the pass is only as good as what they ask for.
+
+    The first real dogfood pass (oracle-ai-dev, 2026-08-13) satisfied every gate and still
+    read as a ledger dump: a "Field notes / Carried verbatim from the fact ledger" heading
+    with the raw bullets blockquoted underneath, `#tags` and `(verified: …)` stamps and all.
+    The gate was right to pass it — it is a floor, not a quality judge — but the instruction
+    had asked for exactly that: it told the librarian to carry the tags and the verified
+    date across, which the gate never looks for (it compares `FactBullet.text` alone).
+    Demanding more verbatim text than the gate requires is what produced the noise.
+    """
+    text = templates.CLASSIFY_INSTRUCTIONS
+    assert "Carry the sentence and NOTHING ELSE from the bullet" in text
+    assert "`#tags` and the `(verified: …)` stamp are ledger bookkeeping" in text
+    # And the anti-pattern is named, because "write context around it" permitted it.
+    for banned in ("Field notes", "From the ledger", "catch-all"):
+        assert banned in text, banned
+    assert "second facts directory hiding inside a skill" in text
