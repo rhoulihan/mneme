@@ -152,7 +152,7 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 | `/mneme:register <name> <url>` | Register an existing repo you have access to (clones it for you); asks only for sensitivity — contributions are PR-only — and offers governance retrofit |
 | `/mneme:adopt <name>` | Retrofit mneme onto an existing repo — drafts its scope from what the repo already says about itself, then adds only what's missing, never overwriting. Works on an app or service repo too: that keeps its knowledge in `mneme-index/` at the root and is never turned into a plugin |
 | `/mneme:capture <note>` | Flag hard-won knowledge the moment it happens — one line, distilled in the background later |
-| `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve or decline, then harvest onto a `mneme/harvest-*` branch and open the PR |
+| `/mneme:share` | The human gate: review staged candidates (diffs, boundary flags, similarity hints), approve, decline, or **re-route** one the distiller placed wrong, then harvest onto a `mneme/harvest-*` branch and open the PR |
 | `/mneme:status` | Pipeline dashboard: plugins, pending flags, staging, submissions, index freshness |
 | `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
 | `/mneme:classify` | Librarian pass on the current repo: triage accumulated facts into the relevant skills' content (you approve the mapping), regenerate the knowledge-index, deliver as its own PR. Needs destination skills, so it declines in a plain repo and says what does work there |

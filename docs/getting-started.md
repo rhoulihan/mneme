@@ -825,6 +825,33 @@ The suppression is keyed on the content hash, not on what you write — but writ
 anyway. It is the record a future maintainer reads when they wonder why this knowledge is not
 in the repo, and it is the only part of the decline a human will ever see.
 
+**Do not decline a candidate that is merely pointed at the wrong repo.** A decline is a
+verdict on the knowledge, and for a candidate the distiller could not place — one listed
+under `unassigned` — it is recorded **globally**, because there is no scope to attach it to
+and guessing one would resurrect knowledge you have already rejected. So declining an
+unrouted candidate silences it for *every* repo, not just the wrong one.
+
+Route it instead:
+
+```bash
+mneme share route fact-5cff3eea5249 --target ops-knowledge
+```
+
+```
+routed fact-5cff3eea5249 -> ops-knowledge (now fact-91c07be4d1a8)
+```
+
+**The id changes**, and the command prints both. That is not cosmetic: a candidate's id is
+derived from its target and its content together, so re-routing has to re-mint it — if it
+did not, the next distiller run would stage the same knowledge again under the correct id
+and you would see the same sentence twice in the queue.
+
+`--target unassigned` un-routes one you cannot place yet. Routing refuses on its own terms,
+each with the fix in the message: knowledge already declined *for that destination* stays
+declined, the same knowledge already staged there is a duplicate rather than a move, and a
+move into a **less-restricted** repo needs `--allow-boundary` and your explicit say-so.
+Routing never clears a `[QUARANTINED]` flag — a secret-scan hit follows the knowledge.
+
 ### 6.5 Approve, and the harvest becomes a PR
 
 ```bash

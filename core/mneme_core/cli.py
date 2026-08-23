@@ -69,6 +69,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_slist2.add_argument("--all", action="store_true")
     p_sdiff = share_sub.add_parser("diff")
     p_sdiff.add_argument("id")
+    p_sroute = share_sub.add_parser("route")
+    p_sroute.add_argument("id")
+    p_sroute.add_argument("--target", required=True)
+    p_sroute.add_argument("--allow-boundary", action="store_true")
     p_sapply = share_sub.add_parser("apply")
     p_sapply.add_argument("--ids", required=True)
     p_sapply.add_argument("--no-push", action="store_true")
@@ -545,6 +549,18 @@ def _share_cmd(home: Path, args: argparse.Namespace) -> int:
                 print(f"  {c.id}  {c.type}/{c.edit}  conf={c.confidence}{suffix}")
         return 0
 
+    if args.share_command == "route":
+        moved = staging_mod.route(
+            home, args.id, args.target, allow_boundary=args.allow_boundary
+        )
+        # Both ids, because the id is derived from the target and therefore changed —
+        # a user who kept the old one on a notepad needs to see that.
+        print(f"routed {args.id} -> {moved.target} (now {moved.id})")
+        if moved.boundary_warning:
+            print(f"boundary: {moved.boundary_warning}")
+        if moved.status == "quarantined":
+            print("still quarantined — routing does not clear a secret-scan hit")
+        return 0
     if args.share_command == "diff":
         return _share_diff(home, args)
     if args.share_command == "apply":
@@ -1119,6 +1135,7 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             id=cand_id, type=p.type, edit=p.edit, target=p.target, body=body,
             confidence=p.confidence, rationale=p.rationale, target_unit=p.target_unit,
             topic=p.topic, similar_to=similar_to, boundary_warning=warning,
+            source_sensitivity=(source_scope.sensitivity if source_scope else ""),
             status=status,
             provenance={"source": args.source, "captured": today},
         )
