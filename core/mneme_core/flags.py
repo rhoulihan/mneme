@@ -110,7 +110,16 @@ def consume_flags(home: Path, consumed: Iterable[dict]) -> int:
     unlinking the whole file destroys knowledge no distiller ever saw. Lines that
     do not parse are kept too: they are the only remaining trace of a truncated
     write and a human may still want to recover them.
+
+    Locked: this is a read-modify-write over one file, and the Stop and PreCompact hooks
+    can both fire at the end of a session. Two interleaved consumes lose whichever flags
+    the loser read before the winner truncated.
     """
+    with paths.locked(home, "staging"):
+        return _consume_flags_locked(home, consumed)
+
+
+def _consume_flags_locked(home: Path, consumed: Iterable[dict]) -> int:
     p = paths.flags_path(home)
     if not p.exists():
         return 0

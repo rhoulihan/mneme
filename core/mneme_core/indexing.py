@@ -220,6 +220,11 @@ def rebuild(home: Path, *, only_stale: bool = False) -> list[index_build.IndexSt
     if not plugins and not paths.db_path(home).exists():
         raise MnemeError("no plugins registered; nothing to index")
     paths.ensure_layout(home)
+    with paths.locked(home, "index"):
+        return _rebuild_locked(home, plugins, only_stale)
+
+
+def _rebuild_locked(home: Path, plugins, only_stale: bool) -> list[index_build.IndexStats]:
     if only_stale:
         # De-registered names appear in `stale` too, and pruning them is exactly the work
         # `--stale` should do — but they are not in `plugins`, so the filter drops them and

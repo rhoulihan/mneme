@@ -164,6 +164,11 @@ def _read_declined(home: Path) -> list[dict]:
 
 
 def decline(home: Path, cand: Candidate, reason: str) -> None:
+    with paths.locked(home, "staging"):
+        _decline_locked(home, cand, reason)
+
+
+def _decline_locked(home: Path, cand: Candidate, reason: str) -> None:
     paths.ensure_layout(home)
     record = {
         "id": cand.id,
@@ -201,6 +206,13 @@ def route(home: Path, cand_id: str, target: str, *, allow_boundary: bool = False
     Everything refused below is refused before anything is written, so a rejected move
     leaves the queue exactly as it found it.
     """
+    from . import registry, routing
+
+    with paths.locked(home, "staging"):
+        return _route_locked(home, cand_id, target, allow_boundary)
+
+
+def _route_locked(home: Path, cand_id: str, target: str, allow_boundary: bool) -> Candidate:
     from . import registry, routing
 
     path = _find(home, cand_id)
