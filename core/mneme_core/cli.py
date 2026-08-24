@@ -42,6 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_flag.add_argument("text")
     p_flag.add_argument("--kind", default="golden-path", choices=sorted(flags.KINDS))
     p_flag.add_argument("--session", default=None)
+    p_flag.add_argument("--cwd", type=Path, default=None)
 
     p_reg = sub.add_parser("registry")
     reg_sub = p_reg.add_subparsers(dest="registry_command", required=True)
@@ -245,7 +246,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             return _status_cmd(home)
         if args.command == "flag":
-            flags.add_flag(home, args.text, kind=args.kind, session=args.session)
+            flags.add_flag(
+                home, args.text, kind=args.kind, session=args.session, cwd=args.cwd
+            )
             print("flagged")
             return 0
         if args.command == "registry":
@@ -1138,7 +1141,9 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     }
 
     scope_by_name = {s.name: s for s in routing.scopes(home)}
-    source_scope = scope_by_name.get(args.source_plugin)
+    source_scope = scope_by_name.get(args.source_plugin) or _source_from_flags(
+        home, _flags_snapshot(args.flags_snapshot)
+    )
     index_conn = None
     db_file = paths.db_path(home)
     if db_file.exists():
@@ -1251,6 +1256,37 @@ def _clear_ingested_flags(
         flags_mod.clear_flags(home)
     else:
         flags_mod.consume_flags(home, snapshot)
+
+
+def _source_from_flags(home: Path, snapshot: list[dict] | None):
+    """The scope this session was working IN, worked out from where its flags were captured.
+
+    `--source-plugin` is the direct answer and wins when given. It is also never given by
+    `bin/mneme-distill-pipeline`, which is why the `[boundary]` warning has never fired in
+    the shipped path — so this derives it from the snapshot ingest is already handed.
+
+    The MOST RESTRICTED scope among the flags, not the first. A session that touched two
+    repos has to be judged by the tighter one; taking the first would let mixing one
+    restricted repo into a session launder everything captured in it. A flag from outside
+    every registered repo contributes nothing, and if none resolve the source stays unknown
+    — which is honest, and what `staging.route` already reports as "unverified" rather than
+    implying a check that did not happen.
+    """
+    from . import routing
+
+    if not snapshot:
+        return None
+    best = None
+    for record in snapshot:
+        cwd = record.get("cwd")
+        if not cwd:
+            continue
+        scope = routing.plugin_for_path(home, Path(cwd))
+        if scope is None:
+            continue
+        if best is None or routing._rank(scope.sensitivity) > routing._rank(best.sensitivity):
+            best = scope
+    return best
 
 
 def _flags_snapshot(path: str) -> list[dict] | None:

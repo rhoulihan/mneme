@@ -20,8 +20,22 @@ def _now() -> str:
 
 
 def add_flag(
-    home: Path, text: str, kind: str = "golden-path", session: str | None = None
+    home: Path,
+    text: str,
+    kind: str = "golden-path",
+    session: str | None = None,
+    cwd: Path | None = None,
 ) -> dict:
+    """Record one flag, including WHERE it was captured.
+
+    `cwd` is the input the boundary check never had. `cli._distill_ingest` computes the
+    `[boundary]` warning from the source context's sensitivity, and the shipped pipeline
+    has no way to tell it what that context was — so the guard against restricted knowledge
+    drifting toward a less-restricted repo has never fired outside a hand-run ingest.
+    Recording it on the flag lets ingest work it out from the snapshot it is already given.
+
+    Absent on every flag written before this, and read as unknown rather than as "public".
+    """
     if kind not in KINDS:
         raise MnemeError(f"flag kind must be one of {sorted(KINDS)}: {kind!r}")
     if not text.strip():
@@ -31,6 +45,7 @@ def add_flag(
         "session": session or os.environ.get("CLAUDE_SESSION_ID", "unknown"),
         "kind": kind,
         "text": text.strip(),
+        "cwd": str(Path(cwd if cwd is not None else Path.cwd()).resolve()),
     }
     paths.ensure_layout(home)
     with paths.flags_path(home).open("a", encoding="utf-8") as f:

@@ -1,6 +1,10 @@
 # Backlog: the index goes stale silently — `/mneme:index`, or rebuild when it matters
 
-**Status:** raised 2026-08-23 (Rick). Address after the current work.
+**Status:** ✅ DELIVERED 2026-08-23 — `docs/superpowers/plans/2026-08-23-plan-15-index-freshness.md`,
+commits `995e8f1` and `f21c122`. Both shapes shipped: `/mneme:index` exists AND `search`
+reports staleness on stderr. The open question — may a read write? — was answered no by
+the code (`_require_index_db` is read-only behind an authorizer), so search detects and
+reports rather than rebuilding. Kept for the reasoning. Raised 2026-08-23 (Rick).
 
 ## The ask
 

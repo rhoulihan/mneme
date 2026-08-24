@@ -97,7 +97,7 @@ For a walkthrough of all of this with real output, see [docs/getting-started.md]
 - [gotcha] v2 API silently truncates batch writes over 500 items #api (verified: 2026-08-11)
 ```
 
-You can register **any number** of repos — personal, team, per-product, per-service — knowledge plugins and ordinary application repos side by side. Each repo's `MNEME.md` scope statement teaches the router where new knowledge belongs, and every candidate shows its target at the human gate before anything moves. Sensitivity labels (`public | internal | restricted`) mark how far each repo's knowledge may travel; the `[boundary]` warning that flags a candidate drifting toward a less-restricted repo is implemented but not yet wired into the background distiller, so today that judgment is yours at the `/mneme:share` gate.
+You can register **any number** of repos — personal, team, per-product, per-service — knowledge plugins and ordinary application repos side by side. Each repo's `MNEME.md` scope statement teaches the router where new knowledge belongs, and every candidate shows its target at the human gate before anything moves. Sensitivity labels (`public | internal | restricted`) mark how far each repo's knowledge may travel: a candidate captured in a more-restricted context and routed toward a less-restricted repo is flagged `[boundary]` at the gate, and re-routing one refuses the crossing without `--allow-boundary`. It is a warning rather than an enforced control — mneme tells you before you approve, and says so plainly when it could not determine where the knowledge came from.
 
 ## Status
 

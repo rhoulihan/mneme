@@ -1094,13 +1094,19 @@ Three things are worth setting deliberately before you invite contributors:
 - **Sensitivity** — `public | internal | restricted` per plugin. This label is what routing
   and review reason about, and it is worth setting deliberately.
 
-  **Do not treat it as an enforced control today.** Mneme can flag a candidate routed from a
-  more-restricted context toward a less-restricted repo (`[boundary]` at the human gate), but
-  that check only runs when the ingest is told which plugin the knowledge came from
-  (`mneme distill ingest --source-plugin <name>`), and the background distiller does not pass
-  it. In the shipped pipeline the flag never appears. Until that is wired up, the thing that
-  actually keeps restricted knowledge out of a public repo is you, reading the target on each
-  candidate at the `/mneme:share` gate.
+  A candidate captured in a more-restricted context and routed toward a less-restricted repo
+  is flagged `[boundary]` at the human gate. That works in the background pipeline now: each
+  flag records the directory it was captured in, and ingest resolves those to the registered
+  scope they sit inside, taking the **most restricted** among them — a session that touched
+  two repos is judged by the tighter one, or mixing one restricted repo into a session would
+  launder everything captured in it. `mneme share route` recomputes the same check when you
+  move a candidate, and refuses a crossing without `--allow-boundary`.
+
+  **It is a flag, not an enforced control.** A flag captured outside every registered repo
+  resolves to nothing, and mneme says the boundary is unverified rather than implying a check
+  it did not make. Nothing stops you approving a crossing — the point is that you are told
+  before you do. The thing that keeps restricted knowledge out of a public repo is still you,
+  reading the target on each candidate at the `/mneme:share` gate.
 
 Governance is your existing git governance: branch protection, required reviews, audit
 history. Mneme adds no vendor service and no second permission model.
