@@ -32,7 +32,7 @@ all** — one less moving part, and it works for anyone driving `distill ingest`
   resolves, the source stays unknown — which is the honest answer and exactly what
   `staging.route`'s "unverified" note already reports.
 
-- [ ] **Steps:** failing tests (origin recorded, absent on old flags, most-restricted wins,
+- [x] **Steps:** failing tests (origin recorded, absent on old flags, most-restricted wins,
   none-resolve stays unknown, explicit `--source-plugin` still wins) → implement → verify
   the real pipeline path end to end.
 
@@ -56,7 +56,7 @@ Held by the mutating paths that read-then-write: `staging.route`, `staging.decli
 `flags.consume_flags`, and `indexing.rebuild`. NOT by `search` — it is read-only and taking
 a lock there would put a write-shaped wait on the hot path.
 
-- [ ] **Steps:** failing test (two routes on one candidate yield one) → implement → verify
+- [x] **Steps:** failing test (two routes on one candidate yield one) → implement → verify
   a dead holder's lock is reclaimed → confirm no read path takes it.
 
 ## Task 3: a routing correction is invisible to the distiller
@@ -77,7 +77,7 @@ proposal whose body was already routed AWAY from the target it is being proposed
 Routing it back clears the record, because the human has changed their mind and the ledger
 must not outlive the decision it describes.
 
-- [ ] **Steps:** failing test (route, re-ingest the same proposal, it is not re-staged) →
+- [x] **Steps:** failing test (route, re-ingest the same proposal, it is not re-staged) →
   implement → verify routing back re-enables it.
 
 ## Verification

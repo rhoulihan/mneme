@@ -403,3 +403,84 @@ def test_an_empty_target_says_so(tmp_path):
     before = stage(home, "team-kb")
     with pytest.raises(MnemeError, match="empty|no target"):
         staging.route(home, before.id, "")
+
+
+# --- the correction has to survive the next distill run ----------------------
+#
+# Re-minting the id stops the distiller staging a twin of the CORRECTED candidate. It does
+# nothing about the mis-route: the distiller's guess has not changed, so the next ingest
+# stages the same sentence for the ORIGINAL target again and the gate shows it under two
+# targets. Approving both puts one sentence in two repos, and nothing anywhere records that
+# a human already rejected that destination.
+
+
+def test_a_routed_away_target_is_not_re_proposed(tmp_path):
+    home = home_with(tmp_path, ("team-kb", "internal"), ("ops-kb", "internal"))
+    before = stage(home, "team-kb")
+    staging.route(home, before.id, "ops-kb")
+
+    assert staging.was_routed_away(home, BODY, "team-kb")
+    assert not staging.was_routed_away(home, BODY, "ops-kb")
+
+
+def test_routing_it_back_clears_the_record(tmp_path):
+    """The ledger must not outlive the decision it describes — the human changed their mind."""
+    home = home_with(tmp_path, ("team-kb", "internal"), ("ops-kb", "internal"))
+    before = stage(home, "team-kb")
+    moved = staging.route(home, before.id, "ops-kb")
+    assert staging.was_routed_away(home, BODY, "team-kb")
+
+    staging.route(home, moved.id, "team-kb")
+    assert not staging.was_routed_away(home, BODY, "team-kb")
+
+
+def test_the_record_survives_a_retag_of_the_same_sentence(tmp_path):
+    """Keyed on the sentence, like the declined ledger — a retag is not a new decision."""
+    home = home_with(tmp_path, ("team-kb", "internal"), ("ops-kb", "internal"))
+    before = stage(home, "team-kb")
+    staging.route(home, before.id, "ops-kb")
+
+    retagged = BODY.replace("#x", "#webhooks #retry")
+    assert staging.was_routed_away(home, retagged, "team-kb")
+
+
+def test_a_route_away_from_unassigned_records_nothing(tmp_path):
+    """`unassigned` is not a destination a human rejected — it is the absence of one."""
+    home = home_with(tmp_path, ("ops-kb", "internal"))
+    before = stage(home, staging.UNASSIGNED)
+    staging.route(home, before.id, "ops-kb")
+    assert not staging.was_routed_away(home, BODY, staging.UNASSIGNED)
+
+
+def test_the_distiller_skips_a_proposal_it_already_had_corrected(tmp_path, capsys):
+    """End to end: route, then re-ingest the identical proposal, and it is not re-staged."""
+    import json
+
+    from mneme_core import scaffold
+    from mneme_core.cli import main
+
+    home = tmp_path / "home"
+    scaffold.create(home, "team-kb", owner="d", directory=tmp_path / "team-kb")
+    scaffold.create(home, "ops-kb", owner="d", directory=tmp_path / "ops-kb")
+    proposal = {
+        "type": "fact", "edit": "new", "target": "team-kb", "topic": "webhooks",
+        "category": "gotcha", "text": "The webhook replays for seventy two hours",
+        "tags": ["webhooks"], "confidence": 0.9, "rationale": "measured",
+    }
+    payload = tmp_path / "p.json"
+    payload.write_text(json.dumps({"proposals": [proposal]}), encoding="utf-8")
+
+    def ingest():
+        code = main(["--home", str(home), "distill", "ingest", str(payload),
+                     "--source", "session:a"])
+        return code, capsys.readouterr().out
+
+    code, out = ingest()
+    assert code == 0 and "staged 1" in out
+    cand = staging.load_candidates(home)[0]
+    staging.route(home, cand.id, "ops-kb")
+
+    code, out = ingest()
+    assert code == 0
+    assert "staged 0" in out, out
+    assert [c.target for c in staging.load_candidates(home)] == ["ops-kb"], "re-staged the mis-route"

@@ -57,6 +57,16 @@ def flags_path(home: Path) -> Path:
     return staging_dir(home) / "flags.jsonl"
 
 
+def routed_path(home: Path) -> Path:
+    """Destinations a human has routed knowledge AWAY from.
+
+    Deliberately not the declined ledger. A route is not a rejection of the knowledge —
+    reusing `declined.jsonl` would suppress the sentence rather than the destination, and
+    would block routing it back later.
+    """
+    return home / "routed.jsonl"
+
+
 def db_path(home: Path) -> Path:
     return home / "mneme.db"
 

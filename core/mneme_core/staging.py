@@ -274,6 +274,9 @@ def _route_locked(home: Path, cand_id: str, target: str, allow_boundary: bool) -
     # command after the direct move had been refused: the first hop erased the only
     # evidence of where the knowledge came from. A similarity hint is dropped on a
     # cross-repo move because it names a unit in a repo this candidate no longer targets.
+    if cand.target != UNASSIGNED:
+        # `unassigned` is not a destination a human rejected — it is the absence of one.
+        _record_route(home, cand.body, cand.target, target)
     moved = replace(
         cand, id=new_id, target=target, boundary_warning=warning,
         source_sensitivity=source or cand.source_sensitivity,
@@ -283,6 +286,72 @@ def _route_locked(home: Path, cand_id: str, target: str, allow_boundary: bool) -
     if path.exists() and path != _find(home, new_id):
         path.unlink()
     return moved
+
+
+def _route_keys(body: str) -> list[str]:
+    """Identity of what the sentence SAYS, on the same two keys the declined ledger uses —
+    so a retag or a recategorization is not read as a new decision."""
+    keys = [units.semantic_hash(body)]
+    text_hash = units.fact_text_hash(body)
+    if text_hash is not None:
+        keys.append(text_hash)
+    return keys
+
+
+def _record_route(home: Path, body: str, away_from: str, to: str) -> None:
+    """Remember that a human moved this knowledge OFF `away_from`.
+
+    Re-minting the id stops the distiller staging a twin of the corrected candidate. It
+    does nothing about the mis-route: the distiller's guess has not changed, so the next
+    ingest stages the same sentence for the original target again and the gate shows it
+    under two targets. Approving both puts one sentence in two repos.
+
+    Routing it BACK clears the record, because the ledger must not outlive the decision it
+    describes — the human changed their mind, and suppressing the destination they have
+    just chosen would be the same silent-refusal bug in a new place.
+    """
+    import json
+
+    paths.ensure_layout(home)
+    path = paths.routed_path(home)
+    keys = set(_route_keys(body))
+    kept: list[str] = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                kept.append(line)  # unparseable: the only trace of a truncated write
+                continue
+            # Routing back to `to` retires the record that sent it away from there.
+            if rec.get("away_from") == to and set(rec.get("keys", [])) & keys:
+                continue
+            kept.append(line)
+    kept.append(json.dumps({"away_from": away_from, "to": to, "keys": sorted(keys),
+                            "ts": _now()}))
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
+def was_routed_away(home: Path, body: str, target: str) -> bool:
+    """Has a human already moved this knowledge off `target`?"""
+    import json
+
+    path = paths.routed_path(home)
+    if not path.exists():
+        return False
+    keys = set(_route_keys(body))
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("away_from") == target and set(rec.get("keys", [])) & keys:
+            return True
+    return False
 
 
 def _boundary_for_move(home: Path, cand: Candidate, scope) -> tuple[str, bool, str]:

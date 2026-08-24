@@ -1134,7 +1134,7 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     valid, errors = proposals_mod.parse_proposals(raw)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    staged = quarantined = skipped_declined = skipped_duplicate = 0
+    staged = quarantined = skipped_declined = skipped_duplicate = skipped_routed = 0
     rejected = list(errors)
     existing_ids = {
         c.id for c in staging_mod.load_candidates(home, include_quarantined=True)
@@ -1173,6 +1173,12 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
         # knowledge repo said nothing about another repo that never saw it.
         if staging_mod.is_declined(home, body, plugin=p.target):
             skipped_declined += 1
+            continue
+        # A human already moved this knowledge off this target. The distiller's guess has
+        # not changed, so without this the same sentence is staged for the wrong repo
+        # again on every run and the gate shows it under two targets at once.
+        if staging_mod.was_routed_away(home, body, p.target):
+            skipped_routed += 1
             continue
         cand_id = staging_mod.candidate_id(p.type, p.target, body)
         if cand_id in existing_ids:
@@ -1218,7 +1224,8 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     print(
         f"staged {staged}  quarantined {quarantined}"
         f"  skipped-declined {skipped_declined}"
-        f"  skipped-duplicate {skipped_duplicate}  rejected {len(rejected)}"
+        f"  skipped-duplicate {skipped_duplicate}  skipped-routed {skipped_routed}"
+        f"  rejected {len(rejected)}"
         f"  boundary-warnings {boundary_count}"
     )
     for r in rejected:
@@ -1227,7 +1234,8 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
         _clear_ingested_flags(
             home,
             args,
-            handled=staged + quarantined + skipped_declined + skipped_duplicate,
+            handled=staged + quarantined + skipped_declined + skipped_duplicate
+            + skipped_routed,
             rejected=len(rejected),
         )
     return 0

@@ -1,8 +1,9 @@
 # Backlog: the boundary check is inert in the shipped pipeline, and staging has no lock
 
-**Status:** raised 2026-08-23 by the Plan 14 adversarial review. Three findings, all
-REPRODUCED, none introduced by Plan 14 — but Plan 14 made the first one reachable in a new
-way, so it is recorded here rather than left in a transcript.
+**Status:** ✅ ALL THREE DELIVERED 2026-08-24 —
+`docs/superpowers/plans/2026-08-24-plan-16-backlog.md`, commits `3fd1e16` (boundary),
+`6614254` (locking), and the routed ledger. Kept for the reasoning. Raised 2026-08-23
+by the Plan 14 adversarial review; all three REPRODUCED, none introduced by Plan 14.
 
 ## 1. `source_sensitivity` is always empty in the shipped pipeline (HIGH)
 
