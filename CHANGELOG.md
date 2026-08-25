@@ -8,6 +8,60 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.9.0 — 2026-08-24
+
+Corrections at the gate, and a search index that admits when it is behind. Three things
+asked for, and four an adversarial review found — including one that had never worked in
+the shipped pipeline and one introduced by the release before it.
+
+- **A mis-routed candidate can be fixed instead of declined.** `mneme share route <id>
+  --target <plugin>` moves one at the gate. The advice it replaces was decline-and-reflag,
+  which is not equivalent: a decline is a permanent human verdict, and `staging._applies_to`
+  records one GLOBALLY for a candidate with no destination — so the only sanctioned way to
+  fix a routing mistake silenced that knowledge in every repo, forever. The id is re-minted
+  (it hashes the target with the body, and an id that no longer derives from its inputs lets
+  the next distiller run stage a twin), the declined ledger is consulted for the DESTINATION
+  so routing cannot undo "declined stays declined", and a move into a less-restricted repo
+  refuses without `--allow-boundary`.
+- **And the correction sticks.** Re-minting stopped a twin of the corrected candidate; it did
+  nothing about the mis-route, so the next ingest re-staged the same sentence for the wrong
+  repo and the gate showed it under two targets. `routed.jsonl` records the destination a
+  human moved knowledge OFF and ingest skips it (`skipped-routed`). Deliberately not the
+  declined ledger — a route is not a rejection of the knowledge — and routing back clears the
+  record, because a ledger must not outlive the decision it describes.
+- **`mneme new --no-plugin`** scaffolds a governed knowledge repo that is not published as
+  one: no manifests, no release workflow. It keeps the canonical `skills/knowledge-index/`
+  layout, and that is the whole point — mneme owns a repo's `skills/` exactly when its own
+  router lives inside it, so scaffolding into the plain layout would have switched off skill
+  linting, made `/mneme:classify` refuse, and left a knowledge repo that can hold facts and
+  never skills.
+- **The index says when it is stale.** It is built from the working trees of registered
+  repos, and nearly every event that changes one belongs to somebody else — a merged
+  knowledge pull request most of all, since PR-only means a human always does the merging.
+  `mneme search` now warns on stderr (stdout stays byte-identical, since every caller parses
+  it), `mneme index check` exits 2 when stale and 0 when fresh, `--stale` rebuilds only what
+  moved, and `/mneme:index` makes it a command. The freshness signal hashes CONTENT, not
+  size and mtime: measured mtime granularity is ~4ms, so an edit inside one tick keeps its
+  timestamp and `"24 hours"` -> `"48 hours"` keeps its size — while `git pull` rewrites
+  mtimes without changing anything, so a timestamp signal would call every pull a change.
+- **Fix: the `[boundary]` warning fires in the background pipeline for the first time.**
+  It was computed from `--source-plugin`, which `mneme-distill-pipeline` has never passed, so
+  the one guard against restricted knowledge drifting toward a less-restricted repo had never
+  fired outside a hand-run ingest. Flags now record where they were captured, and ingest
+  resolves those to the registered scope they sit inside, taking the MOST restricted among
+  them — a session that touched two repos is judged by the tighter one.
+- **Fix: `core/` takes a lock.** Two concurrent `mneme share route` calls on one candidate
+  produced two candidates, both exiting 0. `paths.locked` is `fcntl.flock` rather than a lock
+  file, so a process killed mid-write cannot wedge every later run. Held by the read-then-
+  write paths and by no read path — `search` is read-only, and a write-shaped wait on the
+  agent's hot path is worse than the race.
+- **Fix: a freshness check that could not see said "fresh".** `Path.glob` returns `[]` for a
+  directory it cannot read, so an unreadable facts directory looked empty to the build AND to
+  the fingerprint at once: the rebuild reported `0 skipped` as a success, `index check`
+  exited 0, and `search` printed nothing on either stream while the repo's facts sat on disk.
+  Blindness is now recorded rather than inferred, and every "cannot tell" — no database, a
+  corrupt one, a writer holding the lock — reports stale instead of fresh.
+
 ## 0.8.1 — 2026-08-23
 
 A patch release, and an honest one: **v0.8.0 does not import on Python 3.10**, which is
