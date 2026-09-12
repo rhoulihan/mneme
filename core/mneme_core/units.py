@@ -47,12 +47,28 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
 _UNESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
 
+# Every character `str.splitlines()` treats as a break -- ten of them, not two. Frontmatter
+# is read back line by line, so a value carrying any of these splits its own record and its
+# continuation masquerades as a top-level key. That is not cosmetic: it is how `target` and
+# `source-sensitivity` could be set from a value that never touched them, and
+# `source_sensitivity` is the one input `staging._boundary_for_move` cannot recover
+# afterwards. `\n` and `\r` have short escapes; the other eight are written `\uXXXX`.
+LINE_BREAKS = "\n\v\f\r\x1c\x1d\x1e\x85\u2028\u2029"
+_LONG_ESCAPES = tuple(c for c in LINE_BREAKS if c not in "\n\r")
+_HEX = "0123456789abcdefABCDEF"
+
 
 def _unescape(v: str) -> str:
     out: list[str] = []
     i = 0
     while i < len(v):
         c = v[i]
+        if c == "\\" and v[i + 1 : i + 2] == "u" and len(v) >= i + 6:
+            digits = v[i + 2 : i + 6]
+            if all(d in _HEX for d in digits):
+                out.append(chr(int(digits, 16)))
+                i += 6
+                continue
         if c == "\\" and i + 1 < len(v) and v[i + 1] in _UNESCAPES:
             out.append(_UNESCAPES[v[i + 1]])
             i += 2
@@ -123,7 +139,10 @@ def _parse_block(lines: list[str]) -> dict:
 
 def _escape(v: str) -> str:
     v = v.replace("\\", "\\\\").replace('"', '\\"')
-    return v.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    v = v.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    for ch in _LONG_ESCAPES:
+        v = v.replace(ch, f"\\u{ord(ch):04x}")
+    return v
 
 
 def _quote_if_needed(v: str) -> str:
@@ -136,6 +155,7 @@ def _quote_if_needed(v: str) -> str:
         or ":" in v
         or v[:1] in ("'", '"', ">", "|", "-", "#")
         or any(c in v for c in "\n\r\t\\\"")
+        or any(c in v for c in LINE_BREAKS)
     ):
         return '"' + _escape(v) + '"'
     return v

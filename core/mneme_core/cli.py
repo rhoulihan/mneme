@@ -7,7 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from . import __version__, flags, lint, paths, registry, scan, staging
+from . import __version__, flags, lint, paths, registry, scan, staging, units
 from .errors import MnemeError
 
 
@@ -195,6 +195,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ing.add_argument("--source-plugin", default="")
     p_ing.add_argument("--clear-flags", action="store_true")
     p_ing.add_argument("--flags-snapshot", default="")
+    p_ing.add_argument("--json", action="store_true")
 
     p_db = sub.add_parser("db")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
@@ -1131,8 +1132,11 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             raw = Path(args.path).read_text(encoding="utf-8")
         except OSError as e:
             raise MnemeError(f"cannot read proposals: {e}")
+    source = _checked_source(args.source)
+    as_json = getattr(args, "json", False)
     valid, errors = proposals_mod.parse_proposals(raw)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    written: list[dict] = []
 
     staged = quarantined = skipped_declined = skipped_duplicate = skipped_routed = 0
     rejected = list(errors)
@@ -1160,14 +1164,16 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             if p.type == "skill":
                 body = compose.render_skill_unit(
                     p.name, p.description, p.procedure, p.failure_pattern,
-                    source=args.source, captured=today,
+                    source=source, captured=today,
                 )
             else:
                 body = compose.render_fact_bullet(
                     p.category, p.text, p.tags, verified=today
                 )
         except MnemeError as e:
-            rejected.append(f"compose ({p.type} -> {p.target}): {e}")
+            rejected.append(
+                proposals_mod.rejection(p.index, f"compose ({p.type} -> {p.target}): {e}")
+            )
             continue
         # Scoped to the plugin this proposal is FOR: a human declining a fact for one
         # knowledge repo said nothing about another repo that never saw it.
@@ -1209,10 +1215,28 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             topic=p.topic, similar_to=similar_to, boundary_warning=warning,
             source_sensitivity=(source_scope.sensitivity if source_scope else ""),
             status=status,
-            provenance={"source": args.source, "captured": today},
+            provenance={"source": source, "captured": today},
         )
         staging_mod.write_candidate(home, cand)
         existing_ids.add(cand_id)
+        written.append(
+            {
+                "id": cand.id, "type": cand.type, "edit": cand.edit,
+                "target": cand.target, "status": status,
+                # A quarantined candidate's body is withheld: it is what the scan
+                # objected to, it cannot ship until the finding is resolved, and stdout
+                # is a place callers pipe into logs. `findings` says what was wrong.
+                # (`excerpt` is redacted by `scan._redact` before it reaches a Finding;
+                # the BODY is not, which is why it is the field that must not go out.)
+                "body": None if status == "quarantined" else cand.body,
+                "boundary_warning": warning, "similar_to": similar_to,
+                "findings": [
+                    {"rule": f.rule, "severity": f.severity,
+                     "line": f.line_no, "excerpt": f.excerpt}
+                    for f in findings
+                ],
+            }
+        )
         if status == "quarantined":
             quarantined += 1
         else:
@@ -1221,24 +1245,94 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     if index_conn is not None:
         index_conn.close()
 
-    print(
-        f"staged {staged}  quarantined {quarantined}"
-        f"  skipped-declined {skipped_declined}"
-        f"  skipped-duplicate {skipped_duplicate}  skipped-routed {skipped_routed}"
-        f"  rejected {len(rejected)}"
-        f"  boundary-warnings {boundary_count}"
-    )
-    for r in rejected:
-        print(f"rejected: {r}")
-    if args.clear_flags:
-        _clear_ingested_flags(
-            home,
-            args,
-            handled=staged + quarantined + skipped_declined + skipped_duplicate
-            + skipped_routed,
-            rejected=len(rejected),
+    counts = {
+        "staged": staged, "quarantined": quarantined,
+        "skipped_declined": skipped_declined, "skipped_duplicate": skipped_duplicate,
+        "skipped_routed": skipped_routed, "rejected": len(rejected),
+        "boundary_warnings": boundary_count,
+    }
+    if as_json:
+        import json as json_mod
+
+        parts = [proposals_mod.rejection_parts(r) for r in rejected]
+        print(
+            json_mod.dumps(
+                {
+                    "schema_version": 1,
+                    "counts": counts,
+                    # Not "staged": `counts["staged"]` means "not quarantined" while this
+                    # list holds everything WRITTEN, quarantine included. Two meanings on
+                    # one word in one document is a trap for whoever reads it next.
+                    "candidates": written,
+                    "rejected": [{"index": i, "reason": reason} for i, reason in parts],
+                },
+                indent=2,
+            )
         )
+    else:
+        print(
+            f"staged {staged}  quarantined {quarantined}"
+            f"  skipped-declined {skipped_declined}"
+            f"  skipped-duplicate {skipped_duplicate}  skipped-routed {skipped_routed}"
+            f"  rejected {len(rejected)}"
+            f"  boundary-warnings {boundary_count}"
+        )
+        for r in rejected:
+            print(f"rejected: {r}")
+    # One definition of "this run captured something", asked by both the flag-consumption
+    # decision and the exit code. They used to differ -- clearing counted a skipped
+    # duplicate as handled while the exit code counted only staged+quarantined -- so a run
+    # could report "I captured none of what you gave me", the one code a caller retries
+    # on, after destroying the flags it would retry FROM.
+    handled = (
+        staged + quarantined + skipped_declined + skipped_duplicate + skipped_routed
+    )
+    if args.clear_flags:
+        _clear_ingested_flags(home, args, handled=handled, rejected=len(rejected))
+    # Nothing was WRITTEN and something was refused: the run captured none of what it was
+    # given. Distinct from exit 1 (the document itself was unreadable) so a caller can tell
+    # "I sent junk" from "I sent nothing usable", and matching the house meaning of 2 --
+    # ran fine, found problems. A quarantined candidate counts as written: it exists, and
+    # the gate will show it.
+    #
+    # Under --clear-flags this is unreachable: _clear_ingested_flags has already raised,
+    # exiting 1, because a side effect the caller ASKED for was refused. That is a
+    # different statement from this one and keeps its own code deliberately -- the shipped
+    # pipeline always passes --clear-flags, so its behaviour is unchanged by this return.
+    if handled == 0 and rejected:
+        return 2
     return 0
+
+
+MAX_SOURCE = 500
+# Named for this use, because `_CONTROL_RE` is already bound later in this module for the
+# detection nudge -- the later binding wins at call time, so a fix applied to a duplicate
+# name here would silently do nothing.
+#
+# Built from `units.LINE_BREAKS` rather than restated: `str.splitlines()` breaks on ten
+# characters, three of them (U+0085, U+2028, U+2029) outside the ASCII control range, and
+# an ASCII-only class let those through into a frontmatter value.
+_SOURCE_STRUCTURE_RE = re.compile("[\x00-\x1f\x7f" + re.escape(units.LINE_BREAKS) + "]")
+
+
+def _checked_source(value: str) -> str:
+    """`--source` is untrusted and reaches a git commit trailer.
+
+    `gitops.commit_harvest` formats `Mneme-Source: {s}`, so a newline in it forges
+    arbitrary trailers in the harvest commit. Checked here, at the boundary the value
+    enters by, rather than at the one site that happens to interpolate it -- a rule
+    enforced where it is formatted is a rule the next formatter will not ask about.
+    (The frontmatter path was never exposed: those values are JSON-quoted.)
+    """
+    if len(value) > MAX_SOURCE:
+        raise MnemeError(f"source exceeds {MAX_SOURCE} chars ({len(value)})")
+    m = _SOURCE_STRUCTURE_RE.search(value)
+    if m:
+        raise MnemeError(
+            f"source contains a control character at offset {m.start()}:"
+            f" {value[m.start()]!r}"
+        )
+    return value
 
 
 def _clear_ingested_flags(
