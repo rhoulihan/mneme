@@ -165,10 +165,26 @@ is replaced by a table.
 | topic-key collision | at apply, aborts batch | at apply, aborts batch | `harvest.py:224-228` |
 | human approval | user-initiated skill | model-invocable tool | **not equivalent — §4.4** |
 
-### 4.2 mneme ships a local MCP server
+### 4.2 mneme ships a local MCP server — scoped to Funes, and gated on the binding
 
-mneme has no MCP surface today. This is the natural place for one, and it puts the verbs where
-the user is.
+mneme has no MCP surface today, and the design spec
+(`2026-08-11-mneme-design.md`) lists **"MCP surface"** under *Deferred*. **That stays
+deferred.** This is not a general harness adapter; it is a Funes-integration component that
+happens to speak MCP, and it must not grow into the other thing by accident.
+
+**Where it lives.** In the mneme engine repo — a knowledge repo holds knowledge, not engine
+code — shipped but not enabled, and never scaffolded by `mneme new`.
+
+**The gating rule, which is what makes "Funes-only" enforceable rather than merely intended:**
+
+> `submit_fact` resolves `scope_id` → target through the registry and **refuses any target
+> that carries no `funes_scope` binding.**
+
+Without that rule `mneme-mcp` is a *model-invocable* path into every registered knowledge
+repo — a back door around the `disable-model-invocation` gate those repos have today (§4.4).
+The weaker door would leak into repos that currently have the stronger one. Gating on the
+binding keeps it pointed only at the case that requires it, and a regular knowledge plugin
+repo is untouched even on a machine where the server is installed.
 
 `mneme-mcp` — stdio, on the user's machine, as the user, against their `MNEME_HOME`, git
 identity and `gh` token:
@@ -382,10 +398,20 @@ fields on `registry.Plugin` (`funes_scope`, `funes_max_fact_age`,
 "backward-compatible by construction"**: `save_registry` silently drops unknown keys on every
 write, so backlog item 4 is a prerequisite.
 
+Two separable deliverables, with different homes and lifecycles:
+
+- **The Funes profile — repo-level.** The registry binding, the cached lesson-kind definition,
+  `funes/known-gaps.md`, `funes/withdrawals.md`, fork-based PR config, required CI. Scaffolded
+  by `mneme new --funes-scope`. **A regular knowledge plugin repo gets none of it.**
+- **`mneme-mcp` — client-level.** Lives in the engine repo, ships disabled, refuses any target
+  without a Funes binding (§4.2). **A regular knowledge plugin repo neither gets it nor needs
+  it**, and cannot be reached through it.
+
 | Surface | Phase |
 |---|---|
 | **backlog: ingest hardening (caps, exit code, `--json`, registry round-trip)** | **0 — prerequisite** |
-| `mneme-mcp` local stdio server: `submit_fact`, `confirm_submission`, `list_pending` | 1 |
+| `mneme-mcp` local stdio server (Funes-gated): `submit_fact`, `confirm_submission`, `list_pending` | 1 |
+| `mneme new --funes-scope` — the Funes profile scaffold | 1 |
 | **fork-and-PR machinery**; `open_pr` raises instead of returning prose | 1 |
 | registry binding; `--kind funes-miss`; candidate fan-out + copy verb | 1 |
 | gate rewrite pass: deictics, authored summary/concepts, category | 1 |
@@ -415,6 +441,7 @@ write, so backlog item 4 is a prerequisite.
 | D9 | Decontextualization | the gate, by the contributor | Only they have the source; also the only throughput answer |
 | D10 | Contribution semantics | copy (fan-out); never retire from the contributor's repo | Otherwise contributing leaves you worse off than doing nothing |
 | D11 | What the PR carries | fact file + stable metadata only | A rendered payload rots on the first reviewer edit |
+| **D12** | **Scope of the MCP surface** | **Funes-integration component, gated on a `funes_scope` binding; the general MCP surface stays Deferred** | Ungated, it is a model-invocable back door around `disable-model-invocation` into every registered repo |
 
 ---
 
@@ -504,18 +531,20 @@ that is the only place the plan is blocked on access rather than work.
    curation has happened.
 3. A contributor submits through `mneme-mcp` **running on their own machine**, against their own
    `MNEME_HOME` and git identity — never the Funes host's.
-4. `confirm_submission` cannot complete without a protocol-level user response; in the same
+4. **`submit_fact` refuses a target with no Funes binding**, so a regular knowledge plugin repo
+   cannot be written through the MCP door at all.
+5. `confirm_submission` cannot complete without a protocol-level user response; in the same
    assistant turn as its `submit_fact`, it is refused.
-5. A bullet with an unresolved deictic cannot ship, and what does ship reads correctly with its
+6. A bullet with an unresolved deictic cannot ship, and what does ship reads correctly with its
    file removed.
-6. A restricted-repo source produces a boundary warning toward a widely-read scope **on the
+7. A restricted-repo source produces a boundary warning toward a widely-read scope **on the
    submit path**, not only the CLI path.
-7. A validation verdict is either attested or visibly labelled unattested.
-8. A contributor with no push access gets a fork-based PR, and a failure to open it is an error
+8. A validation verdict is either attested or visibly labelled unattested.
+9. A contributor with no push access gets a fork-based PR, and a failure to open it is an error
    rather than a sentence.
-9. `/mneme:curate` promotes a merged contribution; `get_lesson` returns it with the contributing
+10. `/mneme:curate` promotes a merged contribution; `get_lesson` returns it with the contributing
    commit in `lesson_key`; the fact is retired **in the scope repo only** and still present in
    the contributor's.
-10. A curate run interrupted after its first `promote_lesson` is re-runnable.
-11. A PR closed upstream stops the distiller re-proposing it, and its author is told why.
-12. A withdrawal is actioned before the next promotion.
+11. A curate run interrupted after its first `promote_lesson` is re-runnable.
+12. A PR closed upstream stops the distiller re-proposing it, and its author is told why.
+13. A withdrawal is actioned before the next promotion.
