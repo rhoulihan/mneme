@@ -254,6 +254,49 @@ delivery living elsewhere.
 Criterion 5 remains the real test: the transcript and the ground-truth flags both exist, so
 this is a regression suite rather than a thought experiment.
 
+### 6.1 First measurement against the corpus (2026-09-19)
+
+The corpus is the `pg-compare` session — 5,034 tool calls, **106** hand-captured flags
+(the requirements doc's "18" was one burst of a larger set). Recovering the ground truth
+is itself mechanical: the flags were made with `mneme flag`, so the transcript carries both
+the signal and the answer key.
+
+Building it immediately paid for itself, finding four defects in code written hours earlier:
+
+| Found | Effect before the fix |
+|---|---|
+| Flag counting was start-of-command anchored | 109 real invocations read as **1** — the real shape is `cd <repo>` then one flag per line |
+| `_command_shape` did not strip `cd` prefixes | every command shared the shape `cd`; **521** junk signals pairing unrelated failures with unrelated successes |
+| T2 implemented as 1 prior failure, not the spec's ≥2 | the rule fired **485** times in one session |
+| `E[A-Z]{3,}` as an errno pattern | `ERROR`, `EMAIL`, `EVERY`, `EXIT` all read as vendor error codes |
+
+After those fixes, per rule:
+
+| Rule | Signals | Assessment |
+|---|---|---|
+| `resolved-error` | **21** | Plausible throughout, and includes `ORA-01000` — the cursor-exhaustion fact the requirements doc names by hand |
+| `retried` | 91 | too noisy |
+| `surprise` | 72 | fires on the assistant's own status prose, not on findings |
+| `measured` | 82 | same |
+
+**So only `resolved-error` is enabled by default.** R2's binding constraint is *precision
+over recall — a noisy detector will be disabled by users within a day*, and 245 prompts in
+one session is not a near miss. The other three rules are implemented, tested and opt-in
+(`detect.ALL_RULES`), so enabling one is a decision with evidence attached.
+
+**What the corpus says about the design.** Token-overlap recall against the 106 flags is
+~20% even for the tuned detector, and the qualitative sample explains why: the ground-truth
+flags are dense technical claims, while assistant prose in a long agentic session is
+dominated by status reporting, which is what the prose rules match. The mechanical text
+detector has a low precision ceiling on prose.
+
+That is evidence for the requirements doc's own ranking rather than against it: **T1 is the
+high-value trigger, and its value does not depend on R2 being clever.** The human produced
+106 flags in minutes when simply *asked at the right moment*. The strong version of this
+feature fires on the event (a subagent report returning, a compaction) and hands the model
+a bounded, specific prompt about recent context — with `resolved-error` as a precise
+supplement, not as the mechanism.
+
 ---
 
 ## 7. Out of scope

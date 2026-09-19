@@ -537,7 +537,14 @@ def test_an_interrupted_save_leaves_the_previous_ledger_intact(tmp_path, monkeyp
         # The false positive that silenced mneme's own sessions: a heredoc writing a
         # document that TALKS about flagging.
         ("cat > spec.md <<'EOF'\nrun `mneme flag \"x\"` when you learn something\nEOF", 0),
+        # A heredoc body followed by real invocations: the body is content, the rest is not.
+        ("cat > d.md <<'EOF'\nmneme flag \"documented\"\nEOF\nmneme flag \"actual\"", 1),
+        ('python3 - <<"PY"\nprint("mneme flag x")\nPY', 0),
         ("cd /repo\ngrep -rn 'mneme flag' docs/", 0),
+        # THE real-world shape. In the session that motivated this feature, 109 of 109
+        # invocations looked like this and a start-anchored rule found one.
+        ('cd /repo\nmneme flag "first thing"\nmneme flag "second thing"', 2),
+        ('cd /repo\nmneme flag --kind knowledge-issue "a"\nmneme flag "b"', 2),
         ('echo "use mneme flag for this"', 0),
         # Accepted false negative, documented at the regex: erring toward over-reporting
         # an omission (noise) rather than silencing the report (the bug being fixed).

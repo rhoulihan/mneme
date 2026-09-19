@@ -157,24 +157,49 @@ def _events_from(record: dict, *, sidechain: bool) -> list[Event]:
     return out
 
 
-# A `mneme ... flag` invocation at the START of the command, after optional environment
-# assignments and an optional path. Counting what a session CAPTURED is the only question
-# `flags.jsonl` cannot answer -- the distiller consumes flags with --clear-flags, so a
-# session that flagged well and got distilled reads as one that flagged nothing.
+# A `mneme ... flag` invocation at the start of a LINE, with heredoc bodies removed first.
 #
-# Anchored to the string start, NOT multiline, and that is the whole design. Searching
-# anywhere matched the words inside a heredoc: on mneme's own development sessions it
-# counted `cat > spec.md <<'EOF' ... mneme flag ... EOF` as eleven captures, and since any
-# non-zero count suppresses the report, mneme stopped noticing its own silent sessions.
+# Counting what a session CAPTURED is the only question `flags.jsonl` cannot answer: the
+# distiller consumes flags with --clear-flags, so a session that flagged well and got
+# distilled reads as one that flagged nothing.
 #
-# The cost is a false negative on `cd /x && mneme flag "y"`. That is the right direction
-# to err: a missed flag over-reports an omission, which is noise; a phantom flag silences
-# the report, which is the exact failure this feature exists to remove.
-_FLAG_CMD_RE = re.compile(
+# Both obvious rules are wrong, and the replay corpus proved it. Searching anywhere counts
+# the words inside a heredoc -- on mneme's own sessions `cat > spec.md <<'EOF' ... mneme
+# flag ... EOF` read as eleven captures, and since any non-zero count suppresses the
+# report, mneme stopped noticing its own silent sessions. Anchoring to the START of the
+# command instead misses how flagging is actually done: in the pg-compare session that
+# motivated this feature, 109 of 109 real invocations arrived as multi-line commands
+# beginning `cd <repo>`, one flag per line, and a start-anchored rule found ONE.
+#
+# So: line-anchored, over a command whose heredoc bodies have been stripped.
+_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+_FLAG_LINE_RE = re.compile(
     r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"   # FOO=bar prefixes
     r"(?:[^\s;|&]*/)?mneme\b"                    # optional ./bin/ or /usr/local/bin/
-    r"[^\n;|&]*\bflag\b"
+    r"[^\n;|&]*\bflag\b",
+    re.MULTILINE,
 )
+
+
+def strip_heredocs(command: str) -> str:
+    """Drop heredoc BODIES, keeping the lines that open them.
+
+    A document being written with `cat > x <<'EOF'` is content, not commands, and counting
+    what it says about flagging as flagging is how mneme went blind to its own sessions.
+    """
+    kept: list[str] = []
+    terminator: str | None = None
+    for line in command.splitlines():
+        if terminator is None:
+            kept.append(line)
+            m = _HEREDOC_OPEN_RE.search(line)
+            if m:
+                terminator = m.group(1)
+        elif line.strip() == terminator:
+            terminator = None
+    return "\n".join(kept)
+
+
 _FLAG_TOOLS = ("mneme_flag",)
 
 
@@ -188,8 +213,8 @@ def flag_invocations(events: list[Event]) -> int:
             n += 1
             continue
         command = str(e.tool_input.get("command", ""))
-        if command and _FLAG_CMD_RE.search(command):
-            n += 1
+        if command:
+            n += len(_FLAG_LINE_RE.findall(strip_heredocs(command)))
     return n
 
 
