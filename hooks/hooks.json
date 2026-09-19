@@ -1,5 +1,5 @@
 {
-  "description": "mneme: session noticing brief + background distillation",
+  "description": "mneme: session noticing brief + capture prompts + background distillation",
   "hooks": {
     "SessionStart": [
       {
@@ -36,6 +36,18 @@
             "shell": "bash",
             "timeout": 60,
             "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scripts/user-prompt-submit.sh",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       }

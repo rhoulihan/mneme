@@ -76,6 +76,20 @@ _TECHNICAL_RE = re.compile(
     r")"
 )
 
+# Commands whose job is to MOVE TEXT. A vendor error code in their output is something
+# they displayed, not a fault they hit -- `cat server.log` printing ORA-00942 says nothing
+# about cat. Without this, the top of the delivery queue was
+# "ERRCODE_INTERNAL_ERROR then a success of `echo`".
+#
+# The inverse is what makes the rule work at all: only 83 of 5,095 results in the replay
+# corpus set `is_error`, because a database error arrives with EXIT CODE 0 -- `docker exec
+# ... sqlplus` succeeds while printing ORA-00942. Requiring a non-zero exit threw away
+# almost every real finding, so for everything that is not a text-mover, a vendor code in
+# the output IS the failure.
+_DISPLAY_COMMANDS = frozenset(
+    "cat echo sed grep ls head tail awk printf tee less more find wc sort uniq cut tr"
+    " jq column diff git".split()
+)
 RETRY_THRESHOLD = 3
 # T2's actual wording: "failure -> success after >=2 PRIOR failures of the same shape".
 # One failure then a success is ordinary iteration -- on the replay corpus it fired 485
@@ -90,6 +104,8 @@ class Signal:
     evidence: str
     anchor: str = ""
     detail: str = field(default="")
+    # How hard-won: the number of failures that preceded the fix. Used to order delivery.
+    weight: int = 0
 
 
 def _brief(text: str) -> str:
@@ -127,6 +143,10 @@ def _command_shape(command: str) -> str:
     if not words:
         return ""
     shape = words[0].rsplit("/", 1)[-1]
+    if shape == "cd":
+        # A command that is only `cd somewhere`, or one whose prefix the stripper could
+        # not see past. Either way it names no operation, so it identifies nothing.
+        return ""
     if len(words) > 1 and _SUBCOMMAND_RE.match(words[1]):
         shape += " " + words[1]
     return shape
@@ -153,7 +173,9 @@ def resolved_errors(events: list[Event]) -> list[Signal]:
         if result is None:
             continue
         codes = _ERROR_CODE_RE.findall(result.text)
-        if result.is_error or codes:
+        display = shape.split()[0] in _DISPLAY_COMMANDS
+        failed = result.is_error or (bool(codes) and not display)
+        if failed:
             count, code, evidence = pending.get(shape, (0, "", ""))
             pending[shape] = (
                 count + 1,
@@ -176,8 +198,13 @@ def resolved_errors(events: list[Event]) -> list[Signal]:
                     evidence=evidence,
                     anchor=e.tool_use_id,
                     detail=f"{code} then a success of `{shape}`, after {count} failures",
+                    weight=count,
                 )
             )
+    # Hardest-won first. Only a few candidates are delivered per turn (N2), so the order
+    # decides which ones a user ever sees -- and four failures before a success is a
+    # better bet than two.
+    out.sort(key=lambda s: -s.weight)
     return out
 
 

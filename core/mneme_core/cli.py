@@ -44,6 +44,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tally = session_sub.add_parser("tally")
     p_tally.add_argument("--transcript", required=True)
     p_tally.add_argument("--session", default=None)
+    p_prompt = session_sub.add_parser("prompt")
+    p_prompt.add_argument("--session", default=None)
     sub.add_parser("status")
 
     p_flag = sub.add_parser("flag")
@@ -1386,11 +1388,23 @@ def _notable_for(
 
 
 def _session_cmd(home: Path, args: argparse.Namespace) -> int:
-    """Record what a session captured — run from the `Stop` hook, off the hot path."""
-    if args.session_command != "tally":
-        return 1
     import os
 
+    if args.session_command == "prompt":
+        from . import noticed as noticed_mod
+
+        session = args.session or os.environ.get("CLAUDE_SESSION_ID", "unknown")
+        pending = noticed_mod.unreported(home, session)
+        text = noticed_mod.render(pending)
+        if text:
+            print(text)
+            noticed_mod.mark_reported(home, pending)
+        return 0
+    if args.session_command != "tally":
+        return 1
+
+    from . import detect as detect_mod
+    from . import noticed as noticed_mod
     from . import tally as tally_mod
     from . import transcript as transcript_mod
 
@@ -1404,6 +1418,10 @@ def _session_cmd(home: Path, args: argparse.Namespace) -> int:
         # well and then had its flags consumed by the distiller reported zero.
         flags=transcript_mod.flag_invocations(events),
     )
+    # Detection runs where the knowledge appears; delivery happens at the next user turn.
+    noticed_mod.record_signals(home, entry.session, detect_mod.detect(events))
+    entry.candidates = noticed_mod.count_for(home, entry.session)
+    entry.unflagged = max(entry.candidates - entry.flags, 0)
     tally_mod.record(home, entry)
     print(tally_mod.render(entry))
     return 0

@@ -334,3 +334,69 @@ def test_the_same_code_on_two_different_programs_is_two_findings(tmp_path):
         tool_result("f", "done"),
     )
     assert len(detect.resolved_errors(ev)) == 2
+
+
+@pytest.mark.parametrize("mover", ["cat", "sed", "echo", "grep", "git"])
+def test_a_code_printed_by_a_text_mover_is_not_a_failure(tmp_path, mover):
+    """`cat server.log` printing ORA-00942 says nothing about cat. Before this rule, the
+    top of the delivery queue on the replay corpus was
+    "ERRCODE_INTERNAL_ERROR then a success of `echo`"."""
+    ev = events(
+        tmp_path,
+        tool_use("Bash", "a", command=f"{mover} server.log"),
+        tool_result("a", "... ORA-00942: table or view does not exist ..."),
+        tool_use("Bash", "b", command=f"{mover} other.log"),
+        tool_result("b", "... ORA-00942: table or view does not exist ..."),
+        tool_use("Bash", "c", command=f"{mover} clean.log"),
+        tool_result("c", "all fine"),
+    )
+    assert detect.resolved_errors(ev) == []
+
+
+def test_a_code_in_the_output_of_a_real_command_IS_a_failure(tmp_path):
+    """The inverse, and the reason the rule cannot key on exit status: only 83 of 5,095
+    results in the replay corpus set `is_error`, because a database error arrives with
+    exit code 0 — `docker exec ... sqlplus` succeeds while printing ORA-00942."""
+    ev = events(
+        tmp_path,
+        tool_use("Bash", "a", command="docker exec db sqlplus @a.sql"),
+        tool_result("a", "ORA-00942: table or view does not exist"),
+        tool_use("Bash", "b", command="docker exec db sqlplus @b.sql"),
+        tool_result("b", "ORA-00942: table or view does not exist"),
+        tool_use("Bash", "c", command="docker exec db sqlplus @fixed.sql"),
+        tool_result("c", "PL/SQL procedure successfully completed."),
+    )
+    signals = detect.resolved_errors(ev)
+    assert len(signals) == 1
+    assert "docker exec" in signals[0].detail
+
+
+def test_a_bare_cd_identifies_nothing(tmp_path):
+    ev = events(
+        tmp_path,
+        tool_use("Bash", "a", command="cd /repo"),
+        tool_result("a", "ORA-00942", is_error=True),
+        tool_use("Bash", "b", command="cd /other"),
+        tool_result("b", "ORA-00942", is_error=True),
+        tool_use("Bash", "c", command="cd /third"),
+        tool_result("c", "ok"),
+    )
+    assert detect.resolved_errors(ev) == []
+
+
+def test_the_hardest_won_finding_is_delivered_first(tmp_path):
+    """Only a few candidates are shown per turn, so ordering decides what a user ever
+    sees. Four failures before a fix is a better bet than two."""
+    lines = []
+    for i in range(2):
+        lines += [tool_use("Bash", f"e{i}", command=f"psql -f a{i}.sql"),
+                  tool_result(f"e{i}", "ERRCODE_UNDEFINED_TABLE", is_error=True)]
+    lines += [tool_use("Bash", "e-ok", command="psql -f fixed.sql"),
+              tool_result("e-ok", "done")]
+    for i in range(5):
+        lines += [tool_use("Bash", f"h{i}", command=f"sqlplus @b{i}.sql"),
+                  tool_result(f"h{i}", "ORA-06550: line 1", is_error=True)]
+    lines += [tool_use("Bash", "h-ok", command="sqlplus @good.sql"),
+              tool_result("h-ok", "done")]
+    signals = detect.resolved_errors(events(tmp_path, *lines))
+    assert signals[0].detail.startswith("ORA-06550"), [s.detail for s in signals]

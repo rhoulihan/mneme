@@ -284,6 +284,28 @@ over recall — a noisy detector will be disabled by users within a day*, and 24
 one session is not a near miss. The other three rules are implemented, tested and opt-in
 (`detect.ALL_RULES`), so enabling one is a decision with evidence attached.
 
+### 6.2 After delivery was wired (same day)
+
+Wiring `UserPromptSubmit` and running the loop end to end on the corpus exposed two more,
+both of which had been sitting in the "21 plausible signals" above:
+
+- **A vendor code in a command's OUTPUT was being read as that command failing.** So
+  `cat server.log` printing `ORA-00942` recorded a failure of `cat`. The three candidates
+  that actually reached the top of the delivery queue were
+  `ERRCODE_INTERNAL_ERROR then a success of echo`, `AssertionError … of sed`, and
+  `ERRCODE_ARRAY_SUBSCRIPT_ERROR … of sed` — the worst three in the set.
+- **But requiring a non-zero exit instead throws away nearly everything real.** Only
+  **83 of 5,095** results in the corpus set `is_error`, because a database error arrives
+  with exit code 0: `docker exec … sqlplus` succeeds while printing `ORA-00942`. That rule
+  produced **zero** signals.
+
+The distinction that works is neither exit status nor output content but *what kind of
+command it is*: a code in the output of a text-mover (`cat`, `sed`, `echo`, `grep`, `git`)
+is something it displayed; a code in the output of anything else is a fault it hit.
+
+Final on the corpus: **7 signals**, ordered hardest-won first, led by
+`ORA-06550 then a success of docker exec, after 4 failures`. From 707.
+
 **What the corpus says about the design.** Token-overlap recall against the 106 flags is
 ~20% even for the tuned detector, and the qualitative sample explains why: the ground-truth
 flags are dense technical claims, while assistant prose in a long agentic session is

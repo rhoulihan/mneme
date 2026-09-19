@@ -64,6 +64,17 @@ def sessions_path(home: Path) -> Path:
     return home / "sessions.jsonl"
 
 
+def noticed_path(home: Path) -> Path:
+    """Candidates the detector surfaced, and whether they have been put to the user yet.
+
+    Deliberately NOT staging, `declined.jsonl` or `routed.jsonl`. Every one of those
+    records a human DECISION, and that is the whole source of their authority — the
+    declined ledger can permanently silence knowledge precisely because a person wrote it.
+    A detector's guess is not a decision and must not sit where decisions live.
+    """
+    return home / "noticed.jsonl"
+
+
 def routed_path(home: Path) -> Path:
     """Destinations a human has routed knowledge AWAY from.
 
