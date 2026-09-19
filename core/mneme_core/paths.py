@@ -57,6 +57,13 @@ def flags_path(home: Path) -> Path:
     return staging_dir(home) / "flags.jsonl"
 
 
+def sessions_path(home: Path) -> Path:
+    """Per-session capture tallies. Bounded on write (`tally.MAX_RECORDS`): a `Stop` hook
+    appends one record per session forever, and an append-only file nothing trims is the
+    ledger-bloat vector the ingest hardening already had to close once."""
+    return home / "sessions.jsonl"
+
+
 def routed_path(home: Path) -> Path:
     """Destinations a human has routed knowledge AWAY from.
 

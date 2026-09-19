@@ -36,6 +36,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("home")
     p_context = sub.add_parser("context")
     p_context.add_argument("--cwd", type=Path, default=None)
+    p_context.add_argument("--session", default=None)
+    p_context.add_argument("--source", default="")
+
+    p_session = sub.add_parser("session")
+    session_sub = p_session.add_subparsers(dest="session_command", required=True)
+    p_tally = session_sub.add_parser("tally")
+    p_tally.add_argument("--transcript", required=True)
+    p_tally.add_argument("--session", default=None)
     sub.add_parser("status")
 
     p_flag = sub.add_parser("flag")
@@ -226,9 +234,36 @@ def main(argv: list[str] | None = None) -> int:
             print(str(home))
             return 0
         if args.command == "context":
-            from . import routing, templates
+            from . import routing, tally as tally_mod, templates
 
             print(templates.NOTICING_BRIEF)
+            # RC4: the omission has to be loud. A `Stop` hook cannot inject context and
+            # its stdout is discarded, so the previous session's tally is spoken HERE --
+            # SessionStart is one of only two events that can put text in front of the
+            # model at all.
+            # On compact/clear/resume the session CONTINUES, so the interesting tally is
+            # its own -- excluding it there would hide "12,000 calls, 0 flags" behind some
+            # older session's numbers at the exact moment the context was discarded.
+            # A damaged ledger is reported by `read_tallies` and swallowed HERE. The
+            # brief, the registry summary and the registration nudge all matter more than
+            # the tally line, and the hook's `|| exit 0` would drop every one of them if
+            # this raised.
+            notable = None
+            current = False
+            try:
+                notable, current = _notable_for(home, args)
+            except MnemeError:
+                notable = None
+            if False:
+                pass
+            if notable is not None:
+                print()
+                print(tally_mod.render(notable, current=current))
+                print()
+                if not current:
+                    # Said once. A live session's own tally is NOT marked: its numbers
+                    # keep changing, and the next compact should see the newer ones.
+                    tally_mod.mark_reported(home, notable.session)
             scope_list = routing.scopes(home)
             if not scope_list:
                 print("Registered knowledge plugins: none — run 'mneme new <name>' to create one.")
@@ -244,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
                 if nudge:
                     print(nudge)
             return 0
+        if args.command == "session":
+            return _session_cmd(home, args)
         if args.command == "status":
             return _status_cmd(home)
         if args.command == "flag":
@@ -1333,6 +1370,43 @@ def _checked_source(value: str) -> str:
             f" {value[m.start()]!r}"
         )
     return value
+
+
+def _notable_for(
+    home: Path, args: argparse.Namespace
+) -> tuple[object | None, bool]:
+    """The tally worth speaking, and whether it belongs to the live session."""
+    from . import tally as tally_mod
+
+    if args.source in ("compact", "clear", "resume") and args.session:
+        own = tally_mod.for_session(home, args.session)
+        if own is not None and tally_mod.is_notable(own):
+            return own, True
+    return tally_mod.last_notable(home, exclude=args.session), False
+
+
+def _session_cmd(home: Path, args: argparse.Namespace) -> int:
+    """Record what a session captured — run from the `Stop` hook, off the hot path."""
+    if args.session_command != "tally":
+        return 1
+    import os
+
+    from . import tally as tally_mod
+    from . import transcript as transcript_mod
+
+    events = transcript_mod.read_events(args.transcript)
+    entry = tally_mod.SessionTally(
+        session=args.session or os.environ.get("CLAUDE_SESSION_ID", "unknown"),
+        tool_calls=transcript_mod.tool_calls(events),
+        # Counted from the session's own record of flagging, NOT from `read_flags` --
+        # that is every flag still PENDING across every session, so one stale flag from
+        # another session suppressed this session's warning, and a session that flagged
+        # well and then had its flags consumed by the distiller reported zero.
+        flags=transcript_mod.flag_invocations(events),
+    )
+    tally_mod.record(home, entry)
+    print(tally_mod.render(entry))
+    return 0
 
 
 def _clear_ingested_flags(
