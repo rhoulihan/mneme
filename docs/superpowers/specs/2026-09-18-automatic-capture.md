@@ -163,11 +163,42 @@ Unchanged in substance. Delivery changes because `Stop` cannot speak:
 Do **not** use `SessionEnd`: it has a **1.5-second budget shared across all hooks**, and
 mneme's import alone is 264 ms before any analysis.
 
-### R4 — Artifact binding
+### R4 — Artifact binding (revised 2026-09-20, and largely superseded)
 
-Unchanged from Revision A. The `Ruling: … / Flags: N` convention works because the artifact
-write is already mandatory and already survives compaction. **Rulings and flags are the same
-moment.**
+Revision A bound capture to every `Ruling:` line, on the grounds that **rulings and flags are
+the same moment**. The ledger that invented the convention says otherwise.
+
+Measured in `pg-oracle-bench/.superpowers/sdd/2026-09-17-foundation-and-wire/progress.md`,
+where the rule was declared in `MUST` form at line 5 of a file re-read every turn:
+
+| | |
+|---|---|
+| `Ruling:` lines written after the rule | **112** |
+| …carrying `Flags:` within five lines | **7 (6%)**, never above 11% in any third |
+| `Flags:` lines written anyway, elsewhere | **48** — on task summaries and findings blocks |
+| flags the session actually produced | ~106, against 113 rulings |
+
+So the premise is half right in the worst way: the *volume* matches almost exactly — about one
+flag per ruling — while co-location is 6%. **Rulings and flags are the same rate, not the same
+moment.** A ruling decides how to proceed; a flag records how the world behaves. They occur
+about equally often and mostly not together, which is why the mandatory-adjacency form
+collapsed under its own author while the summary-moment form survived unprompted 48 times.
+
+The convention is reworded to bind to the moment that held — a `Flags: N` line on each task
+summary and findings block — and that wording is now in the ledger it came from.
+
+**And R4 is largely superseded.** Its entire argument was borrowing an existing forcing
+function *because nothing else forced capture*. T1, T3 and `UserPromptSubmit` delivery now do
+that mechanically, at 0 ms on the tool path. R4 was the workaround for the absence of the
+machinery this spec built.
+
+**Not implemented in mneme, deliberately.** It is the only requirement that would couple mneme
+to a project-specific artifact format — which file, which pattern, which projects — and the
+only one whose stated mechanism has measured evidence of not working. If it is wanted later,
+the shape is `mneme ledger check <file>`: read-only, reporting rulings or summaries with no
+annotation, feeding the existing tally. mneme must not write the annotation itself;
+`scaffold.adopt` "adds files that are missing and never rewrites, moves or deletes repo
+content", and a ledger is a file the user owns and re-reads every turn.
 
 ### R5 — Knowledge-contradiction detection (mechanism identified)
 
