@@ -251,27 +251,15 @@ def test_a_lock_that_clears_mid_check_is_not_diagnosed_as_an_old_schema(tmp_path
         assert "could not be read" in s.reason or "unusable" in s.reason, s.reason
 
 
-def test_a_large_fact_file_is_not_read_into_memory_whole(tmp_path):
-    """`read_bytes` allocated a 300 MB file whole, on the agent's hot read path.
-
-    Measured in a subprocess so the assertion is about peak RSS, not about a code shape a
-    refactor could satisfy while reallocating.
-    """
+def _fingerprint_peak_mb(target, repo_core):
+    """Peak RSS of fingerprinting `target`, measured in a fresh subprocess."""
     import subprocess
     import sys
     import textwrap
 
-    home = tmp_path / "home"
-    target = kb(tmp_path, home)
-    big = target / units.FACTS_CANONICAL / "huge.md"
-    with big.open("wb") as f:
-        f.write(b"---\ntopic: huge\n---\n")
-        for _ in range(64):
-            f.write(b"x" * (1 << 20))
-
     script = textwrap.dedent(f"""
         import resource, sys
-        sys.path.insert(0, {str(REPO_CORE)!r})
+        sys.path.insert(0, {str(repo_core)!r})
         from mneme_core import indexing
         from pathlib import Path
         indexing.fingerprint(Path({str(target)!r}))
@@ -279,5 +267,37 @@ def test_a_large_fact_file_is_not_read_into_memory_whole(tmp_path):
     """)
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
-    peak_mb = int(out.stdout.strip())
-    assert peak_mb < 60, f"peak RSS {peak_mb} MB for a 64 MB file — the read is unbounded"
+    return int(out.stdout.strip())
+
+
+def _with_fact_file(tmp_path, name, mib):
+    home = tmp_path / name / "home"
+    target = kb(tmp_path / name, home)
+    big = target / units.FACTS_CANONICAL / "huge.md"
+    with big.open("wb") as f:
+        f.write(b"---\ntopic: huge\n---\n")
+        for _ in range(mib):
+            f.write(b"x" * (1 << 20))
+    return target
+
+
+def test_a_large_fact_file_is_not_read_into_memory_whole(tmp_path):
+    """`read_bytes` allocated a 300 MB file whole, on the agent's hot read path.
+
+    Measured as peak RSS in a subprocess, deliberately: the assertion is about memory
+    actually allocated, not about a code shape a refactor could satisfy while reallocating.
+
+    Measured as a DIFFERENCE against a small control, also deliberately. This asserted an
+    absolute ceiling of 60 MB for a 64 MB file, which held on a development machine (peak
+    20 MB) and failed on CI (peak 62 MB) purely from a heavier interpreter baseline — the
+    file was never being slurped in either. Differencing cancels the baseline out, so the
+    test measures the one thing it is about: how much of the file is resident at once.
+    """
+    small = _fingerprint_peak_mb(_with_fact_file(tmp_path, "small", 1), REPO_CORE)
+    large = _fingerprint_peak_mb(_with_fact_file(tmp_path, "large", 64), REPO_CORE)
+    growth = large - small
+    # Slurping a 64 MB file shows up as ~64 MB of growth. Chunked reading shows ~0.
+    assert growth < 16, (
+        f"fingerprinting a 64 MB file cost {growth} MB more than a 1 MB file"
+        f" ({small} -> {large}) — the read is unbounded"
+    )

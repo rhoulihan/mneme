@@ -400,3 +400,53 @@ def test_the_hardest_won_finding_is_delivered_first(tmp_path):
               tool_result("h-ok", "done")]
     signals = detect.resolved_errors(events(tmp_path, *lines))
     assert signals[0].detail.startswith("ORA-06550"), [s.detail for s in signals]
+
+
+# --- R5: contradicting what is already installed -----------------------------
+
+
+def test_a_differing_measurement_is_a_contradiction():
+    """The strongest mechanical form: same subject, same unit, different number."""
+    how = detect.contradiction(
+        "Oracle's JSON inline-to-LOB transition measures at 7939 bytes on Free 26ai",
+        "Oracle moves a JSON value out of line past the 4000 bytes inline limit",
+    )
+    assert how is not None
+    assert "4000" in how and "7939" in how
+
+
+def test_an_assertion_against_a_denial_is_a_contradiction():
+    how = detect.contradiction(
+        "PostgreSQL 19 does not support parallel GIN builds",
+        "PostgreSQL supports parallel GIN index builds from version 19",
+    )
+    assert how is not None
+
+
+def test_two_facts_about_different_things_are_not_a_contradiction():
+    assert detect.contradiction(
+        "The webhook replays for 72 hours after a failure",
+        "Kubernetes ingress controllers terminate TLS at 300 seconds",
+    ) is None
+
+
+def test_agreement_is_not_a_contradiction():
+    assert detect.contradiction(
+        "Oracle moves a JSON value out of line past the 8000 bytes inline limit",
+        "Oracle's JSON inline limit is 8000 bytes before the value goes out of line",
+    ) is None
+
+
+def test_two_vague_sentences_do_not_contradict():
+    """MIN_SHARED_SUBJECT is 2 because one shared word is met by any pair of English
+    sentences — that threshold is the whole false-positive guard."""
+    assert detect.contradiction("Something happened here", "Another thing happened") is None
+
+
+def test_the_shared_subject_threshold_is_pinned():
+    assert detect.MIN_SHARED_SUBJECT == 2
+
+
+def test_no_index_means_no_knowledge_issues():
+    """Degrades silently, exactly as `similar_to` does."""
+    assert detect.knowledge_issues(None, [detect.Signal(kind="x", evidence="y")]) == []

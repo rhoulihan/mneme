@@ -1377,6 +1377,20 @@ def _checked_source(value: str) -> str:
     return value
 
 
+def _open_index(home: Path):
+    """A read-only index connection, or None. Silent when there is no index — the same
+    way `similar_to` already degrades rather than failing a capture pass."""
+    db_file = paths.db_path(home)
+    if not db_file.exists():
+        return None
+    try:
+        from mneme_index import db as index_db
+
+        return index_db.open_db_readonly(db_file)
+    except MnemeError:
+        return None
+
+
 def _notable_for(
     home: Path, args: argparse.Namespace
 ) -> tuple[object | None, bool]:
@@ -1438,7 +1452,12 @@ def _session_cmd(home: Path, args: argparse.Namespace) -> int:
         flags=transcript_mod.flag_invocations(events),
     )
     # Detection runs where the knowledge appears; delivery happens at the next user turn.
-    noticed_mod.record_signals(home, entry.session, detect_mod.detect(events))
+    signals = detect_mod.detect(events)
+    # R5: the index does what the model cannot. Contradicting your own retrieved context
+    # is what a model is worst at, so the comparison is mechanical and the installed fact
+    # comes from the FTS index rather than from memory.
+    signals += detect_mod.knowledge_issues(_open_index(home), signals)
+    noticed_mod.record_signals(home, entry.session, signals)
     entry.candidates = noticed_mod.count_for(home, entry.session)
     entry.unflagged = max(entry.candidates - entry.flags, 0)
     tally_mod.record(home, entry)

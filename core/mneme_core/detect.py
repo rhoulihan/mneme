@@ -323,3 +323,99 @@ def detect(events: list[Event], rules: tuple[str, ...] = DEFAULT_RULES) -> list[
         if rule is not None:
             out.extend(rule(events))
     return out
+
+
+# --- R5: knowledge that contradicts what is already installed ----------------
+#
+# The requirements doc calls this mneme's second stated capture kind and notes it is
+# "currently entirely dependent on the model noticing -- the least reliable possible
+# mechanism, since contradicting one's own retrieved context is precisely what a model is
+# worst at." That rules out a MODEL detector, not a mechanical one.
+#
+# The mechanism already existed: `cli._distill_ingest` computes `similar_to` for every
+# candidate by probing the FTS index for its nearest installed fact. The index does what
+# the model cannot -- it has no stake in the retrieved context being right.
+
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|no|none|cannot|can't|doesn't|does not|isn't|is not|won't|wasn't"
+    r"|unsupported|unavailable|fails? to|refuses? to)\b",
+    re.IGNORECASE,
+)
+_NUMBER_UNIT_RE = re.compile(
+    r"\b(\d[\d,.]*)\s?"
+    r"(ms|µs|us|ns|s|sec|secs|seconds|min|mins|hours?|days?"
+    r"|[KMGT]?i?B|bytes?|rows?|%|x)\b",
+    re.IGNORECASE,
+)
+_SUBJECT_RE = re.compile(r"\b(?:[A-Z]{2,}-\d+|\w+_\w+|[A-Za-z][A-Za-z0-9]{4,})\b")
+# Two shared subject words is the difference between "these talk about the same thing" and
+# "these are both English". One is met by any pair of sentences.
+MIN_SHARED_SUBJECT = 2
+
+
+def _subjects(text: str) -> set[str]:
+    return {t.lower() for t in _SUBJECT_RE.findall(text)}
+
+
+def _numbers(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for value, unit in _NUMBER_UNIT_RE.findall(text):
+        out.setdefault(unit.lower(), value.replace(",", ""))
+    return out
+
+
+def contradiction(claim: str, known: str) -> str | None:
+    """How `claim` disagrees with an already-installed `known` fact, or None."""
+    shared = _subjects(claim) & _subjects(known)
+    if len(shared) < MIN_SHARED_SUBJECT:
+        return None
+    mine, theirs = _numbers(claim), _numbers(known)
+    for unit in sorted(set(mine) & set(theirs)):
+        if mine[unit] != theirs[unit]:
+            return (
+                f"installed knowledge says {theirs[unit]}{unit};"
+                f" this session saw {mine[unit]}{unit}"
+            )
+    if bool(_NEGATION_RE.search(claim)) != bool(_NEGATION_RE.search(known)):
+        return "one of these asserts what the other denies"
+    return None
+
+
+def knowledge_issues(conn, signals: list[Signal], *, k: int = 3) -> list[Signal]:
+    """Signals that disagree with the nearest installed fact.
+
+    `conn` is a read-only index connection, or None when there is no index -- in which
+    case this is silent, exactly as `similar_to` already degrades.
+    """
+    if conn is None:
+        return []
+    from mneme_index import search as index_search
+
+    out: list[Signal] = []
+    for signal in signals:
+        claim = signal.evidence
+        if not claim:
+            continue
+        try:
+            hits = index_search.search(conn, claim, k=k)
+        except Exception:
+            continue
+        for hit in hits:
+            known = " ".join(
+                str(hit.get(field) or "") for field in ("summary", "description")
+            ).strip()
+            if not known:
+                continue
+            how = contradiction(claim, known)
+            if how is None:
+                continue
+            out.append(
+                Signal(
+                    kind="knowledge-issue",
+                    evidence=_brief(claim),
+                    detail=f"{how} ({hit.get('plugin', '?')}:{hit.get('id', '?')})",
+                    weight=signal.weight + 1,
+                )
+            )
+            break
+    return out
