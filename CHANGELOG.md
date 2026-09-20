@@ -8,6 +8,72 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.10.0 — 2026-09-20
+
+Capture stops depending on the model remembering to capture.
+
+The failure this fixes was mneme's own. Its `Stop` hook ran
+`mneme distill pending >/dev/null 2>&1 || exit 0`, and `distill pending` exits 1 when the
+flag count is zero — so on exactly the session worth reporting, mneme computed the zero,
+sent it to `/dev/null`, and exited. A long session that captured nothing was
+indistinguishable from a quiet one.
+
+Built against a live probe of Claude Code 2.1.278 rather than its documentation, which was
+wrong twice in mneme's favour: `PostToolUse` **does** carry the tool's result and
+`SubagentStop` **does** carry the subagent's report, both documented otherwise — while
+`Stop` cannot inject context at all and its stdout is discarded. Hooks see almost everything
+and can speak almost nowhere, which forces the shape of all of this: **seeing and speaking
+are different events.** Every trigger records where the knowledge appears and delivers at
+`UserPromptSubmit`, the only event that both fires repeatedly during a session and can put
+text in front of the model.
+
+- **A session that captured nothing says so.** `Stop` writes a per-session tally; the
+  `SessionStart` brief reports it. Flags are counted from the session's own record of
+  flagging, not from the pending ledger — that counts every flag still pending across every
+  session, so one stale flag from another session silenced the report, and a session whose
+  flags the distiller had just consumed reported zero.
+- **A subagent's report is mined for findings** (T1). Measured over 787 real reports: 722 are
+  substantive and 216 of those carry a signal, so a heavily delegated session yields about
+  nine candidates rather than one per subagent. The same prose rules are off for whole-session
+  transcripts, where they are dominated by status reporting — the base rate is the difference,
+  and it is measured in both directions.
+- **A hard-won fix becomes a specific prompt**, not a generic reminder: *"ORA-06550 then a
+  success of `docker exec`, after 4 failures"*. Candidates arrive at most three per turn,
+  hardest-won first, and are never offered twice.
+- **`mneme_flag` over MCP.** Text with quotes, `$`, backslashes and newlines goes in with no
+  shell quoting. Hand-rolled JSON-RPC over stdio, because the engine is stdlib-only.
+- **Fix: `distill ingest` was the untrusted door with three locks open.** `topic`, `name` and
+  each tag were uncapped — one proposal wrote a 300KB candidate file; every proposal could be
+  rejected while ingest still exited 0; and `--source` reached a git commit trailer
+  unsanitised, so a newline forged trailers.
+- **Fix: the registry deleted fields it did not recognise.** `load_registry` filtered unknown
+  keys out and `save_registry` then rewrote the file without them, so any write by a binary
+  lacking a field dropped it for every plugin, silently — and it failed *open*, because a
+  dropped sensitivity binding is not a refusal, it is a missing check. Retired keys are still
+  garbage-collected; the two rules look alike and are opposite, so the distinction is named.
+- **Fix: frontmatter escaped two of the ten characters `str.splitlines()` breaks on.** Node's
+  `JSON.stringify` leaves U+2028, U+2029 and U+0085 raw inside strings, so a pasted line
+  separator could split a candidate record in two — bricking every later read, or forging
+  `target` and `source_sensitivity`, the one field the boundary check cannot recover
+  afterwards.
+
+**What the replay corpus changed.** The acceptance suite replays a real 5,034-call session
+with its 106 hand-captured flags, and building it found four defects in code written hours
+earlier: flag counting anchored to the start of a command read 109 real invocations as one;
+`cd` prefixes made every command share one shape, producing 521 junk signals; T2 was
+implemented at one prior failure rather than the specified two, firing 485 times; and
+`E[A-Z]{3,}` as an errno pattern read `ERROR`, `EMAIL` and `EXIT` as vendor error codes.
+Signals went from 707 to 7.
+
+**Deliberately not built.** T2's hot-path ring buffer — the transcript already carries
+`is_error` and the analysis already runs at `Stop`, so a `PostToolUse` hook would add latency
+to every Bash call for data that arrives free. Measured: **0 ms added per tool call**, 217 ms
+per user turn, 426 ms per assistant turn asynchronously. R5's negation rule — probed against a
+real installed index it flagged 46 of 274 signals and produced 100% of the noise, while the
+number form produced none of it. R4's ledger binding — its premise, "rulings and flags are the
+same moment", is contradicted by the ledger that invented it: 6% co-location against a
+matching rate.
+
 ## 0.9.0 — 2026-08-24
 
 Corrections at the gate, and a search index that admits when it is behind. Three things
