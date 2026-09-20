@@ -137,7 +137,8 @@ def render(entries: list[Noticed]) -> str:
         what = e.detail or e.evidence
         lines.append(f"- [{e.kind}] {what}")
     lines.append(
-        'Flag with `mneme flag "<what worked + why it was non-obvious>"`,'
+        "Flag with the `mneme_flag` tool (no quoting needed), or"
+        ' `mneme flag "<what worked + why it was non-obvious>"` —'
         " or say nothing if none of it is durable."
     )
     return "\n".join(lines)

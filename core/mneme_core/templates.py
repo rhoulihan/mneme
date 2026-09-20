@@ -322,8 +322,12 @@ NOTICING_BRIEF = """## mneme noticing
 While you work, flag knowledge worth keeping — do NOT stop to document it.
 
 Flag (one line each, at the moment it happens) when:
-- a hard-won fix lands after real dead ends: `mneme flag "<what worked + why it was non-obvious>"`
-- installed knowledge proves wrong or stale: `mneme flag --kind knowledge-issue "<what is wrong>"`
+- a hard-won fix lands after real dead ends — kind `golden-path`
+- installed knowledge proves wrong or stale — kind `knowledge-issue`
+
+Use the `mneme_flag` tool if it is available: no shell, no quoting, and the text may
+contain quotes, `$`, backslashes and newlines. Otherwise `mneme flag "<one line>"`
+(add `--kind knowledge-issue` for the second case).
 
 Rules: one line per flag; no mid-session distillation (a background distiller runs later);
 never flag anything from excluded repos/paths; never include secrets or credentials in flag text.

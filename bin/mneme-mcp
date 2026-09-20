@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# mneme's MCP server (stdio). stdout IS the protocol — never echo anything here.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1] + "/core")
+from mneme_core import mcp_server, paths
+raise SystemExit(mcp_server.serve(paths.mneme_home()))' "$ROOT"

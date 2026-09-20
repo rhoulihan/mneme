@@ -232,6 +232,22 @@ record-now/process-later split mneme already uses for flags and distillation.
 | R3/R1 delivery | `UserPromptSubmit` | — | `hookSpecificOutput.additionalContext`; **verified working** |
 | R6 | `mcpServers` in `plugin.json` | — | `mneme_flag` as a structured tool, no shell quoting |
 
+**R6 as built (2026-09-19).** `core/mneme_core/mcp_server.py` + `bin/mneme-mcp`, declared
+in the plugin manifest. Hand-rolled JSON-RPC over newline-delimited stdio, because mneme is
+stdlib-only and `tests/e2e/test_release.py` enforces that — there is no `mcp` package to
+import. One tool, `mneme_flag(text, kind?)`.
+
+Two rules the implementation turns on. **stdout IS the protocol**: one stray `print`
+corrupts the stream for a whole session, and it is the single mistake a change here can
+make silently, so a test asserts every stdout line is a well-formed JSON-RPC message. And
+**a refusal is a result, not a transport error**: `isError: true` is something a model can
+correct, while a JSON-RPC error reads as "the server is broken" and stops it trying again.
+
+Acceptance criterion 4 holds end to end through the shipped launcher: a flag containing
+`$`, `"`, `'`, a backslash and a newline is submitted with no escaping. The newline is
+collapsed rather than refused — one line per flag is mneme's own rule, and refusing would
+hand back exactly the friction this replaces.
+
 mneme's existing `Stop`/`PreCompact` hooks are already `async: true`. That is correct and
 should stay — an async hook cannot block, and it also cannot inject, which is consistent with
 delivery living elsewhere.
