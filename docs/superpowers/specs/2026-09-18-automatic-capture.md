@@ -267,6 +267,18 @@ delivery living elsewhere.
 6. **(new)** A 500-Bash-call session adds **< 5 s** of aggregate hook latency.
 7. **(new)** No hook in the `Record` class imports `mneme_core`.
 
+### 6.3 Criteria, verified (2026-09-19)
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | ≥5 findings → ≥5 prompts, unasked | **5 delivered** across three turns (3 + 2 + 0), respecting the per-turn cap |
+| 2 | no findings → no prompts | empty output |
+| 3 | >20 calls, 0 flags → explicit statement | *"Last session: 30 tool calls, 0 flags captured."* |
+| 4 | `$`, `"`, `'`, newline submit without escaping | through the shipped MCP launcher |
+| 5 | replay ≥12 of the hand-captured facts | **not met as stated** — §6.1/§6.2 |
+| 6 | 500 Bash calls add <5 s | **0 ms** on the tool path |
+| 7 | no Record-class hook imports `mneme_core` | holds by construction — no such hook exists |
+
 Criterion 5 remains the real test: the transcript and the ground-truth flags both exist, so
 this is a regression suite rather than a thought experiment.
 
@@ -369,8 +381,21 @@ cross-session deduplication.
    Note the base rate is what makes this work. The same prose rules are **off** for
    whole-session transcripts, where they are dominated by status reporting; over a
    subagent's returned findings they are not.
-4. **Is R5 detectable?** Mechanism identified (§R5). Open question becomes the false-positive
-   rate of the `similar_to` comparison, measurable against the replay corpus.
+4. **Is R5 detectable?** **Answered by measurement (2026-09-19), and half of it was not.**
+   Probed against a real installed index (`oracle-ai-dev`, `mneme-dev-knowledge`), the two
+   mechanical forms behaved completely differently over 274 signals:
+
+   | Form | Flagged | Verdict |
+   |---|---|---|
+   | same subject, same unit, **different number** | 0 | precise; kept |
+   | one text negates and the other does not | **46** | **100% of the noise; removed** |
+
+   Installed knowledge is stored as skill *descriptions* — long prose that nearly always
+   contains a negation word somewhere — so "presence of a negation anywhere" is evidence of
+   nothing. An adjacency-sensitive version is possible and unproven. R2's constraint is
+   precision over recall, and a rule that finds nothing on a corpus where nothing
+   contradicts is correct, while one that cries wolf 46 times gets the feature muted.
+   After removal: **0 false positives on the corpus.**
 5. **(new) Does `Stop`-hook stdout reach an interactive terminal?** The probe was headless,
    where it is discarded. If interactive rendering differs, R3 could also report in-session to
    the human. Worth one interactive test; the design does not depend on it.

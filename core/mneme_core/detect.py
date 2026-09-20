@@ -376,8 +376,15 @@ def contradiction(claim: str, known: str) -> str | None:
                 f"installed knowledge says {theirs[unit]}{unit};"
                 f" this session saw {mine[unit]}{unit}"
             )
-    if bool(_NEGATION_RE.search(claim)) != bool(_NEGATION_RE.search(known)):
-        return "one of these asserts what the other denies"
+    # The negation form is GONE, and the corpus is why. Probed against a real installed
+    # index, "one text contains a negation word and the other does not" flagged 46 of 274
+    # signals and produced 100% of the noise, while the number form produced none of it.
+    # Installed knowledge is stored as skill descriptions -- long prose that nearly always
+    # contains a negation somewhere -- so presence-anywhere is not evidence of anything.
+    #
+    # Making it adjacency-sensitive is possible and unproven, and R2's constraint is
+    # precision over recall. A rule that finds nothing on a corpus where nothing
+    # contradicts is right; one that cries wolf 46 times gets the feature muted.
     return None
 
 

@@ -415,12 +415,29 @@ def test_a_differing_measurement_is_a_contradiction():
     assert "4000" in how and "7939" in how
 
 
-def test_an_assertion_against_a_denial_is_a_contradiction():
-    how = detect.contradiction(
+def test_a_bare_negation_mismatch_is_NOT_a_contradiction():
+    """This asserted the opposite until the corpus was consulted.
+
+    Probed against a real installed index, "one text has a negation word and the other
+    does not" flagged 46 of 274 signals — 100% of R5's noise — while the number form
+    produced none of it. Installed knowledge is stored as skill descriptions, long prose
+    that nearly always contains a negation somewhere, so presence-anywhere is evidence of
+    nothing. A genuine contradiction of this shape still needs catching; it needs a rule
+    that survives contact with real installed text, which this was not.
+    """
+    assert detect.contradiction(
         "PostgreSQL 19 does not support parallel GIN builds",
         "PostgreSQL supports parallel GIN index builds from version 19",
-    )
-    assert how is not None
+    ) is None
+
+
+def test_the_number_form_is_what_survived(tmp_path):
+    """Same subject, same unit, different value — mechanical, and the one form that did
+    not fire spuriously against a real index."""
+    assert detect.contradiction(
+        "the inline limit measures at 7939 bytes on Free 26ai",
+        "Oracle moves a JSON value out of line past the 4000 bytes inline limit",
+    ) is not None
 
 
 def test_two_facts_about_different_things_are_not_a_contradiction():
