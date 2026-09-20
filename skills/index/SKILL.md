@@ -8,7 +8,7 @@ The index is built from the **working trees** of registered repos, and almost ev
 
 The binary is `"$CLAUDE_PLUGIN_ROOT/bin/mneme"` when installed, else `bin/mneme`.
 
-1. Check first: `mneme index check`. It exits **0** when fresh and **2** when stale, naming each repo and why — `changed since it was indexed`, `never indexed`, `local clone missing`, or `indexed before freshness tracking`. Exit 2 is a *report*, like `mneme verify`'s, not a crash.
+1. Check first: `mneme index check`. It exits **0** when fresh and **2** when stale, naming each repo and why — `changed since it was indexed`, `never indexed`, `local clone missing`, or `indexed before freshness tracking — rebuild once`. Exit 2 is a *report*, like `mneme verify`'s, not a crash.
 2. If anything is stale, rebuild only what moved: `mneme index rebuild --stale`. Report each `indexed <plugin>: N skills, M facts, K skipped` line, and relay every `skipped:` line verbatim — a skipped unit is knowledge that will not be retrievable, and the reason names the file.
 3. `mneme index rebuild` with no flag rebuilds everything. Use it when a fingerprint may be wrong rather than the tree — after upgrading mneme, or when `--stale` reported nothing but a search still looks short.
 4. `mneme index status` shows per-repo counts, when each was built, and which are behind.

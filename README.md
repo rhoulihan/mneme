@@ -35,7 +35,7 @@ Nobody ships **capture → local staging → user-curated review → PR into an 
 
 Nothing leaves your machine without passing a deterministic machine gate **and** your explicit approval. Nothing enters a shared repo without a human merge: every contribution — approved harvests and classify reorganizations alike — lands on a `mneme/*` branch, pushed as a pull request when the repo has a remote and left local for you otherwise. **Mneme never writes a registered repo's `main`.** There is no auto-push and no direct-commit setting to get wrong: contributions are PR-only, by design, not by configuration — personal repos simply merge their own PRs.
 
-On the receiving end of that loop, maintainers work the inbound queue with `/mneme:review`: every fact each open pull request adds is machine-annotated as duplicate, declined, possibly-integrated, or new, and the merge, the duplicate-closure, or the extraction of just the genuinely new bullets happens only on your explicit approval for that specific PR.
+On the receiving end of that loop, maintainers work the inbound queue with `/mneme:review`: every fact each open pull request adds is machine-annotated as duplicate, declined, already-integrated, possibly-integrated, or new, and the merge, the duplicate-closure, or the extraction of just the genuinely new bullets happens only on your explicit approval for that specific PR.
 
 ## What a knowledge plugin looks like
 
@@ -115,7 +115,7 @@ Mneme is in active development, built plan-by-plan with strict TDD. Current stat
 | 08 — Detection | Session-start detection of unregistered knowledge repos — the injected brief asks to register (hardened against path/URL injection); persisted declines | ✅ merged (v0.3.0) |
 | 09 — PR-only | Contribution modes removed: mneme never writes a repo's `main` — every harvest is a branch + PR, enforced by an invariant test | ✅ merged (v0.4.0) |
 | 10 — Classify | Facts move under `skills/knowledge-index/facts/` (legacy readable); `/mneme:classify` prompt-driven librarian pass with user-approved mapping | ✅ merged (v0.5.0) |
-| 11 — Review | `/mneme:review` inbound-PR triage: machine-annotated fact additions (duplicate / declined / possibly-integrated / new), per-PR human approval for every merge, closure, or extraction; deterministic fact-preservation gate at finalize | ✅ merged (v0.6.0) |
+| 11 — Review | `/mneme:review` inbound-PR triage: machine-annotated fact additions (duplicate / declined / already-integrated / possibly-integrated / new), per-PR human approval for every merge, closure, or extraction; deterministic fact-preservation gate at finalize | ✅ merged (v0.6.0) |
 | — | Fixes: Claude Code's 500-char description limit honored end to end (index description now O(1) in fact count); secret scanner no longer blocks mneme's own topic slugs. Docs: [getting-started walkthrough](docs/getting-started.md) | ✅ merged (v0.6.1) |
 | 12 — Canonical facts | Every new fact topic lands in `skills/knowledge-index/facts/`, whatever the repo's layout; a legacy root `facts/` is migrated automatically on the next contribution — history-preserving moves, merge-never-overwrite, delivered in that contribution's own PR — plus `mneme migrate` for a repo with nothing else pending | ✅ merged (v0.7.0) |
 | 13 — Any repo | Register and capture into an ordinary app, service or infra repo: knowledge lives in `mneme-index/` at the root and the repo is never turned into a plugin — no manifests, no claim on its `skills/` or `CONTRIBUTING.md`, CODEOWNERS scoped to the knowledge root, CI that only runs when the knowledge changes. `/mneme:adopt` drafts the scope statement from what the repo already says about itself. `share` and `review` work in both modes; `classify` declines where there are no destination skills | ✅ merged (v0.8.0) |
@@ -162,9 +162,9 @@ Everything is a slash command. Behind each one, a deterministic, fully-tested CL
 | `/mneme:verify <name>` | Staleness sweep over a knowledge plugin, with guided re-verification |
 | `/mneme:index` | Check whether the search index still speaks for the registered repos, and rebuild the ones that moved — `search` warns when it is stale rather than answering confidently from an old corpus |
 | `/mneme:classify` | Librarian pass on the current repo: triage accumulated facts into the relevant skills' content (you approve the mapping), regenerate the knowledge-index, deliver as its own PR. Needs destination skills, so it declines in a plain repo and says what does work there |
-| `/mneme:review` | Maintainer triage of the current repo's open PRs: every fact each one adds is annotated duplicate / declined / possibly-integrated / new, then you approve each merge, duplicate-closure, or extraction of the new bullets (requires the `gh` CLI) |
+| `/mneme:review` | Maintainer triage of the current repo's open PRs: every fact each one adds is annotated duplicate / declined / already-integrated / possibly-integrated / new, then you approve each merge, duplicate-closure, or extraction of the new bullets (requires the `gh` CLI) |
 
-And mneme rides the session without being asked: a SessionStart hook injects the noticing brief so the agent flags golden paths as they happen, Stop/PreCompact hooks run the background distiller over what was flagged, and a retrieval skill has the agent search installed knowledge by vague notion before reinventing something the organization already knows — and read the warning when the index is behind, so a thin answer is never mistaken for "nobody knows this". Opening a session inside an unregistered knowledge repo (its `MNEME.md` marker present) makes the brief *ask you* whether to register it — declining is persisted, so you're never nagged twice about the same repo.
+And mneme rides the session without being asked. Five hooks do it. A SessionStart hook injects the noticing brief — and reports the previous session's tally, so a session that did real work and captured nothing says so instead of passing for a quiet one. A SubagentStop hook mines the report a delegated agent just returned; Stop and PreCompact record what the session captured and run the background distiller over it. None of those can put text in front of you — only SessionStart and UserPromptSubmit can — so a UserPromptSubmit hook delivers what the others noticed, at a turn boundary rather than mid-analysis: at most three specific candidates, hardest-won first, never offered twice. Flagging itself needs no shell quoting any more: the plugin ships an MCP server whose `mneme_flag` tool takes text with quotes, `$` and newlines as-is. And a retrieval skill has the agent search installed knowledge by vague notion before reinventing something the organization already knows — and read the warning when the index is behind, so a thin answer is never mistaken for "nobody knows this". Opening a session inside an unregistered knowledge repo (its `MNEME.md` marker present) makes the brief *ask you* whether to register it — declining is persisted, so you're never nagged twice about the same repo.
 
 ### Under the hood (contributors, CI, scripting)
 
@@ -204,12 +204,18 @@ Everything runs locally plus your own git remote. Capture exclusions bind at the
 ```
 core/mneme_core/    # engine: registry, staging, scan, lint, routing, scaffold, CLI
 core/mneme_index/   # standalone retrieval component (imports only units+errors from core)
-bin/                # zero-install launchers (mneme, mneme-index) + the background distill pipeline
+bin/                # zero-install launchers (mneme, mneme-index, mneme-mcp) + the background distill pipeline
+hooks/              # the five hook registrations and their scripts
+skills/             # the /mneme:* skills the plugin contributes
+.claude-plugin/     # plugin + marketplace manifests, and the MCP server declaration
 docs/
-├── superpowers/specs/    # the design specification
+├── install.md            # installing the plugin, and what it contributes
+├── getting-started.md    # the worked end-to-end walkthrough
+├── superpowers/specs/    # design specifications
 ├── superpowers/plans/    # per-phase implementation plans (full TDD detail)
+├── superpowers/backlog/  # raised-and-argued items, kept after delivery
 └── research/             # prior-art survey, platform wiring references
-tests/              # pytest suite — one test module per source module
+tests/              # pytest suite — core/, index/, adapter/, e2e/
 ```
 
 ## How this repo is built

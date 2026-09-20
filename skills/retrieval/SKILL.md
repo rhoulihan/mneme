@@ -10,4 +10,4 @@ Before reinventing, check what the organization already knows.
 3. Top hits are entry points: skills route onward through their own SKILL.md; facts carry their category, tags, and verified date. For structured lookups use `mneme db query "SELECT ... FROM units WHERE ..."` (read-only).
 4. **Read stderr, not just the hits.** A `warning: index is stale for <repos>` line means the corpus predates a merge, a pull, or an edit — so a thin or empty result may be the index rather than the organisation. Say so before concluding nobody knows this, run `mneme index rebuild --stale`, and search again; the second answer is the one to rely on.
 5. If the index is not built (`index not built` on stderr), fall back to reading the registered plugins' files directly — `mneme registry list` shows their paths — and suggest `mneme db enable` to the user once.
-6. If retrieved knowledge turns out wrong or stale, flag it: `mneme flag --kind knowledge-issue "<what is wrong>"`.
+6. If retrieved knowledge turns out wrong or stale, flag it: `mneme_flag(text="<what is wrong>", kind="knowledge-issue")` if the tool is available, else `mneme flag --kind knowledge-issue "<what is wrong>"`.

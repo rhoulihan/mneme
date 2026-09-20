@@ -200,7 +200,7 @@ mechanically — never edit it by hand — and starts empty:
 ```markdown
 ---
 name: knowledge-index
-description: "Consult when you need durable facts from acme-knowledge — constraints, gotchas, decisions, and runbook notes. Widget platform operations at Acme: deploy paths, incident runbooks, and the constraints of the billing pipeline. Excludes customer data and anything about the marketing site. Topics listed in this skill route to fact files under facts/."
+description: "Consult when you need durable facts from acme-knowledge — constraints, gotchas, decisions, and runbook notes. Widget platform operations at Acme: deploy paths, incident runbooks, and the constraints of the billing pipeline. Excludes customer data and anything about the marketing site. No facts recorded yet."
 ---
 
 # acme-knowledge fact index
@@ -211,8 +211,10 @@ Regenerated mechanically by mneme — do not edit by hand.
 |---|---|---|
 ```
 
-As facts arrive, mneme adds a row per topic and appends the topic list to the description,
-so an agent that has never opened the repo can still tell what is in it.
+As facts arrive, mneme adds a row per topic and appends a topic *count* to the description
+(`No facts recorded yet.` → `3 topics, listed in this skill, stored in facts/.`), so an agent
+that has never opened the repo can still tell roughly what is in it. A count rather than the
+list itself: the list grows without bound against a hard description limit.
 
 ### Give it a remote
 
@@ -269,11 +271,11 @@ mneme registry list
 ```
 acme-knowledge  internal  local:~/.mneme/repos/acme-knowledge
 team-kb  internal  git@github.com:acme/team-kb.git
-personal-kb  internal  git@github.com:you/kb.git
+personal-kb  internal  plugin  git@github.com:you/kb.git
 ```
 
-(Name, sensitivity, repo — two spaces between columns. `local:` marks a plugin with no
-remote yet.)
+(Name, sensitivity, mode, repo — two spaces between columns. `local:` marks a plugin with
+no remote yet; mode is `plugin` or `plain`.)
 
 ### Is it ready to receive knowledge?
 
@@ -294,8 +296,12 @@ as `(no scope statement)`:
 While you work, flag knowledge worth keeping — do NOT stop to document it.
 
 Flag (one line each, at the moment it happens) when:
-- a hard-won fix lands after real dead ends: `mneme flag "<what worked + why it was non-obvious>"`
-- installed knowledge proves wrong or stale: `mneme flag --kind knowledge-issue "<what is wrong>"`
+- a hard-won fix lands after real dead ends — kind `golden-path`
+- installed knowledge proves wrong or stale — kind `knowledge-issue`
+
+Use the `mneme_flag` tool if it is available: no shell, no quoting, and the text may
+contain quotes, `$`, backslashes and newlines. Otherwise `mneme flag "<one line>"`
+(add `--kind knowledge-issue` for the second case).
 
 Rules: one line per flag; no mid-session distillation (a background distiller runs later);
 never flag anything from excluded repos/paths; never include secrets or credentials in flag text.
@@ -590,11 +596,11 @@ Three things, stated plainly so you can decide before you adopt:
 a plain repo has none. It refuses rather than guessing:
 
 ```
-mneme: …/payments-service is not a knowledge plugin, so it has no destination skills to
-file facts into — classify has nowhere to put anything. What does work here: `mneme share`
-captures facts into mneme-index/, `mneme review` accepts a pull request and the facts inside
-it, and `mneme migrate` moves a legacy facts/ directory. To make this repo a plugin instead,
-run: mneme adopt <name> --as-plugin
+mneme: mneme does not maintain a skills/ tree in …/payments-service, so there are no
+destination skills to file facts into — classify has nowhere to put anything. What does
+work here: `mneme share` captures facts into mneme-index/facts/, `mneme review` accepts a
+pull request and the facts inside it, and `mneme migrate` moves a legacy facts/ directory.
+To give this repo skills mneme maintains, run: mneme adopt <name> --as-plugin
 ```
 
 **No marketplace distribution.** Without a plugin manifest there is nothing for another
@@ -656,8 +662,12 @@ agent to flag hard-won fixes as they land, so this happens while you work:
 While you work, flag knowledge worth keeping — do NOT stop to document it.
 
 Flag (one line each, at the moment it happens) when:
-- a hard-won fix lands after real dead ends: `mneme flag "<what worked + why it was non-obvious>"`
-- installed knowledge proves wrong or stale: `mneme flag --kind knowledge-issue "<what is wrong>"`
+- a hard-won fix lands after real dead ends — kind `golden-path`
+- installed knowledge proves wrong or stale — kind `knowledge-issue`
+
+Use the `mneme_flag` tool if it is available: no shell, no quoting, and the text may
+contain quotes, `$`, backslashes and newlines. Otherwise `mneme flag "<one line>"`
+(add `--kind knowledge-issue` for the second case).
 
 Rules: one line per flag; no mid-session distillation (a background distiller runs later);
 never flag anything from excluded repos/paths; never include secrets or credentials in flag text.
@@ -684,7 +694,7 @@ mneme status
 
 ```
 plugins: 3 registered
-- acme-knowledge [internal]
+- acme-knowledge [internal] (plugin)
 - team-kb [internal]
 - personal-kb [internal]
 flags: 2 pending
@@ -727,7 +737,7 @@ tagged with a similar existing unit if there is one, and flagged if it is routin
 less-restricted repo. The gate reports what it did:
 
 ```
-staged 2  quarantined 1  skipped-declined 0  skipped-duplicate 0  rejected 0  boundary-warnings 0
+staged 2  quarantined 1  skipped-declined 0  skipped-duplicate 0  skipped-routed 0  rejected 0  boundary-warnings 0
 ```
 
 That `quarantined 1` is the secret scanner catching a proposal that contained a token.
@@ -753,7 +763,7 @@ Candidates are grouped by the plugin they are routed to. Three annotations matte
 
 | Annotation | Meaning |
 |---|---|
-| `[boundary]` | Routed toward a *less-restricted* repo than its source. Confirm explicitly before approving. See the caveat in [§9](#9-rolling-it-out-to-a-team) — the background pipeline does not currently raise this. |
+| `[boundary]` | Routed toward a *less-restricted* repo than its source. Confirm explicitly before approving. Raised by the background pipeline too since v0.9.0: flags record where they were captured, and ingest takes the most restricted scope among them. |
 | `[similar: <unit>]` | The nearest full-text hit in the index — a **hint, not a match**. It is the top result for an OR-query over the candidate's words with no similarity threshold, so unrelated units do show up. Read the named unit before assuming a duplicate. Only appears once the index is enabled. |
 | `[QUARANTINED]` | The secret scanner found a blocker. **Cannot be applied.** Needs redaction first. |
 
@@ -983,7 +993,7 @@ mneme search "stale targets after deploy"
 
 ```
 -8.41	acme-knowledge	facts/deploys#the-load-balancer-keeps-stale-targets	The load balancer keeps stale targets for about 90 seconds after a deploy drains them
--0.73	acme-knowledge	skills/knowledge-index	Consult when you need durable facts from acme-knowledge — constraints, gotchas, decisions, and runbook notes. Widget platform operations at Acme: deploy paths, incident runbooks, and the constraints of the billing pipeline. Excludes customer data and anything about the marketing site. Topics listed in this skill route to fact files under facts/. Topics: deploys
+-0.73	acme-knowledge	skills/knowledge-index	Consult when you need durable facts from acme-knowledge — constraints, gotchas, decisions, and runbook notes. Widget platform operations at Acme: deploy paths, incident runbooks, and the constraints of the billing pipeline. Excludes customer data and anything about the marketing site. 1 topic, listed in this skill, stored in facts/.
 ```
 
 Tab-separated columns are score, plugin, unit id, description, best match first. The score is
@@ -1122,3 +1132,74 @@ history. Mneme adds no vendor service and no second permission model.
 - [The prior-art survey](research/2026-08-11-prior-art.md) — the landscape mneme was built
   into, and why this intersection was empty.
 - `mneme <command> --help` — every command, every flag.
+
+---
+
+## Automatic capture
+
+Flagging used to depend on remembering to flag. It no longer does: mneme watches for the
+moments where durable knowledge usually appears, and asks about the specific thing it saw.
+
+### What you will notice
+
+**At the start of a session**, if the previous one did real work and captured nothing:
+
+    Last session: 214 tool calls, 0 flags captured. If nothing durable was learned that is
+    a fine answer — say so; if something was, flag it now before it is gone.
+
+Silent otherwise. A session under 20 tool calls, or one that captured something, says nothing.
+
+**At a turn boundary**, when something specific was noticed:
+
+    mneme noticed while you worked — flag anything durable, one line each:
+    - [resolved-error] ORA-06550 then a success of `docker exec`, after 4 failures
+    - [surprise] from the general-purpose report — the SQLcl container shim mis-splits
+      long scripts containing non-ASCII characters: the first statement was silently skipped
+    Flag with the `mneme_flag` tool (no quoting needed) — or say nothing if none of it is durable.
+
+At most three per turn, hardest-won first, never offered twice.
+
+### Flagging without shell quoting
+
+`mneme_flag` is an MCP tool the plugin registers, so text with quotes, `$`, backslashes and
+newlines goes in as-is:
+
+    mneme_flag(text="Backticks inside a $(double-quoted) \"git commit -m\" still expand",
+               kind="golden-path")
+
+`kind` is `golden-path` (default) or `knowledge-issue`. The shell form still works:
+`mneme flag "<one line>" [--kind knowledge-issue]`.
+
+Nothing about the gate changes. A flag is a note in `~/.mneme`; it becomes a candidate at
+distillation and still passes `/mneme:share` before it reaches any repo.
+
+### What triggers a prompt
+
+| Trigger | Fires when | Notes |
+|---|---|---|
+| Hard-won fix | a command fails ≥2 times with a named error code, then succeeds | the code must come from the failure, not from output a command merely printed |
+| Subagent report | a delegated agent returns a report ≥400 chars containing a finding | ~29% of real reports qualify |
+| Session tally | a session ends having done ≥20 tool calls and captured nothing | reported at the next session start |
+
+Detection is deliberately conservative. Three rules (`retried`, `surprise`, `measured`) are
+implemented but off for whole-session transcripts, where they fire on status prose; they are
+on for subagent reports, where the base rate is different.
+
+### Cost
+
+0 ms per tool call — no hook runs on the tool path. 217 ms per user turn (blocking), 426 ms
+per assistant turn (asynchronous, never blocks).
+
+### Where it is stored
+
+    ~/.mneme/sessions.jsonl    per-session tally (bounded, 200 records)
+    ~/.mneme/noticed.jsonl     candidates the detector surfaced (bounded, 500)
+
+Neither is a decision record. `declined.jsonl` and `routed.jsonl` hold human verdicts; a
+detector's guess is kept apart from them on purpose.
+
+### Turning it down
+
+There is no config file yet. The thresholds are constants: `tally.MIN_TOOL_CALLS` (20),
+`noticed.MAX_PER_PROMPT` (3), `detect.MIN_FAILURES` (2), `detect.MIN_REPORT_CHARS` (400).
+

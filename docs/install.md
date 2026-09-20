@@ -15,9 +15,10 @@ Mneme ships as a Claude Code plugin, and its repository is its own marketplace �
 
 That registers the marketplace defined by `.claude-plugin/marketplace.json` at the repo root and installs the `mneme` plugin it points at. The plugin contributes:
 
-- **hooks** — a SessionStart context injector and a Stop/PreCompact background distiller trigger (`hooks/hooks.json`).
-- **skills** — the `/mneme:*` commands (`capture`, `share`, `new`, `register`, `adopt`, `status`, `verify`, `classify`, `review`) plus a model-invocable `retrieval` skill.
-- **`bin/`** — `mneme` and `mneme-index`, which Claude Code puts on the Bash `PATH` while the plugin is enabled.
+- **hooks** — five of them (`hooks/hooks.json`): SessionStart, Stop, PreCompact, UserPromptSubmit and SubagentStop. §3 says what each does.
+- **skills** — the `/mneme:*` commands (`capture`, `share`, `new`, `register`, `adopt`, `status`, `verify`, `classify`, `review`, `index`) plus a model-invocable `retrieval` skill.
+- **an MCP server** — `mneme` (`bin/mneme-mcp`), exposing one tool, `mneme_flag`. Flag text with quotes, `$`, backslashes or newlines goes in without any shell quoting.
+- **`bin/`** — `mneme`, `mneme-index`, `mneme-mcp` and `mneme-distill-pipeline`. Claude Code puts `bin/` on the Bash `PATH` while the plugin is enabled.
 
 To install from a local checkout instead (development, air-gapped machines):
 
@@ -71,9 +72,26 @@ branch stays local for you to merge or push. Mneme never commits to a registered
 Make registered knowledge searchable (optional, recommended):
 
 ```bash
-mneme db enable        # opt the local SQLite index in
-mneme index rebuild    # build/refresh it across all registered plugins
+mneme db enable         # opt the local SQLite index in
+mneme index rebuild     # build/refresh it across all registered plugins
+mneme index rebuild --stale   # rebuild only the repos that actually moved
+mneme index check       # exits 2 when the index no longer speaks for a repo
 ```
+
+The index is built from the working trees of registered repos, and nearly every event that
+changes one belongs to somebody else — a merged pull request most of all. So `mneme search`
+warns on stderr when the index is behind (stdout stays byte-identical, since callers parse
+it), `/mneme:index` rebuilds it, and a check that cannot see a repo reports stale rather
+than fresh.
+
+Two more surfaces worth knowing before the walkthrough:
+
+- `mneme new <name> --no-plugin` scaffolds a governed knowledge repo that is not published
+  as one — no manifests, no release workflow, same layout otherwise.
+- `mneme share route <id> --target <plugin>` fixes a mis-routed candidate at the gate
+  instead of spending a decline on it (`--allow-boundary` to move toward a less restricted
+  repo). The correction sticks: the distiller stops re-proposing the destination you moved
+  knowledge off.
 
 Check the whole pipeline at any time with `/mneme:status` (or `mneme status`).
 
@@ -110,8 +128,8 @@ none do.
 When you maintain a repo other people contribute to, run `/mneme:review` from inside it (the
 current directory is the argument here too, and this is the one command that requires `gh`).
 It reads every open pull request and annotates each fact bullet they add — already in the
-repo, previously declined by a human, possibly covered by an existing skill, or genuinely
-new — recommends one verdict per PR, and then does only what you approve for that specific
+repo, previously declined by a human, already integrated into a skill, possibly covered
+by an existing skill, or genuinely new — recommends one verdict per PR, and then does only what you approve for that specific
 PR: merge it, close it as a duplicate with a comment naming the covering units, or extract
 just the new bullets onto a `mneme/review-*` branch and open mneme's own PR
 (`mneme review begin` / `finalize`, with `mneme review abort` to back out). Nothing is
@@ -122,19 +140,56 @@ merged or closed on your behalf.
 Once installed, mneme rides your sessions without being asked.
 
 **SessionStart** (`hooks/scripts/session-start.sh`, matcher `startup|clear|compact|resume`)
-Runs `mneme context` and injects its output as session context via
+Runs `mneme context` and injects its output via
 `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}`.
-That output is the *noticing brief* — it tells the agent what counts as hard-won knowledge and lists your registered plugins with their scope statements. The script exits 0 on every path: if mneme is missing, unconfigured, or errors, it prints nothing and the session starts normally.
+That output is the *noticing brief* — what counts as hard-won knowledge, which flag path to
+prefer, and your registered plugins with their scope statements. It also carries the
+**previous session's tally** when there is something to say:
+
+```
+Last session: 214 tool calls, 0 flags captured. If nothing durable was learned that is
+a fine answer — say so; if something was, flag it now before it is gone.
+```
+
+Silent when the last session captured something, or did fewer than 20 tool calls. On
+`compact`/`clear`/`resume` it reports the *current* session's own numbers instead, since
+that session is continuing. Exits 0 on every path: if mneme is missing or errors, it prints
+nothing and the session starts normally.
+
+**UserPromptSubmit** (`hooks/scripts/user-prompt-submit.sh`)
+The delivery channel. SessionStart and UserPromptSubmit are the only two events that can put
+text in front of the model, and this is the only one that fires repeatedly during a session —
+so everything the other hooks notice arrives here, at a turn boundary rather than
+mid-analysis:
+
+```
+mneme noticed while you worked — flag anything durable, one line each:
+- [resolved-error] ORA-06550 then a success of `docker exec`, after 4 failures
+Flag with the `mneme_flag` tool (no quoting needed) — or say nothing if none of it is durable.
+```
+
+At most three per turn, hardest-won first, never offered twice. Silent when nothing was
+noticed.
+
+**SubagentStop** (`hooks/scripts/subagent-stop.sh`, `async: true`)
+Mines the report a delegated agent just returned (`mneme session report`). It can see the
+report but cannot speak to the parent session, so it records; UserPromptSubmit delivers.
+Reports under 400 characters, or carrying no finding, produce nothing.
 
 **Stop and PreCompact** (`hooks/scripts/distill-hook.sh`, `async: true`)
-The distill trigger. It exits immediately — doing nothing, touching no state — when:
+Two jobs, in this order. First it records what the session captured
+(`mneme session tally --transcript …` → `~/.mneme/sessions.jsonl`) and detects candidates —
+this runs *before* any early exit, because a session that captured nothing is precisely the
+one worth recording. Then it triggers distillation, exiting without doing so when:
 
 - the stdin payload is not parseable JSON,
 - `stop_hook_active` is true (Claude Code is already continuing because of a Stop hook),
-- `MNEME_DISTILLING` is already set (the distiller's own child session), or
+- `MNEME_DISTILLING` is set (the distiller's own child session — nothing is recorded either),
+- `transcript_path` is empty, or
 - `mneme distill pending` reports zero pending flags.
 
-Otherwise it detaches `bin/mneme-distill-pipeline` with `nohup` and returns immediately. The session never waits on distillation.
+Otherwise it detaches `bin/mneme-distill-pipeline` with `nohup` and returns. The session
+never waits on distillation.
 
 **The pipeline** (`bin/mneme-distill-pipeline`)
 `mneme distill prepare --transcript <path>` builds the prompt → a headless `claude -p` run produces proposals as JSON → `mneme distill ingest - --clear-flags --flags-snapshot <bundle>` puts them through the machine gate (schema validation, secret scan, dedup, routing, sensitivity boundaries) and into `~/.mneme/staging/`. Nothing is ever written to a knowledge repo here — that only happens at the human gate, `/mneme:share`, and even then only on a `mneme/harvest-*` branch, never on `main`.
@@ -158,7 +213,7 @@ All configuration is environment variables — there is no config file to manage
 
 | Variable | Default | What it does |
 |---|---|---|
-| `MNEME_HOME` | `~/.mneme` | Local state root: registry, flags, staging, quarantine, declined/submitted ledgers, cloned repos, `logs/`. Deliberately **not** `${CLAUDE_PLUGIN_DATA}` — your registry outlives any one plugin install or harness. |
+| `MNEME_HOME` | `~/.mneme` | Local state root: `registry.json`, `staging/` (with `flags.jsonl` and `quarantine/`), the `declined.jsonl`, `submitted.jsonl`, `routed.jsonl` and `detection-declined.jsonl` ledgers, `sessions.jsonl` and `noticed.jsonl` (the per-session tally and what the detector noticed), `mneme.db` (the search index), `repos/`, `logs/`, and `.<name>.lock` files. Deliberately **not** `${CLAUDE_PLUGIN_DATA}` — your registry outlives any one plugin install or harness. |
 | `MNEME_CLAUDE_BIN` | `claude` | The binary the distiller invokes headlessly. Point it at an absolute path if `claude` is not on the hook's `PATH`. |
 | `MNEME_DISTILL_MODEL` | `sonnet` | Model for the headless distiller run. |
 | `MNEME_DISTILL_FOREGROUND` | unset | When `1`, the hook runs the pipeline inline instead of detaching it. For debugging and tests only — it makes Stop wait. |
