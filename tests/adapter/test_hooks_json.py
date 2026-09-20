@@ -14,7 +14,16 @@ def test_events_present():
     # put text in front of the model (verified against Claude Code 2.1.278), and it is the
     # only one of the two that fires repeatedly during a session. Detection happens at
     # Stop; delivery has to happen here.
-    assert set(hooks) == {"SessionStart", "Stop", "PreCompact", "UserPromptSubmit"}
+    assert set(hooks) == {"SessionStart", "Stop", "PreCompact", "UserPromptSubmit",
+                          "SubagentStop"}
+
+
+def test_subagent_stop_wiring():
+    """T1. It cannot inject into the parent — verified against Claude Code 2.1.278 — so it
+    is async (it only records) and delivery happens at UserPromptSubmit."""
+    handler = load()["hooks"]["SubagentStop"][0]["hooks"][0]
+    assert handler["command"].endswith("/hooks/scripts/subagent-stop.sh")
+    assert handler["async"] is True
 
 
 def test_user_prompt_submit_wiring():

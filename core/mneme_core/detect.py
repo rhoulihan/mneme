@@ -294,6 +294,27 @@ _RULES = {
 }
 
 
+# A subagent's REPORT is not a session transcript, and the base rate is what makes the
+# difference. Measured over 787 real subagent reports on this machine: median 3,277 chars,
+# 722 substantive, and 216 of those (29%) carry a surprise or measured signal -- roughly 9
+# candidates from a 29-subagent session. The same rules over a whole session's assistant
+# prose are dominated by status reporting and were switched off for it.
+#
+# This is the requirements doc's T1, and its answer to open question 3 ("every subagent, or
+# only substantial ones?"): every subagent, but a candidate only when the report says
+# something. A trivial report -- "Waiting for the completion event" -- carries no signal
+# and so produces nothing, without needing a length rule to say so.
+MIN_REPORT_CHARS = 400
+
+
+def from_report(report: str) -> list[Signal]:
+    """Candidates in a subagent's returned report."""
+    if len(report) < MIN_REPORT_CHARS or not _TECHNICAL_RE.search(report):
+        return []
+    events = [Event(kind=TEXT, text=report)]
+    return surprises(events) + measured_bounds(events)
+
+
 def detect(events: list[Event], rules: tuple[str, ...] = DEFAULT_RULES) -> list[Signal]:
     """Every signal from the selected rules, in a stable order."""
     out: list[Signal] = []

@@ -46,6 +46,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tally.add_argument("--session", default=None)
     p_prompt = session_sub.add_parser("prompt")
     p_prompt.add_argument("--session", default=None)
+    p_report = session_sub.add_parser("report")
+    p_report.add_argument("--session", default=None)
+    p_report.add_argument("--agent-type", default="")
     sub.add_parser("status")
 
     p_flag = sub.add_parser("flag")
@@ -1399,6 +1402,22 @@ def _session_cmd(home: Path, args: argparse.Namespace) -> int:
         if text:
             print(text)
             noticed_mod.mark_reported(home, pending)
+        return 0
+    if args.session_command == "report":
+        from . import detect as detect_mod
+        from . import noticed as noticed_mod
+
+        session = args.session or os.environ.get("CLAUDE_SESSION_ID", "unknown")
+        report = sys.stdin.read()
+        signals = detect_mod.from_report(report)
+        label = args.agent_type or "subagent"
+        for s in signals:
+            # The SENTENCE, not the matched keyword. `surprises` puts the trigger word in
+            # `detail` for debugging, and rendering that gave the user
+            # "from the general-purpose report: silently" — a prompt that names nothing is
+            # the generic reminder R2 exists to avoid.
+            s.detail = f"from the {label} report — {s.evidence}"
+        print(noticed_mod.record_signals(home, session, signals))
         return 0
     if args.session_command != "tally":
         return 1

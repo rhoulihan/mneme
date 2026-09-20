@@ -353,8 +353,22 @@ cross-session deduplication.
    precisely because a person wrote it. A detector's guess is not a decision and must not sit
    where decisions live.
 2. **Interruption budget** — superseded by N2 above; the channel is the budget.
-3. **Should T1 fire for every subagent?** Now cheap to decide empirically: `SubagentStop`
-   carries the report, so the threshold can be a property of the text rather than a guess.
+3. **Should T1 fire for every subagent?** **Answered from data (2026-09-19).** Measured
+   over **787** real subagent reports on this machine: median 3,277 chars; 722 are
+   substantive; **216 of those (29%) carry a signal** — about 9 candidates from a
+   29-subagent session, delivered at most 3 per turn.
+
+   So: fire for every subagent, but record a candidate only when the report *says*
+   something. A trivial report ("Waiting for the completion event") carries no signal and
+   needs no length rule to exclude it. The 400-char floor is kept for a narrower reason
+   that the data named: of the 60 real sub-400-char reports, exactly **2** carry a signal,
+   and both are progress notes tripping the `measured` rule on their own numbers —
+   "891 to 1,269 lines", "~20 min". The floor separates those, and the tests pin it with
+   those two reports rather than with an invented one.
+
+   Note the base rate is what makes this work. The same prose rules are **off** for
+   whole-session transcripts, where they are dominated by status reporting; over a
+   subagent's returned findings they are not.
 4. **Is R5 detectable?** Mechanism identified (§R5). Open question becomes the false-positive
    rate of the `similar_to` comparison, measurable against the replay corpus.
 5. **(new) Does `Stop`-hook stdout reach an interactive terminal?** The probe was headless,
