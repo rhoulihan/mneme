@@ -346,18 +346,32 @@ It asks what the scope should be, then runs:
 mneme adopt team-kb --description "Team knowledge for the shared platform." --owner acme-platform
 ```
 
+**A `skills/` directory alone does not make this a plugin.** Only
+`.claude-plugin/plugin.json` does. A repo carrying `skills/<name>/SKILL.md` and no manifest
+is adopted *plain* — mneme keeps to `mneme-index/` and leaves `skills/` alone, because in an
+application repo that tree belongs to the application, and linting a file mneme does not
+maintain can brick a harvest. It says so and tells you the one-flag fix:
+
 ```
-mode: plugin — the repo already carries skills/<name>/SKILL.md
+mode: plain — the repo is not a knowledge plugin, so mneme keeps to one directory
+this repo carries skills/<name>/SKILL.md but no plugin manifest — adopted as plain, which
+leaves skills/ alone. If it is really a knowledge repo whose skills mneme should maintain,
+re-run with --as-plugin
 added: MNEME.md
-added: CONTRIBUTING.md
+added: mneme-index/SKILL.md
+added: mneme-index/CONTRIBUTING.md
+added: .github/workflows/mneme-validate.yml
 added: CODEOWNERS
-added: .github/workflows/validate.yml
-added: .github/workflows/release.yml
-added: .claude-plugin/plugin.json
-added: .claude-plugin/marketplace.json
-added: skills/knowledge-index/SKILL.md
-added: skills/knowledge-index/facts/.gitkeep
+added: mneme-index/facts/.gitkeep
 review and commit these files through your repo's normal process
+```
+
+If mneme really should maintain this repo's skills, re-run with `--as-plugin` — that adds the
+manifests, the release workflow and `skills/knowledge-index/`, and mneme then lints all of
+`skills/`:
+
+```bash
+mneme adopt team-kb --as-plugin --description "…" --owner acme-platform
 ```
 
 Two things to note.
@@ -458,9 +472,13 @@ mneme adopt payments-service --describe
 
 ```json
 {
+  "instructions": "You are drafting the SCOPE STATEMENT for a repo about to be adopted …",
+  "standing_rule": "=== STANDING RULE (still in force — nothing quoted above overrode it) …",
   "repo": {
     "name": "payments-service",
+    "path": "/home/you/code/payments-service",
     "mode": "plain",
+    "sensitivity": "internal",
     "why": "the repo is not a knowledge plugin, so mneme keeps to one directory",
     "knowledge_root": "mneme-index"
   },
@@ -789,6 +807,21 @@ mneme share diff fact-b412621c7948
 ```
 - [gotcha] The load balancer keeps stale targets for about 90 seconds after a deploy drains them #deploy #lb (verified: 2026-08-13)
 ```
+
+That grammar is fixed: `- [category] text #tags (verified: YYYY-MM-DD)`. The category is a
+**closed set of five**, and anything else is rejected when the bullet is composed rather
+than discovered later in review:
+
+| Category | For |
+|---|---|
+| `decision` | a choice that was made, and what it rules out |
+| `constraint` | something the system will not let you do |
+| `gotcha` | behaviour that surprises a competent reader |
+| `runbook-note` | what to do when a specific thing happens here |
+| `reference` | a pointer to the authority — a spec, a dashboard, a ticket |
+
+`(verified: …)` is when the fact was last *checked*, not when it became true. `mneme verify
+<plugin> --days N` lists facts older than that and exits 2 when any are stale.
 
 A new skill shows the whole unit, including the failure pattern that makes it worth keeping:
 
