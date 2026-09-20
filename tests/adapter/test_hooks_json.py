@@ -10,7 +10,32 @@ def load():
 
 def test_events_present():
     hooks = load()["hooks"]
-    assert set(hooks) == {"SessionStart", "Stop", "PreCompact"}
+    # UserPromptSubmit added 2026-09-19: it and SessionStart are the only events that can
+    # put text in front of the model (verified against Claude Code 2.1.278), and it is the
+    # only one of the two that fires repeatedly during a session. Detection happens at
+    # Stop; delivery has to happen here.
+    assert set(hooks) == {"SessionStart", "Stop", "PreCompact", "UserPromptSubmit",
+                          "SubagentStop"}
+
+
+def test_subagent_stop_wiring():
+    """T1. It cannot inject into the parent — verified against Claude Code 2.1.278 — so it
+    is async (it only records) and delivery happens at UserPromptSubmit."""
+    handler = load()["hooks"]["SubagentStop"][0]["hooks"][0]
+    assert handler["command"].endswith("/hooks/scripts/subagent-stop.sh")
+    assert handler["async"] is True
+
+
+def test_user_prompt_submit_wiring():
+    group = load()["hooks"]["UserPromptSubmit"][0]
+    handler = group["hooks"][0]
+    assert handler["type"] == "command"
+    assert handler["command"].endswith("/hooks/scripts/user-prompt-submit.sh")
+    # Not async: an async hook cannot inject context, which is the entire job here.
+    assert not handler.get("async", False)
+    # It runs on the user's turn boundary, so it must be bounded well under the event's
+    # 30-second ceiling.
+    assert handler["timeout"] <= 15
 
 
 def test_session_start_wiring():

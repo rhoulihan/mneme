@@ -7,6 +7,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import units
 from .errors import MnemeError
 
 # Fully qualified so no local branch or tag spelled `origin/main` can answer for the
@@ -120,6 +121,36 @@ def reset_hard(repo: Path, sha: str) -> None:
     git(repo, "reset", "--hard", sha)
 
 
+def _one_line(value: str) -> str:
+    """Collapse anything a message treats as structure into a space.
+
+    A source reaches here off the CANDIDATE FILE, not off `--source`: frontmatter escapes
+    a newline and `units._unescape` faithfully restores it, so every candidate staged
+    before the flag was validated still arrives with one. Collapsing rather than refusing
+    keeps a harvest of pre-existing candidates working -- provenance is metadata, and
+    losing a line break in it costs nothing next to blocking the knowledge.
+    """
+    out = value
+    for ch in units.LINE_BREAKS:
+        out = out.replace(ch, " ")
+    return out.strip()
+
+
+def harvest_message(
+    unit_lines: list[str], sources: list[str], migrated: list[str] | None = None
+) -> str:
+    """Build the harvest commit message. Split out from the commit so the trailer rules
+    are testable without a git repository."""
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    subject = f"knowledge: harvest {date} ({len(unit_lines)} units)"
+    sections = ["\n".join(f"- {line}" for line in unit_lines)]
+    if migrated:
+        sections.append("Migrated:\n" + "\n".join(f"- {line}" for line in migrated))
+    trailers = sorted({_one_line(s) for s in sources})
+    sections.append("\n".join(f"Mneme-Source: {s}" for s in trailers))
+    return subject + "\n\n" + "\n\n".join(sections) + "\n"
+
+
 def commit_harvest(
     repo: Path,
     unit_lines: list[str],
@@ -137,13 +168,7 @@ def commit_harvest(
     git(repo, "add", "-A")
     if git(repo, "status", "--porcelain") == "":
         raise MnemeError("nothing to commit for this harvest")
-    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    subject = f"knowledge: harvest {date} ({len(unit_lines)} units)"
-    sections = ["\n".join(f"- {line}" for line in unit_lines)]
-    if migrated:
-        sections.append("Migrated:\n" + "\n".join(f"- {line}" for line in migrated))
-    sections.append("\n".join(f"Mneme-Source: {s}" for s in sorted(set(sources))))
-    message = subject + "\n\n" + "\n\n".join(sections) + "\n"
+    message = harvest_message(unit_lines, sources, migrated)
     git(repo, "commit", "-m", message)
     return git(repo, "rev-parse", "HEAD")
 

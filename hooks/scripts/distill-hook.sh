@@ -14,7 +14,7 @@ ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 PAYLOAD_FILE="$(mktemp)"
 trap 'rm -f "$PAYLOAD_FILE"' EXIT
 cat > "$PAYLOAD_FILE" 2>/dev/null || true
-TRANSCRIPT="$(MNEME_HOOK_PAYLOAD_FILE="$PAYLOAD_FILE" python3 - <<'PY' 2>/dev/null || true
+FIELDS="$(MNEME_HOOK_PAYLOAD_FILE="$PAYLOAD_FILE" python3 - <<'PY' 2>/dev/null || true
 import json
 import os
 
@@ -25,10 +25,26 @@ except Exception:
     raise SystemExit(1)
 if data.get("stop_hook_active"):
     raise SystemExit(1)
-print(data.get("transcript_path", ""))
+# Tab-separated so a path containing spaces survives; neither field can contain a tab.
+print(data.get("transcript_path", ""), data.get("session_id", ""), sep="\t")
 PY
 )"
+# Tab-separated, split with IFS so a missing trailing field is empty rather than a copy of
+# an earlier one: `${FIELDS#*$TAB}` returns the WHOLE string when no tab is present, which
+# would have filed every session under a path-shaped id.
+IFS=$'\t' read -r TRANSCRIPT SESSION_ID <<<"$FIELDS" || true
+TRANSCRIPT="${TRANSCRIPT:-}"
+SESSION_ID="${SESSION_ID:-}"
 [ -z "$TRANSCRIPT" ] && exit 0
+
+# Record what this session captured BEFORE anything can exit early. A session that
+# captured nothing is precisely the one worth recording, and the line below used to end
+# the hook on exactly that case -- `distill pending` exits 1 when the count is zero, so
+# the number was computed, sent to /dev/null, and dropped. That is RC4 in the shipped
+# code. The tally is written here and spoken by a later SessionStart, because a Stop hook
+# cannot inject context and its stdout is discarded.
+"$ROOT/bin/mneme" session tally --transcript "$TRANSCRIPT" \
+  ${SESSION_ID:+--session "$SESSION_ID"} >/dev/null 2>&1 || true
 
 "$ROOT/bin/mneme" distill pending >/dev/null 2>&1 || exit 0
 

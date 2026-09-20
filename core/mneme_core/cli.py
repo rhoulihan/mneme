@@ -7,7 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from . import __version__, flags, lint, paths, registry, scan, staging
+from . import __version__, flags, lint, paths, registry, scan, staging, units
 from .errors import MnemeError
 
 
@@ -36,6 +36,19 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("home")
     p_context = sub.add_parser("context")
     p_context.add_argument("--cwd", type=Path, default=None)
+    p_context.add_argument("--session", default=None)
+    p_context.add_argument("--source", default="")
+
+    p_session = sub.add_parser("session")
+    session_sub = p_session.add_subparsers(dest="session_command", required=True)
+    p_tally = session_sub.add_parser("tally")
+    p_tally.add_argument("--transcript", required=True)
+    p_tally.add_argument("--session", default=None)
+    p_prompt = session_sub.add_parser("prompt")
+    p_prompt.add_argument("--session", default=None)
+    p_report = session_sub.add_parser("report")
+    p_report.add_argument("--session", default=None)
+    p_report.add_argument("--agent-type", default="")
     sub.add_parser("status")
 
     p_flag = sub.add_parser("flag")
@@ -195,6 +208,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ing.add_argument("--source-plugin", default="")
     p_ing.add_argument("--clear-flags", action="store_true")
     p_ing.add_argument("--flags-snapshot", default="")
+    p_ing.add_argument("--json", action="store_true")
 
     p_db = sub.add_parser("db")
     db_sub = p_db.add_subparsers(dest="db_command", required=True)
@@ -225,9 +239,36 @@ def main(argv: list[str] | None = None) -> int:
             print(str(home))
             return 0
         if args.command == "context":
-            from . import routing, templates
+            from . import routing, tally as tally_mod, templates
 
             print(templates.NOTICING_BRIEF)
+            # RC4: the omission has to be loud. A `Stop` hook cannot inject context and
+            # its stdout is discarded, so the previous session's tally is spoken HERE --
+            # SessionStart is one of only two events that can put text in front of the
+            # model at all.
+            # On compact/clear/resume the session CONTINUES, so the interesting tally is
+            # its own -- excluding it there would hide "12,000 calls, 0 flags" behind some
+            # older session's numbers at the exact moment the context was discarded.
+            # A damaged ledger is reported by `read_tallies` and swallowed HERE. The
+            # brief, the registry summary and the registration nudge all matter more than
+            # the tally line, and the hook's `|| exit 0` would drop every one of them if
+            # this raised.
+            notable = None
+            current = False
+            try:
+                notable, current = _notable_for(home, args)
+            except MnemeError:
+                notable = None
+            if False:
+                pass
+            if notable is not None:
+                print()
+                print(tally_mod.render(notable, current=current))
+                print()
+                if not current:
+                    # Said once. A live session's own tally is NOT marked: its numbers
+                    # keep changing, and the next compact should see the newer ones.
+                    tally_mod.mark_reported(home, notable.session)
             scope_list = routing.scopes(home)
             if not scope_list:
                 print("Registered knowledge plugins: none — run 'mneme new <name>' to create one.")
@@ -243,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
                 if nudge:
                     print(nudge)
             return 0
+        if args.command == "session":
+            return _session_cmd(home, args)
         if args.command == "status":
             return _status_cmd(home)
         if args.command == "flag":
@@ -1131,8 +1174,11 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             raw = Path(args.path).read_text(encoding="utf-8")
         except OSError as e:
             raise MnemeError(f"cannot read proposals: {e}")
+    source = _checked_source(args.source)
+    as_json = getattr(args, "json", False)
     valid, errors = proposals_mod.parse_proposals(raw)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    written: list[dict] = []
 
     staged = quarantined = skipped_declined = skipped_duplicate = skipped_routed = 0
     rejected = list(errors)
@@ -1160,14 +1206,16 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             if p.type == "skill":
                 body = compose.render_skill_unit(
                     p.name, p.description, p.procedure, p.failure_pattern,
-                    source=args.source, captured=today,
+                    source=source, captured=today,
                 )
             else:
                 body = compose.render_fact_bullet(
                     p.category, p.text, p.tags, verified=today
                 )
         except MnemeError as e:
-            rejected.append(f"compose ({p.type} -> {p.target}): {e}")
+            rejected.append(
+                proposals_mod.rejection(p.index, f"compose ({p.type} -> {p.target}): {e}")
+            )
             continue
         # Scoped to the plugin this proposal is FOR: a human declining a fact for one
         # knowledge repo said nothing about another repo that never saw it.
@@ -1209,10 +1257,28 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
             topic=p.topic, similar_to=similar_to, boundary_warning=warning,
             source_sensitivity=(source_scope.sensitivity if source_scope else ""),
             status=status,
-            provenance={"source": args.source, "captured": today},
+            provenance={"source": source, "captured": today},
         )
         staging_mod.write_candidate(home, cand)
         existing_ids.add(cand_id)
+        written.append(
+            {
+                "id": cand.id, "type": cand.type, "edit": cand.edit,
+                "target": cand.target, "status": status,
+                # A quarantined candidate's body is withheld: it is what the scan
+                # objected to, it cannot ship until the finding is resolved, and stdout
+                # is a place callers pipe into logs. `findings` says what was wrong.
+                # (`excerpt` is redacted by `scan._redact` before it reaches a Finding;
+                # the BODY is not, which is why it is the field that must not go out.)
+                "body": None if status == "quarantined" else cand.body,
+                "boundary_warning": warning, "similar_to": similar_to,
+                "findings": [
+                    {"rule": f.rule, "severity": f.severity,
+                     "line": f.line_no, "excerpt": f.excerpt}
+                    for f in findings
+                ],
+            }
+        )
         if status == "quarantined":
             quarantined += 1
         else:
@@ -1221,23 +1287,162 @@ def _distill_ingest(home: Path, args: argparse.Namespace) -> int:
     if index_conn is not None:
         index_conn.close()
 
-    print(
-        f"staged {staged}  quarantined {quarantined}"
-        f"  skipped-declined {skipped_declined}"
-        f"  skipped-duplicate {skipped_duplicate}  skipped-routed {skipped_routed}"
-        f"  rejected {len(rejected)}"
-        f"  boundary-warnings {boundary_count}"
-    )
-    for r in rejected:
-        print(f"rejected: {r}")
-    if args.clear_flags:
-        _clear_ingested_flags(
-            home,
-            args,
-            handled=staged + quarantined + skipped_declined + skipped_duplicate
-            + skipped_routed,
-            rejected=len(rejected),
+    counts = {
+        "staged": staged, "quarantined": quarantined,
+        "skipped_declined": skipped_declined, "skipped_duplicate": skipped_duplicate,
+        "skipped_routed": skipped_routed, "rejected": len(rejected),
+        "boundary_warnings": boundary_count,
+    }
+    if as_json:
+        import json as json_mod
+
+        parts = [proposals_mod.rejection_parts(r) for r in rejected]
+        print(
+            json_mod.dumps(
+                {
+                    "schema_version": 1,
+                    "counts": counts,
+                    # Not "staged": `counts["staged"]` means "not quarantined" while this
+                    # list holds everything WRITTEN, quarantine included. Two meanings on
+                    # one word in one document is a trap for whoever reads it next.
+                    "candidates": written,
+                    "rejected": [{"index": i, "reason": reason} for i, reason in parts],
+                },
+                indent=2,
+            )
         )
+    else:
+        print(
+            f"staged {staged}  quarantined {quarantined}"
+            f"  skipped-declined {skipped_declined}"
+            f"  skipped-duplicate {skipped_duplicate}  skipped-routed {skipped_routed}"
+            f"  rejected {len(rejected)}"
+            f"  boundary-warnings {boundary_count}"
+        )
+        for r in rejected:
+            print(f"rejected: {r}")
+    # One definition of "this run captured something", asked by both the flag-consumption
+    # decision and the exit code. They used to differ -- clearing counted a skipped
+    # duplicate as handled while the exit code counted only staged+quarantined -- so a run
+    # could report "I captured none of what you gave me", the one code a caller retries
+    # on, after destroying the flags it would retry FROM.
+    handled = (
+        staged + quarantined + skipped_declined + skipped_duplicate + skipped_routed
+    )
+    if args.clear_flags:
+        _clear_ingested_flags(home, args, handled=handled, rejected=len(rejected))
+    # Nothing was WRITTEN and something was refused: the run captured none of what it was
+    # given. Distinct from exit 1 (the document itself was unreadable) so a caller can tell
+    # "I sent junk" from "I sent nothing usable", and matching the house meaning of 2 --
+    # ran fine, found problems. A quarantined candidate counts as written: it exists, and
+    # the gate will show it.
+    #
+    # Under --clear-flags this is unreachable: _clear_ingested_flags has already raised,
+    # exiting 1, because a side effect the caller ASKED for was refused. That is a
+    # different statement from this one and keeps its own code deliberately -- the shipped
+    # pipeline always passes --clear-flags, so its behaviour is unchanged by this return.
+    if handled == 0 and rejected:
+        return 2
+    return 0
+
+
+MAX_SOURCE = 500
+# Named for this use, because `_CONTROL_RE` is already bound later in this module for the
+# detection nudge -- the later binding wins at call time, so a fix applied to a duplicate
+# name here would silently do nothing.
+#
+# Built from `units.LINE_BREAKS` rather than restated: `str.splitlines()` breaks on ten
+# characters, three of them (U+0085, U+2028, U+2029) outside the ASCII control range, and
+# an ASCII-only class let those through into a frontmatter value.
+_SOURCE_STRUCTURE_RE = re.compile("[\x00-\x1f\x7f" + re.escape(units.LINE_BREAKS) + "]")
+
+
+def _checked_source(value: str) -> str:
+    """`--source` is untrusted and reaches a git commit trailer.
+
+    `gitops.commit_harvest` formats `Mneme-Source: {s}`, so a newline in it forges
+    arbitrary trailers in the harvest commit. Checked here, at the boundary the value
+    enters by, rather than at the one site that happens to interpolate it -- a rule
+    enforced where it is formatted is a rule the next formatter will not ask about.
+    (The frontmatter path was never exposed: those values are JSON-quoted.)
+    """
+    if len(value) > MAX_SOURCE:
+        raise MnemeError(f"source exceeds {MAX_SOURCE} chars ({len(value)})")
+    m = _SOURCE_STRUCTURE_RE.search(value)
+    if m:
+        raise MnemeError(
+            f"source contains a control character at offset {m.start()}:"
+            f" {value[m.start()]!r}"
+        )
+    return value
+
+
+def _notable_for(
+    home: Path, args: argparse.Namespace
+) -> tuple[object | None, bool]:
+    """The tally worth speaking, and whether it belongs to the live session."""
+    from . import tally as tally_mod
+
+    if args.source in ("compact", "clear", "resume") and args.session:
+        own = tally_mod.for_session(home, args.session)
+        if own is not None and tally_mod.is_notable(own):
+            return own, True
+    return tally_mod.last_notable(home, exclude=args.session), False
+
+
+def _session_cmd(home: Path, args: argparse.Namespace) -> int:
+    import os
+
+    if args.session_command == "prompt":
+        from . import noticed as noticed_mod
+
+        session = args.session or os.environ.get("CLAUDE_SESSION_ID", "unknown")
+        pending = noticed_mod.unreported(home, session)
+        text = noticed_mod.render(pending)
+        if text:
+            print(text)
+            noticed_mod.mark_reported(home, pending)
+        return 0
+    if args.session_command == "report":
+        from . import detect as detect_mod
+        from . import noticed as noticed_mod
+
+        session = args.session or os.environ.get("CLAUDE_SESSION_ID", "unknown")
+        report = sys.stdin.read()
+        signals = detect_mod.from_report(report)
+        label = args.agent_type or "subagent"
+        for s in signals:
+            # The SENTENCE, not the matched keyword. `surprises` puts the trigger word in
+            # `detail` for debugging, and rendering that gave the user
+            # "from the general-purpose report: silently" — a prompt that names nothing is
+            # the generic reminder R2 exists to avoid.
+            s.detail = f"from the {label} report — {s.evidence}"
+        print(noticed_mod.record_signals(home, session, signals))
+        return 0
+    if args.session_command != "tally":
+        return 1
+
+    from . import detect as detect_mod
+    from . import noticed as noticed_mod
+    from . import tally as tally_mod
+    from . import transcript as transcript_mod
+
+    events = transcript_mod.read_events(args.transcript)
+    entry = tally_mod.SessionTally(
+        session=args.session or os.environ.get("CLAUDE_SESSION_ID", "unknown"),
+        tool_calls=transcript_mod.tool_calls(events),
+        # Counted from the session's own record of flagging, NOT from `read_flags` --
+        # that is every flag still PENDING across every session, so one stale flag from
+        # another session suppressed this session's warning, and a session that flagged
+        # well and then had its flags consumed by the distiller reported zero.
+        flags=transcript_mod.flag_invocations(events),
+    )
+    # Detection runs where the knowledge appears; delivery happens at the next user turn.
+    noticed_mod.record_signals(home, entry.session, detect_mod.detect(events))
+    entry.candidates = noticed_mod.count_for(home, entry.session)
+    entry.unflagged = max(entry.candidates - entry.flags, 0)
+    tally_mod.record(home, entry)
+    print(tally_mod.render(entry))
     return 0
 
 

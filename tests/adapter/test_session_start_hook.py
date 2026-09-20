@@ -121,3 +121,46 @@ def test_hostile_origin_url_never_reaches_the_suggested_command(tmp_path):
     assert "curl" not in ctx
     assert "evil.sh" not in ctx
     assert f"--repo local:{kb.resolve()}" in ctx
+
+
+def run_script_with(home, payload):
+    env = dict(os.environ, MNEME_HOME=str(home), CLAUDE_PLUGIN_ROOT=str(REPO_ROOT))
+    return subprocess.run(
+        ["bash", str(SCRIPT)], input=json.dumps(payload),
+        capture_output=True, text=True, env=env,
+    )
+
+
+def test_a_previous_session_that_captured_nothing_is_reported(tmp_path):
+    from mneme_core import tally
+
+    home = tmp_path / "home"
+    tally.record(home, tally.SessionTally(session="old", tool_calls=214, flags=0))
+    result = run_script_with(home, {"cwd": str(tmp_path), "session_id": "new"})
+    assert result.returncode == 0
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "214 tool calls" in ctx
+    assert "mneme noticing" in ctx, "the tally replaced the brief instead of joining it"
+
+
+def test_a_resumed_session_is_not_told_about_itself(tmp_path):
+    """SessionStart fires again on resume/clear/compact with the SAME session_id. Without
+    the exclusion the session would be handed its own half-finished tally as though it
+    were the last session's."""
+    from mneme_core import tally
+
+    home = tmp_path / "home"
+    tally.record(home, tally.SessionTally(session="same", tool_calls=214, flags=0))
+    result = run_script_with(home, {"cwd": str(tmp_path), "session_id": "same"})
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "214 tool calls" not in ctx
+
+
+def test_a_quiet_previous_session_adds_nothing(tmp_path):
+    from mneme_core import tally
+
+    home = tmp_path / "home"
+    tally.record(home, tally.SessionTally(session="old", tool_calls=4, flags=0))
+    result = run_script_with(home, {"cwd": str(tmp_path), "session_id": "new"})
+    ctx = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "tool calls" not in ctx

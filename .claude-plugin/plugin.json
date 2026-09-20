@@ -15,5 +15,11 @@
     "skills",
     "team",
     "governance"
-  ]
+  ],
+  "mcpServers": {
+    "mneme": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mneme-mcp",
+      "args": []
+    }
+  }
 }

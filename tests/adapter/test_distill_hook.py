@@ -110,3 +110,80 @@ def test_corrupt_flag_line_does_not_disable_distillation(tmp_path):
     assert result.returncode == 0
     assert len(staging.load_candidates(home)) == 1
     assert flags.read_flags(home) == []  # the good flag was consumed
+
+
+def transcript_with(tmp_path, n_tool_calls):
+    lines = []
+    for i in range(n_tool_calls):
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Bash",
+                                     "id": f"t{i}", "input": {"command": "x"}}]},
+        }))
+    p = tmp_path / "transcript.jsonl"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def test_the_tally_is_recorded_even_when_nothing_was_captured(tmp_path):
+    """The whole point of R3. This hook's next line is
+
+        "$ROOT/bin/mneme" distill pending >/dev/null 2>&1 || exit 0
+
+    which exits 1 — and so exits the hook — precisely when the flag count is zero. The
+    session that captured nothing is the one worth recording, so the tally has to happen
+    before it.
+    """
+    from mneme_core import tally
+
+    home = tmp_path / "home"
+    t = transcript_with(tmp_path, 30)
+    result = run_hook(
+        tmp_path, home,
+        {"transcript_path": str(t), "session_id": "quiet-sess", "stop_hook_active": False},
+    )
+    assert result.returncode == 0
+    got = tally.read_tallies(home)
+    assert len(got) == 1
+    assert got[0].session == "quiet-sess"
+    assert got[0].tool_calls == 30
+    assert got[0].flags == 0
+    assert tally.last_notable(home) is not None, "a 30-call session with no flags is notable"
+
+
+def test_the_tally_uses_the_payloads_session_id(tmp_path):
+    from mneme_core import tally
+
+    home = tmp_path / "home"
+    t = transcript_with(tmp_path, 5)
+    run_hook(tmp_path, home,
+             {"transcript_path": str(t), "session_id": "from-payload"})
+    assert tally.read_tallies(home)[0].session == "from-payload"
+
+
+def test_a_payload_without_a_session_id_is_not_tallied_under_the_transcript_path(tmp_path):
+    """The tab-split trap: `${FIELDS#*$TAB}` returns the whole string when there is no
+    separator, which would file every session under a path-shaped id."""
+    from mneme_core import tally
+
+    home = tmp_path / "home"
+    t = transcript_with(tmp_path, 5)
+    run_hook(tmp_path, home, {"transcript_path": str(t)})
+    recorded = tally.read_tallies(home)
+    assert len(recorded) == 1
+    assert str(t) not in recorded[0].session
+
+
+def test_the_distillers_own_session_is_not_tallied(tmp_path):
+    """MNEME_DISTILLING marks the nested `claude -p` the pipeline runs. Its Stop hook must
+    not record a tally — it is mneme's own machinery, not the user's session."""
+    from mneme_core import tally
+
+    home = tmp_path / "home"
+    t = transcript_with(tmp_path, 40)
+    result = run_hook(
+        tmp_path, home, {"transcript_path": str(t), "session_id": "inner"},
+        extra_env={"MNEME_DISTILLING": "1"},
+    )
+    assert result.returncode == 0
+    assert tally.read_tallies(home) == []

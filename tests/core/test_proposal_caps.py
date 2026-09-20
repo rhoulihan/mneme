@@ -47,6 +47,8 @@ def test_document_cap():
         ({"text": "x" * (proposals.MAX_FACT_TEXT + 1)}, "text"),
         ({"tags": ["t"] * (proposals.MAX_TAGS + 1)}, "tags"),
         ({"target": "t" * (proposals.MAX_TARGET + 1)}, "target"),
+        ({"topic": "x" * (proposals.MAX_TOPIC + 1)}, "topic"),
+        ({"tags": ["t" * (proposals.MAX_TAG + 1)]}, "tag"),
     ],
 )
 def test_fact_field_caps(entry_kwargs, field):
@@ -65,6 +67,7 @@ def test_fact_field_caps(entry_kwargs, field):
             {"edit": "update", "target_unit": "skills/" + "x" * proposals.MAX_TARGET_UNIT},
             "target_unit",
         ),
+        ({"name": "x" * (proposals.MAX_NAME + 1)}, "name"),
     ],
 )
 def test_skill_field_caps(entry_kwargs, field):
@@ -77,8 +80,16 @@ def test_skill_field_caps(entry_kwargs, field):
 def test_boundary_values_pass():
     valid, errors = parse(
         [
-            fact_entry(text="x" * proposals.MAX_FACT_TEXT, rationale="r" * proposals.MAX_RATIONALE),
-            skill_entry(procedure="p" * proposals.MAX_PROCEDURE),
+            fact_entry(
+                text="x" * proposals.MAX_FACT_TEXT,
+                rationale="r" * proposals.MAX_RATIONALE,
+                topic="x" * proposals.MAX_TOPIC,
+                tags=["t" * proposals.MAX_TAG],
+            ),
+            skill_entry(
+                procedure="p" * proposals.MAX_PROCEDURE,
+                name="x" * proposals.MAX_NAME,
+            ),
         ]
     )
     assert errors == []
