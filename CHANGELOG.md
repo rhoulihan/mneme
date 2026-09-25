@@ -8,6 +8,24 @@ unit: the distribution (`pyproject.toml`), the plugin manifest
 boundary, not by release cadence — it is not independently versioned. Knowledge
 plugins scaffolded by `mneme new` do carry their own independent versions.
 
+## 0.10.1 — 2026-09-25
+
+**v0.10.0's `UserPromptSubmit` hook fails on every prompt.** It shipped at mode 100644, so
+Claude Code reports `Permission denied` each time a user types anything, and the capture
+prompts the release exists to deliver never arrive.
+
+- **Fix: `hooks/scripts/user-prompt-submit.sh` is executable.** The cause is a machine gotcha
+  this project has recorded for a month: the repo lives on WSL drvfs (`/mnt/c`), where
+  `chmod +x` does not reach git's index — only `git update-index --chmod=+x` does. Two hook
+  scripts added in the same change were set by hand correctly and this one was missed.
+- **And the class is now asserted, not remembered.** A release test reads `hooks.json`,
+  resolves every command script it names, and requires mode `100755` in the **index** — the
+  working-tree mode on drvfs is meaningless, and the index is what ships. Verified by
+  clearing the bit on a clone and watching it fail.
+
+Nothing else changed. If your `UserPromptSubmit` hook has been erroring since v0.10.0, this
+is why; if you fixed the cached file by hand, this makes it stick across the next update.
+
 ## 0.10.0 — 2026-09-20
 
 Capture stops depending on the model remembering to capture.
