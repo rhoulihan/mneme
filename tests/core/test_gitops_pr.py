@@ -35,14 +35,16 @@ def test_open_pr_uses_gh(tmp_path, monkeypatch):
         tmp_path, monkeypatch,
         "#!/bin/sh\necho https://github.com/acme/kb/pull/7\n",
     )
-    url = gitops.open_pr(repo, "mneme/harvest-x", "knowledge: harvest", "body text")
-    assert url == "https://github.com/acme/kb/pull/7"
+    # `open_pr` returns a PullRequest now, not a string: a caller could not previously
+    # tell a URL from a prose fallback, which is the defect this type exists to fix.
+    pr = gitops.open_pr(repo, "mneme/harvest-x", "knowledge: harvest", "body text")
+    assert pr.opened and pr.url == "https://github.com/acme/kb/pull/7"
 
 
 def test_open_pr_gh_failure_degrades(tmp_path, monkeypatch):
     repo = make_repo(tmp_path / "r")
     shim_gh(tmp_path, monkeypatch, "#!/bin/sh\necho boom >&2\nexit 1\n")
-    result = gitops.open_pr(repo, "mneme/harvest-x", "title", "body")
+    result = gitops.open_pr(repo, "mneme/harvest-x", "title", "body").describe()
     assert result.startswith("manual:")
     assert "mneme/harvest-x" in result
 
@@ -52,5 +54,5 @@ def test_open_pr_gh_missing_degrades(tmp_path, monkeypatch):
     bindir = tmp_path / "emptybin"
     bindir.mkdir()
     monkeypatch.setenv("PATH", str(bindir))
-    result = gitops.open_pr(repo, "b", "t", "body")
+    result = gitops.open_pr(repo, "b", "t", "body").describe()
     assert result.startswith("manual:")

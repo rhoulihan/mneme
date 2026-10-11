@@ -417,7 +417,9 @@ def apply_batch(
         if push and gitops.has_remote(repo):
             gitops.push_branch(repo, result.branch)
             title = f"knowledge: harvest ({len(result.units)} units)"
-            result.pr = gitops.open_pr(repo, result.branch, title, "\n".join(result.units))
+            result.pr = gitops.open_pr(
+                repo, result.branch, title, "\n".join(result.units)
+            ).describe()
         elif not gitops.has_remote(repo):
             result.pr = "no remote — branch left local; merge it or add a remote and push"
         else:

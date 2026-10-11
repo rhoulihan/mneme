@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import units
+from dataclasses import dataclass
+
 from .errors import MnemeError
 
 # Fully qualified so no local branch or tag spelled `origin/main` can answer for the
@@ -16,6 +19,7 @@ _ORIGIN_MAIN = "refs/remotes/origin/main"
 
 # How many open pull requests one triage reads. Everything past it is unseen work, which
 # is why `list_open_prs` reports a full page rather than pretending it was the whole queue.
+FORK_REMOTE = "mneme-fork"
 PR_LIST_LIMIT = 100
 
 
@@ -228,17 +232,140 @@ def pr_diff(repo: Path, number: int) -> str:
     return _gh_read(repo, "pr", "diff", str(int(number)))
 
 
-def open_pr(repo: Path, branch: str, title: str, body: str) -> str:
-    fallback = (
-        f"manual: branch '{branch}' is pushed — open the pull request yourself"
-        f" (title: {title})"
+@dataclass
+class PullRequest:
+    """Whether a pull request was opened, and the reason when it was not.
+
+    This used to be a bare string: the URL on success, and a prose sentence on every
+    failure — `gh` missing, `gh pr create` erroring. A caller could not tell the two
+    apart, so the last step of the human gate could report "manual: branch is pushed"
+    and read, to anything downstream, exactly like a delivered contribution.
+    """
+
+    url: str = ""
+    reason: str = ""
+
+    @property
+    def opened(self) -> bool:
+        return bool(self.url)
+
+    def describe(self) -> str:
+        """What a caller prints — the URL, or why there isn't one."""
+        return self.url or self.reason
+
+
+def _gh_pr_create(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["gh", "pr", "create", *args], capture_output=True, text=True, cwd=str(repo)
     )
+
+
+def open_pr(
+    repo: Path, branch: str, title: str, body: str, *, required: bool = False
+) -> PullRequest:
+    """Open a pull request for `branch`, or say why not.
+
+    `required=True` is for a contribution into a repo that is not the user's own: there is
+    no local fallback there, and leaving the branch behind with a cheerful sentence is how
+    a contribution silently never arrives. For the user's own repo the fallback is right —
+    no `gh`, branch pushed, open it yourself — so it stays the default.
+    """
     if shutil.which("gh") is None:
-        return fallback
-    result = subprocess.run(
-        ["gh", "pr", "create", "--head", branch, "--title", title, "--body", body],
-        capture_output=True, text=True, cwd=str(repo),
+        # The `manual:` prefix is load-bearing: it is the marker callers and users have
+        # always matched on to tell a pushed-but-unopened branch from a URL.
+        reason = (
+            f"manual: gh (GitHub CLI) is not installed — branch '{branch}' is pushed;"
+            f" open the pull request yourself (title: {title})"
+        )
+        if required:
+            raise MnemeError(reason)
+        return PullRequest(reason=reason)
+    result = _gh_pr_create(
+        repo, "--head", branch, "--title", title, "--body", body
     )
     if result.returncode != 0:
-        return fallback
-    return result.stdout.strip()
+        detail = (result.stderr or result.stdout).strip()[:300]
+        reason = (
+            f"manual: gh pr create failed ({detail}) — branch '{branch}' is pushed;"
+            f" open the pull request yourself (title: {title})"
+        )
+        if required:
+            raise MnemeError(reason)
+        return PullRequest(reason=reason)
+    return PullRequest(url=result.stdout.strip())
+
+
+def fork_and_pr(repo: Path, branch: str, title: str, body: str) -> PullRequest:
+    """Contribute to a repo the user cannot push to.
+
+    `push_branch` is `git push -u origin`, which is a 403 for anyone who is not a
+    collaborator — and it fails AFTER the human gate has passed, which is the worst place
+    available. A contributor to somebody else's knowledge repo is a contributor by
+    definition, so this is the path that case takes: fork, push there, and open the pull
+    request against the UPSTREAM repo with a user-qualified head.
+
+    `gh` is a hard requirement here. There is no manual fallback worth offering: the
+    branch would be sitting in a fork the user has to find.
+    """
+    upstream = _repo_name_with_owner(repo)
+    # Idempotent by intent, not by exit code: `gh repo fork` returns non-zero once the
+    # fork exists, which is the normal case on every contribution after the first. Both
+    # streams are read because "already exists" goes to stderr.
+    forked = subprocess.run(
+        ["gh", "repo", "fork", "--remote", "--remote-name", FORK_REMOTE],
+        capture_output=True, text=True, cwd=str(repo),
+    )
+    owner = _fork_owner(f"{forked.stdout}\n{forked.stderr}", repo)
+    if _has_named_remote(repo, FORK_REMOTE):
+        git(repo, "push", "-u", FORK_REMOTE, branch)
+    result = _gh_pr_create(
+        repo, "--repo", upstream, "--head", f"{owner}:{branch}",
+        "--title", title, "--body", body,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[:300]
+        raise MnemeError(
+            f"could not open a pull request against {upstream} from {owner}:{branch}"
+            f" — {detail}"
+        )
+    return PullRequest(url=result.stdout.strip())
+
+
+def _repo_name_with_owner(repo: Path) -> str:
+    out = _gh_read(repo, "repo", "view", "--json", "nameWithOwner")
+    try:
+        name = json.loads(out or "{}").get("nameWithOwner", "")
+    except json.JSONDecodeError as exc:
+        raise MnemeError(f"gh repo view returned unreadable JSON: {exc}") from exc
+    if not name:
+        raise MnemeError("gh repo view did not name an upstream repository")
+    return str(name)
+
+
+_FORK_NAME_RE = re.compile(r"\b([A-Za-z0-9][\w.-]*)/[\w.-]+\b")
+
+
+def _fork_owner(fork_output: str, repo: Path) -> str:
+    """The account the fork lives under.
+
+    Taken from `gh repo fork`'s own output, which names it on both paths — "Created fork
+    you/kb" and "you/kb already exists". That is the authoritative answer, because it is
+    the account the branch will actually be pushed to; `gh api user` is the fallback for
+    an output format that does not name it.
+    """
+    for line in fork_output.splitlines():
+        match = _FORK_NAME_RE.search(line)
+        if match:
+            return match.group(1)
+    login = _gh_read(repo, "api", "user", "--jq", ".login").strip()
+    if login:
+        return login
+    raise MnemeError(
+        "could not determine the forking account, so --head <owner>:<branch> cannot be"
+        " built — without the owner the pull request opens against the fork instead of"
+        " upstream"
+    )
+
+
+def _has_named_remote(repo: Path, name: str) -> bool:
+    return name in git(repo, "remote").splitlines()

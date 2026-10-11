@@ -1064,7 +1064,9 @@ def _finalize(
         if push and gitops.has_remote(repo):
             gitops.push_branch(repo, branch)
             title = f"knowledge: {kind} {date} ({len(result.units)} changes)"
-            result.pr = gitops.open_pr(repo, branch, title, "\n".join(result.units))
+            result.pr = gitops.open_pr(
+                repo, branch, title, "\n".join(result.units)
+            ).describe()
         elif not gitops.has_remote(repo):
             result.pr = "no remote — branch left local; merge it or add a remote and push"
         else:
